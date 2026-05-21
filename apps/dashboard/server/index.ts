@@ -1229,7 +1229,12 @@ Pass an array to addKnowledge to create multiple entries at once.
     try {
     const dbPath = resolve(INSTALL_DIR, 'knowledge.db');
     let dbSizeBytes = 0;
-    try { dbSizeBytes = statSync(dbPath).size; } catch { /* ignore */ }
+    try { dbSizeBytes += statSync(dbPath).size; } catch { /* ignore */ }
+    // SQLite in WAL mode writes new pages to knowledge.db-wal until a checkpoint
+    // flushes them into knowledge.db. Include sidecars so the reported size
+    // reflects real on-disk usage and updates between checkpoints.
+    try { dbSizeBytes += statSync(dbPath + '-wal').size; } catch { /* ignore */ }
+    try { dbSizeBytes += statSync(dbPath + '-shm').size; } catch { /* ignore */ }
 
     const stats = await sdk.getStats();
 
