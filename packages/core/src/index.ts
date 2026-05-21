@@ -16,6 +16,7 @@ export { TokenUsageRepository } from './repositories/token-usage.repository.js';
 export { TokenUsageService } from './services/token-usage/service.js';
 export { TokenUsageScanner, type ScanResult } from './services/token-usage/scanner.js';
 export { ClaudeCodeAdapter } from './services/token-usage/adapters/claude-code.js';
+export { CopilotCliAdapter } from './services/token-usage/adapters/copilot-cli.js';
 export type { TokenSourceAdapter, ScannedTokenRecord } from './services/token-usage/adapter.js';
 export type {
   TokenUsageRecord,

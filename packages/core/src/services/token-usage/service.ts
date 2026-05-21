@@ -1,6 +1,7 @@
 import type { TokenUsageRepository } from '../../repositories/token-usage.repository.js';
 import { TokenUsageScanner, type ScanResult } from './scanner.js';
 import { ClaudeCodeAdapter } from './adapters/claude-code.js';
+import { CopilotCliAdapter } from './adapters/copilot-cli.js';
 import type { TokenSourceAdapter } from './adapter.js';
 import type { TokenUsageAggregates, TokenUsageFilter } from './types.js';
 
@@ -13,7 +14,10 @@ export class TokenUsageService {
     private readonly repo: TokenUsageRepository,
     adapters?: TokenSourceAdapter[],
   ) {
-    this.scanner = new TokenUsageScanner(repo, adapters ?? [new ClaudeCodeAdapter()]);
+    this.scanner = new TokenUsageScanner(
+      repo,
+      adapters ?? [new ClaudeCodeAdapter(), new CopilotCliAdapter()],
+    );
   }
 
   scan(): Promise<ScanResult> {
