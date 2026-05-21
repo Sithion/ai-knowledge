@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -72,6 +72,45 @@ function log(level: 'info' | 'warn' | 'error', message: string): void {
 // Rotate on startup
 rotateLog();
 log('info', `CogniStore server starting (v${APP_VERSION})`);
+
+// ─── User settings (survives upgrades) ────────────────────────
+const SETTINGS_FILE = resolve(INSTALL_DIR, 'settings.json');
+
+export interface AppSettings {
+  autoUpdate: boolean;
+  dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
+  lastSelectedRange: { from: string; to: string } | null;
+}
+
+const SETTINGS_DEFAULTS: AppSettings = {
+  autoUpdate: false,
+  dateRangePreset: '1w',
+  lastSelectedRange: null,
+};
+
+function readSettings(): AppSettings {
+  try {
+    if (!existsSync(SETTINGS_FILE)) return { ...SETTINGS_DEFAULTS };
+    const parsed = JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8')) as Partial<AppSettings>;
+    return { ...SETTINGS_DEFAULTS, ...parsed };
+  } catch {
+    return { ...SETTINGS_DEFAULTS };
+  }
+}
+
+function writeSettings(patch: Partial<AppSettings>): AppSettings {
+  const merged: AppSettings = { ...readSettings(), ...patch };
+  mkdirSync(INSTALL_DIR, { recursive: true });
+  const tmp = SETTINGS_FILE + '.tmp';
+  writeFileSync(tmp, JSON.stringify(merged, null, 2));
+  try {
+    renameSync(tmp, SETTINGS_FILE);
+  } catch {
+    copyFileSync(tmp, SETTINGS_FILE);
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+  }
+  return merged;
+}
 
 /** Compare two semver strings. Returns positive if a > b, negative if a < b, zero if equal. */
 function compareSemver(a: string, b: string): number {
@@ -1652,6 +1691,19 @@ Pass an array to addKnowledge to create multiple entries at once.
     } catch {
       return { success: false };
     }
+  });
+
+  // ─── Settings (~/.cognistore/settings.json) ─────────────────────
+
+  app.get('/api/settings', async () => readSettings());
+
+  app.put<{ Body: Partial<AppSettings> }>('/api/settings', async (request, reply) => {
+    const body = request.body;
+    if (!body || typeof body !== 'object') {
+      reply.code(400);
+      return { error: 'Body must be an object' };
+    }
+    return writeSettings(body);
   });
 
   // ─── Start server ──────────────────────────────────────────────

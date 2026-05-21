@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client.js';
-import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, getAutoUpdateEnabled, setAutoUpdateEnabled } from '../components/UpdateChecker.js';
+import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, useAutoUpdateSetting } from '../components/UpdateChecker.js';
 import { ConfirmModal } from '../components/ConfirmModal.js';
 
 interface Health {
@@ -24,7 +24,7 @@ export function SettingsPage() {
   const [uninstallStep, setUninstallStep] = useState(0);
   const [updateState, setUpdateState] = useState<string>('idle');
   const [checkResult, setCheckResult] = useState<string | null>(null);
-  const [autoUpdate, setAutoUpdate] = useState(getAutoUpdateEnabled);
+  const [autoUpdate, setAutoUpdate] = useAutoUpdateSetting();
 
   useEffect(() => {
     return onUpdateState((state) => {
@@ -183,7 +183,7 @@ export function SettingsPage() {
           <input
             type="checkbox"
             checked={autoUpdate}
-            onChange={(e) => { setAutoUpdate(e.target.checked); setAutoUpdateEnabled(e.target.checked); }}
+            onChange={(e) => { void setAutoUpdate(e.target.checked); }}
             style={{ accentColor: 'var(--accent)' }}
           />
           <span>

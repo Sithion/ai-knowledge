@@ -212,4 +212,17 @@ export const api = {
 
   clearLogs: () =>
     request<{ success: boolean }>('/api/logs', { method: 'DELETE' }),
+
+  // Settings (~/.cognistore/settings.json — survives app upgrades)
+  getSettings: () =>
+    request<AppSettings>('/api/settings'),
+
+  updateSettings: (patch: Partial<AppSettings>) =>
+    request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) }),
 };
+
+export interface AppSettings {
+  autoUpdate: boolean;
+  dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
+  lastSelectedRange: { from: string; to: string } | null;
+}
