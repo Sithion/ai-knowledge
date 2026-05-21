@@ -66,8 +66,11 @@ export const api = {
     return request<any[]>(`/api/knowledge/recent?${params}`);
   },
 
-  getTopTags: (limit = 10) =>
-    request<{ tag: string; count: number }[]>(`/api/metrics/top-tags?limit=${limit}`),
+  getTopTags: (limit = 10, range?: { from: string; to: string }) => {
+    const sp = new URLSearchParams({ limit: String(limit) });
+    if (range) { sp.set('from', range.from); sp.set('to', range.to); }
+    return request<{ tag: string; count: number }[]>(`/api/metrics/top-tags?${sp}`);
+  },
 
   getById: (id: string) => request(`/api/knowledge/${id}`),
 
@@ -83,7 +86,21 @@ export const api = {
   deleteEntry: (id: string) =>
     request(`/api/knowledge/${id}`, { method: 'DELETE' }),
 
-  listTags: () => request<string[]>('/api/tags'),
+  listTags: (range?: { from: string; to: string }) => {
+    if (!range) return request<string[]>('/api/tags');
+    const sp = new URLSearchParams({ from: range.from, to: range.to });
+    return request<string[]>(`/api/tags?${sp}`);
+  },
+
+  getByType: (range?: { from: string; to: string }) => {
+    const path = range ? `/api/metrics/by-type?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-type';
+    return request<{ type: string; count: number }[]>(path);
+  },
+
+  getByScope: (range?: { from: string; to: string }) => {
+    const path = range ? `/api/metrics/by-scope?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-scope';
+    return request<{ scope: string; count: number }[]>(path);
+  },
 
   getStats: () => request('/api/stats'),
 
