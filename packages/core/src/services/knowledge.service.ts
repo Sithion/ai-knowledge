@@ -215,12 +215,12 @@ export class KnowledgeService {
     return entries.map((e) => this.toKnowledgeEntry(e));
   }
 
-  async topTags(limit = 10) {
-    return this.repository.topTags(limit);
+  async topTags(limit = 10, opts: { from?: string; to?: string } = {}) {
+    return this.repository.topTags(limit, opts);
   }
 
-  async listTags(): Promise<string[]> {
-    return this.repository.listTags();
+  async listTags(opts: { from?: string; to?: string } = {}): Promise<string[]> {
+    return this.repository.listTags(opts);
   }
 
   async getStats() {
@@ -231,6 +231,14 @@ export class KnowledgeService {
       this.repository.lastUpdatedAt(),
     ]);
     return { total: count, byType, byScope, lastUpdatedAt };
+  }
+
+  async countByType(opts: { from?: string; to?: string } = {}) {
+    return this.repository.countByType(opts);
+  }
+
+  async countByScope(opts: { from?: string; to?: string } = {}) {
+    return this.repository.countByScope(opts);
   }
 
   // ─── Plans (separate entity) ────────────────────────────────

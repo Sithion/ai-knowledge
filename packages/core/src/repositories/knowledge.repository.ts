@@ -203,14 +203,35 @@ export class KnowledgeRepository {
       .limit(limit);
   }
 
-  async listTags() {
+  async listTags(opts: { from?: string; to?: string } = {}) {
+    const { from, to } = opts;
+    if (from && to) {
+      const result = await this.db.all<{ value: string }>(
+        sql`SELECT DISTINCT value FROM knowledge_entries, json_each(knowledge_entries.tags)
+            WHERE knowledge_entries.type != 'system'
+              AND knowledge_entries.created_at >= ${from}
+              AND knowledge_entries.created_at < ${to}`
+      );
+      return result.map((r) => r.value);
+    }
     const result = await this.db.all<{ value: string }>(
       sql`SELECT DISTINCT value FROM knowledge_entries, json_each(knowledge_entries.tags) WHERE knowledge_entries.type != 'system'`
     );
     return result.map((r) => r.value);
   }
 
-  async topTags(limit = 10) {
+  async topTags(limit = 10, opts: { from?: string; to?: string } = {}) {
+    const { from, to } = opts;
+    if (from && to) {
+      const result = await this.db.all<{ tag: string; count: number }>(
+        sql`SELECT value as tag, COUNT(*) as count FROM knowledge_entries, json_each(knowledge_entries.tags)
+            WHERE knowledge_entries.type != 'system'
+              AND knowledge_entries.created_at >= ${from}
+              AND knowledge_entries.created_at < ${to}
+            GROUP BY value ORDER BY count DESC LIMIT ${limit}`
+      );
+      return result;
+    }
     const result = await this.db.all<{ tag: string; count: number }>(
       sql`SELECT value as tag, COUNT(*) as count FROM knowledge_entries, json_each(knowledge_entries.tags) WHERE knowledge_entries.type != 'system' GROUP BY value ORDER BY count DESC LIMIT ${limit}`
     );
@@ -232,26 +253,38 @@ export class KnowledgeRepository {
     return result[0]?.latest ?? null;
   }
 
-  async countByType() {
+  async countByType(opts: { from?: string; to?: string } = {}) {
+    const { from, to } = opts;
+    const conditions = [ne(knowledgeEntries.type, 'system')];
+    if (from && to) {
+      conditions.push(sql`${knowledgeEntries.createdAt} >= ${from}`);
+      conditions.push(sql`${knowledgeEntries.createdAt} < ${to}`);
+    }
     const results = await this.db
       .select({
         type: knowledgeEntries.type,
         count: sql<number>`count(*)`,
       })
       .from(knowledgeEntries)
-      .where(ne(knowledgeEntries.type, 'system'))
+      .where(and(...conditions))
       .groupBy(knowledgeEntries.type);
     return results.map((r) => ({ type: r.type, count: Number(r.count) }));
   }
 
-  async countByScope() {
+  async countByScope(opts: { from?: string; to?: string } = {}) {
+    const { from, to } = opts;
+    const conditions = [ne(knowledgeEntries.type, 'system')];
+    if (from && to) {
+      conditions.push(sql`${knowledgeEntries.createdAt} >= ${from}`);
+      conditions.push(sql`${knowledgeEntries.createdAt} < ${to}`);
+    }
     const results = await this.db
       .select({
         scope: knowledgeEntries.scope,
         count: sql<number>`count(*)`,
       })
       .from(knowledgeEntries)
-      .where(ne(knowledgeEntries.type, 'system'))
+      .where(and(...conditions))
       .groupBy(knowledgeEntries.scope);
     return results.map((r) => ({ scope: r.scope, count: Number(r.count) }));
   }

@@ -43,10 +43,14 @@ export class TokenUsageScanner {
       for await (const { record, filePath, byteOffset, mtime } of adapter.scan(
         (fp) => this.repo.getScanState(adapter.name, fp),
       )) {
-        batch.push(record);
+        // record === null is a "seen this file, nothing to store yet" signal —
+        // we still record the offset so we don't reread on the next pass.
+        if (record) {
+          batch.push(record);
+          if (batch.length >= BATCH_SIZE) flush();
+        }
         offsets.set(filePath, { offset: byteOffset, mtime });
         stats.scanned++;
-        if (batch.length >= BATCH_SIZE) flush();
       }
       flush();
 

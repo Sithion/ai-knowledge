@@ -1444,10 +1444,12 @@ Pass an array to addKnowledge to create multiple entries at once.
     }
   });
 
-  app.get('/api/tags', async (_request, reply) => {
+  app.get('/api/tags', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    return sdk.listTags();
+    const q = request.query as any;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.listTags(opts);
   });
 
   app.get('/api/knowledge/recent', async (request, reply) => {
@@ -1464,8 +1466,26 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.get('/api/metrics/top-tags', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    const limit = Number((request.query as any).limit) || 10;
-    return sdk.getTopTags(limit);
+    const q = request.query as any;
+    const limit = Number(q.limit) || 10;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.getTopTags(limit, opts);
+  });
+
+  app.get('/api/metrics/by-type', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.countByType(opts);
+  });
+
+  app.get('/api/metrics/by-scope', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.countByScope(opts);
   });
 
   app.post<{ Body: Record<string, unknown> }>('/api/knowledge/search', async (request, reply) => {
