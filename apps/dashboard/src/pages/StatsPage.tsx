@@ -450,33 +450,45 @@ export function StatsPage() {
     isRefreshing,
   } = useAppSelector((s) => s.stats);
 
-  const [topTags, setTopTags] = useState<{ tag: string; count: number }[]>([]);
   const { range } = useAppSelector((s) => s.dateRange);
   const [rangedActivity, setRangedActivity] = useState<{ date: string; reads: number; writes: number }[]>([]);
   const [rangedHeatmap, setRangedHeatmap] = useState<{ date: string; count: number }[]>([]);
+  // The four "distribution" cards below also follow the global date range as of v1.4.0.
+  const [rangedTopTags, setRangedTopTags] = useState<{ tag: string; count: number }[]>([]);
+  const [rangedTags, setRangedTags] = useState<string[]>([]);
+  const [rangedByType, setRangedByType] = useState<{ type: string; count: number }[]>([]);
+  const [rangedByScope, setRangedByScope] = useState<{ scope: string; count: number }[]>([]);
   // cleanup moved to Settings page
 
-
-  const loadTopTags = useCallback(() => {
-    api.getTopTags(10).then(setTopTags).catch(() => {});
-  }, []);
 
   const refreshAll = useCallback(() => {
     dispatch(fetchStats());
     dispatch(fetchMetrics());
     dispatch(fetchTags());
-    loadTopTags();
-  }, [dispatch, loadTopTags]);
+  }, [dispatch]);
 
-  // Range-driven activity + contributions
+  // Range-driven cards: activity, contributions, top-tags, tag-cloud, by-type, by-scope
   useEffect(() => {
     let cancelled = false;
+    const r = { from: range.from, to: range.to };
     api.getActivity(range.from, range.to)
-      .then((r) => { if (!cancelled) setRangedActivity(r.operationsByDay); })
+      .then((res) => { if (!cancelled) setRangedActivity(res.operationsByDay); })
       .catch(() => { if (!cancelled) setRangedActivity([]); });
     api.getContributions(range.from, range.to)
-      .then((r) => { if (!cancelled) setRangedHeatmap(r.heatmap); })
+      .then((res) => { if (!cancelled) setRangedHeatmap(res.heatmap); })
       .catch(() => { if (!cancelled) setRangedHeatmap([]); });
+    api.getTopTags(10, r)
+      .then((res) => { if (!cancelled) setRangedTopTags(res); })
+      .catch(() => { if (!cancelled) setRangedTopTags([]); });
+    api.listTags(r)
+      .then((res) => { if (!cancelled) setRangedTags(res); })
+      .catch(() => { if (!cancelled) setRangedTags([]); });
+    api.getByType(r)
+      .then((res) => { if (!cancelled) setRangedByType(res); })
+      .catch(() => { if (!cancelled) setRangedByType([]); });
+    api.getByScope(r)
+      .then((res) => { if (!cancelled) setRangedByScope(res); })
+      .catch(() => { if (!cancelled) setRangedByScope([]); });
     return () => { cancelled = true; };
   }, [range.from, range.to]);
 
@@ -506,11 +518,19 @@ export function StatsPage() {
   }, [refreshAll]);
 
   // Never show blocking loading — always treat as loaded or empty
-  const hasTypeData = metrics && metrics.typeDistribution.length > 0;
-  const hasScopeData = stats && stats.byScope.length > 0;
+  const rangedTypeData = rangedByType.map((t) => ({
+    name: t.type ? t.type.charAt(0).toUpperCase() + t.type.slice(1) : 'Unknown',
+    value: t.count,
+  }));
+  const hasTypeData = rangedTypeData.length > 0;
+  const hasScopeData = rangedByScope.length > 0;
   const hasActivityData = rangedActivity.some((d) => d.reads + d.writes > 0);
   const hasHeatmap = rangedHeatmap.length > 0;
-  const hasTags = tags.length > 0;
+  const hasTags = rangedTags.length > 0;
+  const hasTopTags = rangedTopTags.length > 0;
+  // Silence unused warnings — `metrics`, `stats.byScope`, and `tags` are still
+  // populated by polling for the Total Entries card and future consumers.
+  void metrics; void stats?.byScope; void tags;
 
   return (
     <div>
@@ -555,20 +575,24 @@ export function StatsPage() {
         />
       </div>
 
-      {/* ── Charts Row ── */}
+      {/* ── Charts Row (range-driven as of v1.4.0) ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 24 }}>
         {/* Type Distribution */}
-        <WidgetCard title={t('stats.knowledgeByType')} state={hasTypeData ? 'loaded' : 'empty'}>
-          {metrics && metrics.typeDistribution.length > 0 && (
-            <TypeDistribution data={metrics.typeDistribution} />
-          )}
+        <WidgetCard
+          title={`${t('stats.knowledgeByType')} ${t('stats.thisPeriod')}`}
+          state={hasTypeData ? 'loaded' : 'empty'}
+          emptyText={t('stats.noData')}
+        >
+          {hasTypeData && <TypeDistribution data={rangedTypeData} />}
         </WidgetCard>
 
         {/* Scope Distribution */}
-        <WidgetCard title={t('stats.knowledgeByScope')} state={hasScopeData ? 'loaded' : 'empty'}>
-          {stats && stats.byScope.length > 0 && (
-            <ScopeDistribution data={stats.byScope} />
-          )}
+        <WidgetCard
+          title={`${t('stats.knowledgeByScope')} ${t('stats.thisPeriod')}`}
+          state={hasScopeData ? 'loaded' : 'empty'}
+          emptyText={t('stats.noData')}
+        >
+          {hasScopeData && <ScopeDistribution data={rangedByScope} />}
         </WidgetCard>
       </div>
 
@@ -618,29 +642,33 @@ export function StatsPage() {
         })()}
       </WidgetCard>
 
-      {/* ── Contribution Heatmap + Top Tags ── */}
+      {/* ── Contribution Heatmap + Top Tags (both range-driven) ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 24 }}>
         <WidgetCard
-          title={t('stats.contributions')}
+          title={`${t('stats.contributions')} ${t('stats.thisPeriod')}`}
           state={hasHeatmap ? 'loaded' : 'empty'}
         >
           {hasHeatmap && <ContributionHeatmap data={rangedHeatmap} />}
         </WidgetCard>
 
         <WidgetCard
-          title={t('stats.topTags')}
-          state={topTags.length > 0 ? 'loaded' : 'empty'}
+          title={`${t('stats.topTags')} ${t('stats.thisPeriod')}`}
+          state={hasTopTags ? 'loaded' : 'empty'}
           emptyText={t('stats.noTags')}
         >
-          {topTags.length > 0 && <TopTagsChart data={topTags} />}
+          {hasTopTags && <TopTagsChart data={rangedTopTags} />}
         </WidgetCard>
       </div>
 
-      {/* ── Tag Cloud ── */}
-      <WidgetCard title={t('stats.tagCloud')} state={hasTags ? 'loaded' : 'empty'}>
-        {tags.length > 0 && (
+      {/* ── Tag Cloud (range-driven) ── */}
+      <WidgetCard
+        title={`${t('stats.tagCloud')} ${t('stats.thisPeriod')}`}
+        state={hasTags ? 'loaded' : 'empty'}
+        emptyText={t('stats.noTags')}
+      >
+        {hasTags && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {tags.slice(0, 30).map((tag, i) => (
+            {rangedTags.slice(0, 30).map((tag, i) => (
               <span
                 key={tag}
                 style={{
