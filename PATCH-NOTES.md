@@ -1,12 +1,19 @@
 # Patch Notes
 
-## v1.3.1
+## v1.4.0
 
 ### Features
-- **Range-aware Consulted / Written cards on Stats**: Brings back the at-a-glance Consulted and Written counters that were removed in v1.3.0, but now they reflect the period chosen by the global date-range picker (1D / 1W / 1M / 1Y / custom) instead of the old fixed 1h / 24h windows. Total Entries remains range-independent (it's a "right now" count of the DB), so it stays at the top alone; Consulted and Written sit below it and update live whenever the picker changes. No new backend endpoint — the values are aggregated client-side from the same `rangedActivity` series the chart already loads.
+- **GitHub Copilot CLI token consumption**: A second token adapter joins the existing Claude Code adapter and reads from `~/.copilot/session-state/<sessionId>/events.jsonl` (Copilot CLI v1.x). Sessions with a `session.shutdown` event emit one record per model used (Opus / Sonnet / Haiku / GPT-x) with input / output / cache-read / cache-creation tokens, plus the project decoded from `session.start.data.context.cwd`. Live verification on a real `~/.copilot` directory: 247 records across 25+ projects, all five models attributed correctly. Sessions still active when scanned are skipped until they shut down; no extra config required.
+- **All distribution cards on Stats follow the date range picker**: Knowledge by Type, Knowledge by Scope, Top Tags, and Tag Cloud were always-time totals — useless once the user had picked a 1-week window for everything else. They now refetch on range change via the new `/api/metrics/by-type`, `/api/metrics/by-scope`, and the existing top-tags + tags endpoints (both now accept optional `from`/`to`). Card titles get a small `(this period)` suffix in en/es/pt so the source is obvious. Total Entries remains range-independent.
+- **Range-aware Consulted / Written cards on Stats**: Brings back the at-a-glance Consulted and Written counters that were removed in v1.3.0, but now they reflect the period chosen by the global date-range picker (1D / 1W / 1M / 1Y / custom) instead of the old fixed 1h / 24h windows.
+- **Scrollable Stats cards**: `WidgetCard` gains an optional `maxBodyHeight` prop. Knowledge by Type / Scope / Top Tags / Tag Cloud now cap at 380px with internal vertical scroll, so a user with 30+ workspaces no longer sees one card push everything else off-screen.
 
 ### Security
-- **Drop unused `@tanstack/react-query` dependency**: The package was declared in `apps/dashboard/package.json` but never imported anywhere in the codebase. Removing it eliminates the transitive attack surface from a dependency that, even if patched against any specific CVE, was providing zero functional value. Verified: `grep -r "@tanstack" packages/ apps/ --include="*.ts" --include="*.tsx"` returns no matches; lockfile is now free of `@tanstack/*` packages.
+- **Drop unused `@tanstack/react-query` dependency**: The package was declared in `apps/dashboard/package.json` but never imported anywhere in the codebase. Removing it eliminates the transitive attack surface from a dependency that was providing zero functional value. Verified: zero `@tanstack/*` packages in the lockfile post-install.
+
+### Infrastructure
+- **Repository range overloads**: `countByType`, `countByScope`, `topTags`, and `listTags` in `knowledge.repository.ts` accept optional `{ from, to }` ISO date params. When both are present, queries filter `created_at >= from AND created_at < to` (closed-open, matching the existing contributions endpoint). When omitted, behavior is identical to today so the Knowledge Stats widget, MCP server, and any other no-range caller keep working unchanged.
+- **Adapter pattern proven**: `TokenSourceAdapter.scan()` now allows `record === null` so adapters can mark a file as "seen at this size, nothing to store yet" (used by Copilot for in-progress sessions). The scanner still advances `scan_state` so the next pass skips it until more bytes arrive.
 
 ## v1.3.0
 
