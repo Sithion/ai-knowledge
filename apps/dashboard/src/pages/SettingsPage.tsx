@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client.js';
-import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, getAutoUpdateEnabled, setAutoUpdateEnabled } from '../components/UpdateChecker.js';
+import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, useAutoUpdateSetting } from '../components/UpdateChecker.js';
 import { ConfirmModal } from '../components/ConfirmModal.js';
 
 interface Health {
@@ -24,7 +24,16 @@ export function SettingsPage() {
   const [uninstallStep, setUninstallStep] = useState(0);
   const [updateState, setUpdateState] = useState<string>('idle');
   const [checkResult, setCheckResult] = useState<string | null>(null);
-  const [autoUpdate, setAutoUpdate] = useState(getAutoUpdateEnabled);
+  const [autoUpdate, setAutoUpdate] = useAutoUpdateSetting();
+  const [dbSize, setDbSize] = useState<{ sizeFormatted: string; path: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getMetrics()
+      .then((m) => { if (!cancelled) setDbSize(m.database); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     return onUpdateState((state) => {
@@ -93,6 +102,24 @@ export function SettingsPage() {
             ok={health.ollama.connected}
             detail={health.ollama.connected ? `${health.ollama.model} @ ${health.ollama.host}` : health.ollama.error}
           />
+          <div style={{
+            backgroundColor: 'var(--bg-card)', borderRadius: 10,
+            border: '1px solid var(--border)',
+            padding: 20, flex: 1, minWidth: 200,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 20 }}>💾</span>
+              <span style={{ fontSize: 16, fontWeight: 600 }}>{t('stats.dbSize')}</span>
+            </div>
+            <span style={{ color: 'var(--accent)', fontSize: 20, fontWeight: 700 }}>
+              {dbSize?.sizeFormatted ?? '—'}
+            </span>
+            {dbSize?.path && (
+              <p style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 4, wordBreak: 'break-all' }}>
+                {dbSize.path}
+              </p>
+            )}
+          </div>
         </div>
       ) : (
         <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>{t('stats.loading')}</p>
@@ -183,7 +210,7 @@ export function SettingsPage() {
           <input
             type="checkbox"
             checked={autoUpdate}
-            onChange={(e) => { setAutoUpdate(e.target.checked); setAutoUpdateEnabled(e.target.checked); }}
+            onChange={(e) => { void setAutoUpdate(e.target.checked); }}
             style={{ accentColor: 'var(--accent)' }}
           />
           <span>

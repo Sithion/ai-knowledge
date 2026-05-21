@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { useAppDispatch, useAppSelector } from '../store/index.js';
 import { fetchStats, fetchMetrics, fetchTags } from '../store/statsSlice.js';
+import { DateRangePicker } from '../components/DateRangePicker.js';
 
 /* ── Constants ── */
 
@@ -450,6 +451,9 @@ export function StatsPage() {
   } = useAppSelector((s) => s.stats);
 
   const [topTags, setTopTags] = useState<{ tag: string; count: number }[]>([]);
+  const { range } = useAppSelector((s) => s.dateRange);
+  const [rangedActivity, setRangedActivity] = useState<{ date: string; reads: number; writes: number }[]>([]);
+  const [rangedHeatmap, setRangedHeatmap] = useState<{ date: string; count: number }[]>([]);
   // cleanup moved to Settings page
 
 
@@ -463,6 +467,18 @@ export function StatsPage() {
     dispatch(fetchTags());
     loadTopTags();
   }, [dispatch, loadTopTags]);
+
+  // Range-driven activity + contributions
+  useEffect(() => {
+    let cancelled = false;
+    api.getActivity(range.from, range.to)
+      .then((r) => { if (!cancelled) setRangedActivity(r.operationsByDay); })
+      .catch(() => { if (!cancelled) setRangedActivity([]); });
+    api.getContributions(range.from, range.to)
+      .then((r) => { if (!cancelled) setRangedHeatmap(r.heatmap); })
+      .catch(() => { if (!cancelled) setRangedHeatmap([]); });
+    return () => { cancelled = true; };
+  }, [range.from, range.to]);
 
   // Initial fetch
   useEffect(() => {
@@ -492,8 +508,8 @@ export function StatsPage() {
   // Never show blocking loading — always treat as loaded or empty
   const hasTypeData = metrics && metrics.typeDistribution.length > 0;
   const hasScopeData = stats && stats.byScope.length > 0;
-  const hasActivityData = metrics && metrics.activityByDay.some((d) => d.count > 0);
-  const hasHeatmap = metrics?.heatmap;
+  const hasActivityData = rangedActivity.some((d) => d.reads + d.writes > 0);
+  const hasHeatmap = rangedHeatmap.length > 0;
   const hasTags = tags.length > 0;
 
   return (
@@ -501,36 +517,28 @@ export function StatsPage() {
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* ── Header ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700 }}>{t('statsTitle.knowledge')}</h1>
-        {isRefreshing && (
-          <div
-            style={{
-              width: 14,
-              height: 14,
-              border: '2px solid var(--border)',
-              borderTopColor: 'var(--accent)',
-              borderRadius: '50%',
-              animation: 'spin 0.8s linear infinite',
-            }}
-          />
-        )}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 700 }}>{t('statsTitle.knowledge')}</h1>
+          {isRefreshing && (
+            <div
+              style={{
+                width: 14,
+                height: 14,
+                border: '2px solid var(--border)',
+                borderTopColor: 'var(--accent)',
+                borderRadius: '50%',
+                animation: 'spin 0.8s linear infinite',
+              }}
+            />
+          )}
+        </div>
+        <DateRangePicker />
       </div>
 
-      {/* ── Metric Cards Row ── */}
+      {/* ── Total Entries (only metric card that stays) ── */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
         <MetricCard label={t('stats.totalEntries')} value={stats?.total ?? 0} />
-        <MetricCard label={t('stats.last24h')} value={metrics?.activity.last24h ?? 0} sub={t('stats.newEntries')} />
-        <MetricCard label={t('stats.last7d')} value={metrics?.activity.last7d ?? 0} sub={t('stats.newEntries')} />
-        <MetricCard label={t('stats.dbSize')} value={metrics?.database.sizeFormatted ?? '-'} sub={metrics?.database.path} />
-      </div>
-
-      {/* ── Operations Row ── */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
-        <MetricCard label={t('stats.consulted1h')} value={metrics?.operations?.readsLastHour ?? 0} sub={t('stats.consultedSub')} />
-        <MetricCard label={t('stats.consulted24h')} value={metrics?.operations?.readsLastDay ?? 0} sub={t('stats.consultedSub')} />
-        <MetricCard label={t('stats.written1h')} value={metrics?.operations?.writesLastHour ?? 0} sub={t('stats.writtenSub')} />
-        <MetricCard label={t('stats.written24h')} value={metrics?.operations?.writesLastDay ?? 0} sub={t('stats.writtenSub')} />
       </div>
 
       {/* ── Charts Row ── */}
@@ -550,15 +558,15 @@ export function StatsPage() {
         </WidgetCard>
       </div>
 
-      {/* ── Activity Chart ── */}
+      {/* ── Activity Chart (driven by global range) ── */}
       <WidgetCard
-        title={t('stats.activity15d')}
+        title={t('stats.activity')}
         state={hasActivityData ? 'loaded' : 'empty'}
-        emptyText={t('stats.noActivity15d')}
+        emptyText={t('stats.noActivity')}
         style={{ marginBottom: 24 }}
       >
-        {metrics && metrics.operationsByDay && metrics.operationsByDay.length > 0 && (() => {
-          const chartData = metrics.operationsByDay.map((d) => ({
+        {rangedActivity.length > 0 && (() => {
+          const chartData = rangedActivity.map((d) => ({
             date: d.date,
             total: d.reads + d.writes,
             reads: d.reads,
@@ -599,10 +607,10 @@ export function StatsPage() {
       {/* ── Contribution Heatmap + Top Tags ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 24 }}>
         <WidgetCard
-          title={t('stats.contributions90d')}
+          title={t('stats.contributions')}
           state={hasHeatmap ? 'loaded' : 'empty'}
         >
-          {metrics?.heatmap && <ContributionHeatmap data={metrics.heatmap} />}
+          {hasHeatmap && <ContributionHeatmap data={rangedHeatmap} />}
         </WidgetCard>
 
         <WidgetCard

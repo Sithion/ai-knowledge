@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { api } from '../api/client.js';
 
 declare const __APP_VERSION__: string;
 
@@ -22,16 +23,62 @@ let latestReleaseUrl = '';
 /** Detect Tauri environment — check both v2 internals and legacy global */
 const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
 
-const AUTO_UPDATE_KEY = 'cognistore-auto-update';
+/** Legacy localStorage key — kept only for one-shot migration to settings.json. */
+const LEGACY_AUTO_UPDATE_KEY = 'cognistore-auto-update';
 
-/** Get whether auto-update is enabled (default: false) */
-export function getAutoUpdateEnabled(): boolean {
-  try { return localStorage.getItem(AUTO_UPDATE_KEY) === 'true'; } catch { return false; }
+/**
+ * Pre-warmed cache so the 30-min interval can fire synchronously.
+ * Hydrated by useAutoUpdateSetting() on mount.
+ */
+let autoUpdateCache: boolean = false;
+
+/** Returns the cached auto-update value. Hydration happens via useAutoUpdateSetting(). */
+function getAutoUpdateEnabledCached(): boolean {
+  return autoUpdateCache;
 }
 
-/** Set auto-update preference */
-export function setAutoUpdateEnabled(value: boolean): void {
-  try { localStorage.setItem(AUTO_UPDATE_KEY, String(value)); } catch { /* ignore */ }
+/**
+ * One-shot migration: copy legacy localStorage value to settings.json on first read,
+ * then forget the localStorage key.
+ */
+async function migrateLegacyAutoUpdate(): Promise<void> {
+  let legacy: string | null = null;
+  try { legacy = localStorage.getItem(LEGACY_AUTO_UPDATE_KEY); } catch { /* ignore */ }
+  if (legacy === null) return;
+  try {
+    await api.updateSettings({ autoUpdate: legacy === 'true' });
+    try { localStorage.removeItem(LEGACY_AUTO_UPDATE_KEY); } catch { /* ignore */ }
+  } catch { /* server might not be ready — try again next mount */ }
+}
+
+/**
+ * Hook for reading/writing the auto-update preference, backed by ~/.cognistore/settings.json.
+ * Also hydrates the module-level cache used by the 30-min interval.
+ */
+export function useAutoUpdateSetting(): [boolean, (value: boolean) => Promise<void>] {
+  const [value, setValue] = useState<boolean>(autoUpdateCache);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await migrateLegacyAutoUpdate();
+      try {
+        const settings = await api.getSettings();
+        if (cancelled) return;
+        autoUpdateCache = !!settings.autoUpdate;
+        setValue(autoUpdateCache);
+      } catch { /* keep current cache */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const update = useCallback(async (next: boolean) => {
+    autoUpdateCache = next;
+    setValue(next);
+    try { await api.updateSettings({ autoUpdate: next }); } catch { /* swallow */ }
+  }, []);
+
+  return [value, update];
 }
 
 /** Trigger an update check from anywhere (manual = shows feedback) */
@@ -82,6 +129,9 @@ export function UpdateChecker() {
   const [dismissed, setDismissed] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState('');
   const manualRef = useRef(false);
+  // Hydrate the module-level cache so the 30-min interval reads a fresh value.
+  // The component doesn't render anything based on it — it only wants the side effect.
+  useAutoUpdateSetting();
 
   const broadcastState = useCallback((s: UpdateState) => {
     setState(s);
@@ -151,7 +201,7 @@ export function UpdateChecker() {
           (window as any).__pendingUpdate = update;
 
           // Auto-download in background (only if auto-update is enabled)
-          if (getAutoUpdateEnabled()) {
+          if (getAutoUpdateEnabledCached()) {
             setTimeout(() => downloadAndInstall(), 500);
           }
         } else {
@@ -211,7 +261,7 @@ export function UpdateChecker() {
 
   // Check on mount + every 30 minutes (only if auto-update is enabled)
   useEffect(() => {
-    if (!getAutoUpdateEnabled()) return;
+    if (!getAutoUpdateEnabledCached()) return;
     const initial = setTimeout(checkForUpdate, 2000);
     const interval = setInterval(checkForUpdate, CHECK_INTERVAL_MS);
     return () => { clearTimeout(initial); clearInterval(interval); };

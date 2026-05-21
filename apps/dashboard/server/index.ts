@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -72,6 +72,45 @@ function log(level: 'info' | 'warn' | 'error', message: string): void {
 // Rotate on startup
 rotateLog();
 log('info', `CogniStore server starting (v${APP_VERSION})`);
+
+// ─── User settings (survives upgrades) ────────────────────────
+const SETTINGS_FILE = resolve(INSTALL_DIR, 'settings.json');
+
+export interface AppSettings {
+  autoUpdate: boolean;
+  dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
+  lastSelectedRange: { from: string; to: string } | null;
+}
+
+const SETTINGS_DEFAULTS: AppSettings = {
+  autoUpdate: false,
+  dateRangePreset: '1w',
+  lastSelectedRange: null,
+};
+
+function readSettings(): AppSettings {
+  try {
+    if (!existsSync(SETTINGS_FILE)) return { ...SETTINGS_DEFAULTS };
+    const parsed = JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8')) as Partial<AppSettings>;
+    return { ...SETTINGS_DEFAULTS, ...parsed };
+  } catch {
+    return { ...SETTINGS_DEFAULTS };
+  }
+}
+
+function writeSettings(patch: Partial<AppSettings>): AppSettings {
+  const merged: AppSettings = { ...readSettings(), ...patch };
+  mkdirSync(INSTALL_DIR, { recursive: true });
+  const tmp = SETTINGS_FILE + '.tmp';
+  writeFileSync(tmp, JSON.stringify(merged, null, 2));
+  try {
+    renameSync(tmp, SETTINGS_FILE);
+  } catch {
+    copyFileSync(tmp, SETTINGS_FILE);
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+  }
+  return merged;
+}
 
 /** Compare two semver strings. Returns positive if a > b, negative if a < b, zero if equal. */
 function compareSemver(a: string, b: string): number {
@@ -180,6 +219,11 @@ Pass an array to addKnowledge to create multiple entries at once.
   setInterval(() => {
     if (sdkReady) { try { sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(); sdk.walCheckpoint(); } catch { /* silent */ } }
   }, 6 * 60 * 60 * 1000);
+
+  // Token usage scan every 5 minutes — incremental, idempotent.
+  setInterval(() => {
+    if (sdkReady) { sdk.scanTokenUsage().catch((e) => log('warn', `Token scan failed: ${e?.message ?? e}`)); }
+  }, 5 * 60 * 1000);
 
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
@@ -1320,6 +1364,86 @@ Pass an array to addKnowledge to create multiple entries at once.
     }
   });
 
+  // ─── Ranged metrics (driven by the global date-range picker) ────
+
+  /** Days inclusive between two ISO dates — clamped to 1..365. */
+  const daysBetween = (fromISO: string, toISO: string): number => {
+    const from = new Date(fromISO).getTime();
+    const to = new Date(toISO).getTime();
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return 7;
+    const diffDays = Math.floor((to - from) / (24 * 60 * 60 * 1000)) + 1;
+    return Math.max(1, Math.min(365, diffDays));
+  };
+
+  /** Build a contiguous day series of zeros for the requested range. */
+  const buildDateSeries = (fromISO: string, toISO: string): string[] => {
+    const out: string[] = [];
+    const start = new Date(fromISO);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(toISO);
+    end.setUTCHours(0, 0, 0, 0);
+    for (let d = start; d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      out.push(d.toISOString().split('T')[0]);
+    }
+    return out;
+  };
+
+  app.get<{ Querystring: { from?: string; to?: string } }>('/api/metrics/activity', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const { from, to } = request.query;
+    if (!from || !to) { reply.code(400); return { error: 'from and to are required (ISO date)' }; }
+    const days = daysBetween(from, to);
+    const rows = sdk.getOperationsByDay(days);
+    // Filter to the exact requested range — getOperationsByDay returns the
+    // last N days from "now", which is close enough for the common case
+    // (presets) and gets re-trimmed here for custom ranges.
+    const set = new Set(buildDateSeries(from, to));
+    const operationsByDay = rows.filter((r) => set.has(r.date));
+    return { operationsByDay };
+  });
+
+  app.get<{ Querystring: { from?: string; to?: string } }>('/api/metrics/contributions', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const { from, to } = request.query;
+    if (!from || !to) { reply.code(400); return { error: 'from and to are required (ISO date)' }; }
+    // Same recent-entry strategy as /api/metrics — heatmap bucket counts.
+    const recent = await sdk.listRecent(5000);
+    const series = buildDateSeries(from, to);
+    const counts = new Map<string, number>(series.map((d) => [d, 0]));
+    for (const e of recent) {
+      const date = new Date((e as any).createdAt).toISOString().split('T')[0];
+      if (counts.has(date)) counts.set(date, (counts.get(date) ?? 0) + 1);
+    }
+    return { heatmap: series.map((date) => ({ date, count: counts.get(date) ?? 0 })) };
+  });
+
+  // ─── Token usage ────────────────────────────────────────────────
+
+  app.get<{ Querystring: { from?: string; to?: string; source?: string; model?: string; project?: string } }>(
+    '/api/token-usage',
+    async (request, reply) => {
+      const err = ensureReady(reply);
+      if (err) return err;
+      const { from, to, source, model, project } = request.query;
+      if (!from || !to) { reply.code(400); return { error: 'from and to are required (ISO date)' }; }
+      return sdk.getTokenUsage({ from, to, source, model, project });
+    },
+  );
+
+  app.post('/api/token-usage/scan', async (_request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    try {
+      const result = await sdk.scanTokenUsage();
+      return { success: true, ...result };
+    } catch (e: any) {
+      reply.code(500);
+      return { success: false, error: e?.message ?? String(e) };
+    }
+  });
+
   app.get('/api/tags', async (_request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
@@ -1654,6 +1778,19 @@ Pass an array to addKnowledge to create multiple entries at once.
     }
   });
 
+  // ─── Settings (~/.cognistore/settings.json) ─────────────────────
+
+  app.get('/api/settings', async () => readSettings());
+
+  app.put<{ Body: Partial<AppSettings> }>('/api/settings', async (request, reply) => {
+    const body = request.body;
+    if (!body || typeof body !== 'object') {
+      reply.code(400);
+      return { error: 'Body must be an object' };
+    }
+    return writeSettings(body);
+  });
+
   // ─── Start server ──────────────────────────────────────────────
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
@@ -1663,11 +1800,21 @@ Pass an array to addKnowledge to create multiple entries at once.
   // On fresh installs, ensureModel() pulls the Ollama model (streaming download)
   // which can take minutes. The health endpoint returns 200+token regardless of
   // SDK state, and all data routes guard with ensureReady() (503).
+  const initialTokenScan = async () => {
+    try {
+      const res = await sdk.scanTokenUsage();
+      if (res.inserted > 0) log('info', `Token scan: inserted ${res.inserted} rows`);
+    } catch (e: any) {
+      log('warn', `Initial token scan failed: ${e?.message ?? e}`);
+    }
+  };
+
   (async () => {
     const initOk = await tryInitSDK();
     if (initOk) {
       log('info', 'SDK initialized successfully');
       await seedSystemKnowledge();
+      void initialTokenScan();
     } else {
       log('warn', `SDK initialization failed (degraded mode): ${sdkError}`);
       retryInterval = setInterval(async () => {
@@ -1675,6 +1822,7 @@ Pass an array to addKnowledge to create multiple entries at once.
         if (ok) {
           log('info', 'SDK initialized (recovered from degraded mode)');
           await seedSystemKnowledge();
+          void initialTokenScan();
         }
       }, 10000);
     }

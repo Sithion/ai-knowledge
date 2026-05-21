@@ -16,6 +16,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { key: 'home', path: '/', icon: '🔍' },
   { key: 'plans', path: '/plans', icon: '📋' },
+  { key: 'tokenConsumption', path: '/tokens', icon: '🔋' },
   {
     key: 'stats', path: '/stats', icon: '📊',
     children: [

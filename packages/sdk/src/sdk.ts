@@ -3,8 +3,13 @@ import {
   createEmbeddingsTable,
   KnowledgeRepository,
   KnowledgeService,
+  TokenUsageRepository,
+  TokenUsageService,
   type Database,
   type SQLiteDatabase,
+  type TokenUsageAggregates,
+  type TokenUsageFilter,
+  type ScanResult,
 } from '@cognistore/core';
 import { OllamaEmbeddingClient, checkOllamaHealth } from '@cognistore/embeddings';
 import {
@@ -33,6 +38,7 @@ export class KnowledgeSDK {
   private db: Database | null = null;
   private sqlite: SQLiteDatabase | null = null;
   private service: KnowledgeService | null = null;
+  private tokenService: TokenUsageService | null = null;
   private ollamaClient: OllamaEmbeddingClient;
   private initialized = false;
 
@@ -75,6 +81,10 @@ export class KnowledgeSDK {
       // Step 4: Create service
       const repository = new KnowledgeRepository(this.db!, this.sqlite!);
       this.service = new KnowledgeService(repository, this.ollamaClient);
+
+      // Step 5: Token usage tracking (purely additive — no embedding needed).
+      const tokenRepo = new TokenUsageRepository(this.sqlite!);
+      this.tokenService = new TokenUsageService(tokenRepo);
 
       this.initialized = true;
     } catch (error) {
@@ -366,6 +376,18 @@ export class KnowledgeSDK {
     return this.service!.cleanupOldOperations();
   }
 
+  // ─── Token usage ────────────────────────────────────────────
+
+  async scanTokenUsage(): Promise<ScanResult> {
+    this.ensureInitialized();
+    return this.tokenService!.scan();
+  }
+
+  getTokenUsage(filter: TokenUsageFilter): TokenUsageAggregates {
+    this.ensureInitialized();
+    return this.tokenService!.getAggregates(filter);
+  }
+
   cleanupCompletedPlanEmbeddings(maxAgeDays = 30) {
     if (!this.initialized || !this.service) return 0;
     return this.service!.cleanupCompletedPlanEmbeddings(maxAgeDays);
@@ -456,6 +478,7 @@ export class KnowledgeSDK {
     }
     this.db = null;
     this.service = null;
+    this.tokenService = null;
   }
 
   /**
