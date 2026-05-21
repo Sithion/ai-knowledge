@@ -174,21 +174,39 @@ export class KnowledgeSDK {
     }
   }
 
-  async getTopTags(limit = 10) {
+  async getTopTags(limit = 10, opts: { from?: string; to?: string } = {}) {
     this.ensureInitialized();
     try {
-      return await this.service!.topTags(limit);
+      return await this.service!.topTags(limit, opts);
     } catch (error) {
       throw this.wrapError(error, 'Failed to get top tags');
     }
   }
 
-  async listTags(): Promise<string[]> {
+  async listTags(opts: { from?: string; to?: string } = {}): Promise<string[]> {
     this.ensureInitialized();
     try {
-      return await this.service!.listTags();
+      return await this.service!.listTags(opts);
     } catch (error) {
       throw this.wrapError(error, 'Failed to list tags');
+    }
+  }
+
+  async countByType(opts: { from?: string; to?: string } = {}) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.countByType(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to count by type');
+    }
+  }
+
+  async countByScope(opts: { from?: string; to?: string } = {}) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.countByScope(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to count by scope');
     }
   }
 
