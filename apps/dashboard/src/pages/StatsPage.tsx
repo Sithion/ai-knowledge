@@ -54,6 +54,7 @@ function WidgetCard({
   emptyText = '',
   errorText = '',
   style,
+  maxBodyHeight,
 }: {
   title: string;
   state: WidgetState;
@@ -61,7 +62,16 @@ function WidgetCard({
   emptyText?: string;
   errorText?: string;
   style?: React.CSSProperties;
+  /**
+   * When set, the body wrapper caps at this height and scrolls vertically.
+   * Useful for cards whose content is unbounded (e.g. ~30 scopes), so they
+   * don't push the rest of the page down.
+   */
+  maxBodyHeight?: number | string;
 }) {
+  const bodyStyle: CSSProperties | undefined = maxBodyHeight
+    ? { maxHeight: maxBodyHeight, overflowY: 'auto', overflowX: 'hidden', paddingRight: 4 }
+    : undefined;
   return (
     <div
       style={{
@@ -70,7 +80,7 @@ function WidgetCard({
         border: '1px solid var(--border)',
         padding: 20,
         position: 'relative',
-        overflow: 'hidden',
+        overflow: maxBodyHeight ? 'visible' : 'hidden',
         ...style,
       }}
     >
@@ -84,7 +94,9 @@ function WidgetCard({
       {state === 'empty' && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, textAlign: 'center', padding: 16 }}>{emptyText}</p>
       )}
-      {(state === 'loaded' || (state === 'loading' && children)) && children}
+      {(state === 'loaded' || (state === 'loading' && children)) && (
+        bodyStyle ? <div style={bodyStyle}>{children}</div> : children
+      )}
     </div>
   );
 }
@@ -582,6 +594,7 @@ export function StatsPage() {
           title={`${t('stats.knowledgeByType')} ${t('stats.thisPeriod')}`}
           state={hasTypeData ? 'loaded' : 'empty'}
           emptyText={t('stats.noData')}
+          maxBodyHeight={380}
         >
           {hasTypeData && <TypeDistribution data={rangedTypeData} />}
         </WidgetCard>
@@ -591,6 +604,7 @@ export function StatsPage() {
           title={`${t('stats.knowledgeByScope')} ${t('stats.thisPeriod')}`}
           state={hasScopeData ? 'loaded' : 'empty'}
           emptyText={t('stats.noData')}
+          maxBodyHeight={380}
         >
           {hasScopeData && <ScopeDistribution data={rangedByScope} />}
         </WidgetCard>
@@ -655,6 +669,7 @@ export function StatsPage() {
           title={`${t('stats.topTags')} ${t('stats.thisPeriod')}`}
           state={hasTopTags ? 'loaded' : 'empty'}
           emptyText={t('stats.noTags')}
+          maxBodyHeight={380}
         >
           {hasTopTags && <TopTagsChart data={rangedTopTags} />}
         </WidgetCard>
@@ -665,6 +680,7 @@ export function StatsPage() {
         title={`${t('stats.tagCloud')} ${t('stats.thisPeriod')}`}
         state={hasTags ? 'loaded' : 'empty'}
         emptyText={t('stats.noTags')}
+        maxBodyHeight={380}
       >
         {hasTags && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
