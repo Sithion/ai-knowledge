@@ -1,5 +1,24 @@
 # Patch Notes
 
+## v1.3.0
+
+### Features
+- **Token Consumption page**: New top-level `/tokens` view that tracks how many input / output / cache-read / cache-write tokens you spend in AI coding tools. Includes a stacked daily activity area chart, a model ranking, a cache-efficiency gauge (`cache_read / (input + cache_read + cache_write)`), a 7×24 time-of-day heatmap, and top-projects + top-sessions tables. v1.3.0 ships a Claude Code adapter that parses `~/.claude/projects/<cwd>/<session>.jsonl` incrementally; adapters for Copilot (OTel) and Cursor can be added later without schema or UI changes.
+- **Token Consumption widget**: Compact floating widget showing the four 7-day totals; click the header to open the full page. Available from the Widgets page and the tray submenu, with position persistence.
+- **Global date-range picker**: New picker (1D / 1W / 1M / 1Y / custom calendar via `react-day-picker` v9) at the top of the Stats and Token Consumption pages. The chosen range drives Activity, Contributions, and the entire Token Consumption page, replacing the previous fixed 15-day and 90-day windows.
+- **`getTokenUsage` MCP tool**: Read-only tool that returns the same aggregations as the dashboard for a given date range, optionally filtered by source / model / project.
+
+### Fixes
+- **Auto-update preference now survives upgrades**: The toggle previously lived in `localStorage`, which the Tauri webview can wipe across app re-installs and major upgrades, silently flipping the preference back to OFF. It now lives in `~/.cognistore/settings.json` (next to `widgets.json`, which is already known to survive upgrades) and is migrated from the legacy localStorage key on first launch.
+
+### Improvements
+- **Dashboard redesign**: The Stats page drops the always-confusing hourly/daily op counters (Consulted/Written 1h/24h) and the duplicated `Last 24h` / `Last 7d` / `Database Size` cards. Only `Total Entries` and the two range-driven charts remain. `Database Size` moves to Settings next to the other infrastructure cards.
+
+### Infrastructure
+- **`token_usage` + `scan_state` tables** (migration `1.3.0.sql`, also mirrored to `migrate.ts`'s `EMBEDDED_MIGRATIONS` so the bundled sidecar and the bundled MCP server get the schema without an on-disk migrations directory).
+- **Background token scan**: 5-minute incremental scan loop in the Fastify sidecar, plus a one-shot scan on SDK ready. `INSERT OR IGNORE` with a deterministic id (sha256 of `source|sessionId|messageId|occurredAt`) keeps re-scans idempotent; per-file `scan_state.last_offset` keeps them cheap.
+- **New endpoints**: `GET /api/token-usage`, `POST /api/token-usage/scan`, `GET /api/metrics/activity?from&to`, `GET /api/metrics/contributions?from&to`, `GET /api/settings`, `PUT /api/settings`. The existing `/api/metrics` is preserved unchanged so the Knowledge Stats widget keeps working.
+
 ## v1.2.2
 
 ### Fixes
