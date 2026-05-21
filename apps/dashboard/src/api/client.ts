@@ -219,7 +219,42 @@ export const api = {
 
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+
+  // Ranged metrics (driven by the global date-range picker)
+  getActivity: (from: string, to: string) =>
+    request<{ operationsByDay: { date: string; reads: number; writes: number }[] }>(
+      `/api/metrics/activity?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+
+  getContributions: (from: string, to: string) =>
+    request<{ heatmap: { date: string; count: number }[] }>(
+      `/api/metrics/contributions?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+
+  // Token usage
+  getTokenUsage: (params: { from: string; to: string; source?: string; model?: string; project?: string }) => {
+    const sp = new URLSearchParams({ from: params.from, to: params.to });
+    if (params.source) sp.set('source', params.source);
+    if (params.model) sp.set('model', params.model);
+    if (params.project) sp.set('project', params.project);
+    return request<TokenUsageAggregates>(`/api/token-usage?${sp}`);
+  },
+
+  scanTokenUsage: () =>
+    request<{ success: boolean; inserted: number; scanned: number; bySource: Record<string, { inserted: number; scanned: number }> }>(
+      '/api/token-usage/scan', { method: 'POST' },
+    ),
 };
+
+export interface TokenUsageAggregates {
+  totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number };
+  byDay: { date: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }[];
+  byModel: { model: string; totalTokens: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }[];
+  byProject: { project: string; totalTokens: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }[];
+  byHourDay: { dayOfWeek: number; hour: number; totalTokens: number }[];
+  topSessions: { sessionId: string; project: string | null; model: string; startedAt: string; endedAt: string; messageCount: number; totalTokens: number }[];
+  cacheEfficiency: number;
+}
 
 export interface AppSettings {
   autoUpdate: boolean;

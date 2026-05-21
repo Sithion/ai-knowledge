@@ -217,6 +217,32 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
     }
   );
 
+  // getTokenUsage — aggregated token spend in AI coding tools (Claude Code today).
+  server.tool(
+    'getTokenUsage',
+    'Aggregated token usage for AI coding tools (input/output/cache reads/cache writes) for a date range, optionally filtered by source, model, or project.',
+    {
+      from: z.string().describe('ISO date — start of range (e.g. "2025-05-01T00:00:00Z")'),
+      to: z.string().describe('ISO date — end of range'),
+      source: z.string().optional().describe('Filter by source (e.g. "claude-code")'),
+      model: z.string().optional().describe('Filter by model'),
+      project: z.string().optional().describe('Filter by project (decoded cwd basename)'),
+    },
+    READ_ONLY,
+    async (params) => {
+      // Run an incremental scan so the query reflects very recent activity.
+      try { await sdk.scanTokenUsage(); } catch { /* aggregations still return what's stored */ }
+      const result = sdk.getTokenUsage({
+        from: params.from,
+        to: params.to,
+        source: params.source,
+        model: params.model,
+        project: params.project,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
   // ─── Plan Tools ──────────────────────────────────────────────
 
   // createPlan
