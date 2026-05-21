@@ -1,5 +1,11 @@
 # Patch Notes
 
+## v1.2.2
+
+### Fixes
+- **Dashboard "Database Size" stuck value**: The Stats page reported only the size of `knowledge.db` and ignored its SQLite sidecars (`knowledge.db-wal`, `knowledge.db-shm`). Between WAL checkpoints the main file barely grows, so the displayed size could appear frozen for days while writes piled up in the WAL. The `/api/metrics` endpoint now sums all three files, so the reported size reflects real on-disk usage and updates promptly after every write.
+- **Activity (Last 15 Days) chart leading zeros**: The chart queries the last 15 days from `operations_log`, but the background maintenance job pruned anything older than 7 days, so the first ~8 days of the window always rendered as zero even for daily users. Retention is now aligned to the chart window via a single `OPERATIONS_RETENTION_DAYS = 30` constant in `packages/core/src/repositories/knowledge.repository.ts`, giving the chart full visibility plus a safety margin.
+
 ## v1.2.1
 
 ### Improvements

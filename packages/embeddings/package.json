@@ -1,6 +1,6 @@
 {
   "name": "@cognistore/embeddings",
-  "version": "1.1.0",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

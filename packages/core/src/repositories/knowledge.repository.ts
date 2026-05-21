@@ -14,6 +14,10 @@ import {
 import type { CreateKnowledgeInput, UpdateKnowledgeInput, SearchOptions } from '@cognistore/shared';
 import { DEFAULT_SEARCH_LIMIT, DEFAULT_SIMILARITY_THRESHOLD } from '@cognistore/shared';
 
+// Retention window for the operations_log table. Must be >= the largest window
+// the dashboard chart asks for (currently 15 days via getOperationsByDay).
+const OPERATIONS_RETENTION_DAYS = 30;
+
 export class KnowledgeRepository {
   constructor(
     private db: Database,
@@ -564,7 +568,7 @@ export class KnowledgeRepository {
   }
 
   cleanupOldOperations(): number {
-    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - OPERATIONS_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
     return this.sqlite.prepare('DELETE FROM operations_log WHERE created_at < ?').run(cutoff).changes;
   }
 

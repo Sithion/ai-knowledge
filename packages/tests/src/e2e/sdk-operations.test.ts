@@ -63,11 +63,17 @@ test('getOperationCounts returns correct counts', async () => {
 });
 
 test('cleanupOldOperations removes old entries', () => {
-  // Insert fake old entries directly into SQLite (8 days ago)
-  const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  // Retention is 30 days (must cover the 15-day Activity chart window).
+  // Insert fake old entries past the retention window.
+  const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
   ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('read', oldDate);
   ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('write', oldDate);
   ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('read', oldDate);
+
+  // Insert a recent entry that must survive (well within the 30-day window
+  // but older than the previous 7-day cutoff to lock in the new retention).
+  const recentDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('read', recentDate);
 
   // Count total before cleanup
   const totalBefore = (ctx.sqlite.prepare('SELECT COUNT(*) as count FROM operations_log').get() as { count: number }).count;
@@ -78,9 +84,9 @@ test('cleanupOldOperations removes old entries', () => {
   const totalAfter = (ctx.sqlite.prepare('SELECT COUNT(*) as count FROM operations_log').get() as { count: number }).count;
   expect(totalAfter).toBe(totalBefore - removed);
 
-  // Verify recent entries still exist
+  // Verify recent entries still exist, including the 10-day-old one
   const recentCount = (ctx.sqlite.prepare(
     'SELECT COUNT(*) as count FROM operations_log WHERE created_at >= ?'
-  ).get(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()) as { count: number }).count;
+  ).get(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()) as { count: number }).count;
   expect(recentCount).toBeGreaterThan(0);
 });
