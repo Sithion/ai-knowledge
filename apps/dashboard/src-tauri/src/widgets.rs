@@ -40,6 +40,7 @@ fn widget_size(widget_type: &str) -> (f64, f64) {
         "stats" => (300.0, 240.0),
         "plans" => (300.0, 260.0),
         "active-plans" => (320.0, 400.0),
+        "tokens" => (320.0, 260.0),
         _ => (300.0, 220.0),
     }
 }

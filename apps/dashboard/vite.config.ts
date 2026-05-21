@@ -16,6 +16,7 @@ export default defineConfig({
         'widget-stats': resolve(__dirname, 'widgets/stats.html'),
         'widget-plans': resolve(__dirname, 'widgets/plans.html'),
         'widget-active-plans': resolve(__dirname, 'widgets/active-plans.html'),
+        'widget-tokens': resolve(__dirname, 'widgets/tokens.html'),
       },
     },
   },

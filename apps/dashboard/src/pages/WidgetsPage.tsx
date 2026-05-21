@@ -14,6 +14,7 @@ const WIDGET_DEFS: WidgetDef[] = [
   { id: 'stats', titleKey: 'widgets.knowledgeStats', descKey: 'widgets.descKnowledge', icon: '📊' },
   { id: 'plans', titleKey: 'widgets.planStats', descKey: 'widgets.descPlans', icon: '📋' },
   { id: 'active-plans', titleKey: 'widgets.activePlans', descKey: 'widgets.descActive', icon: '🎯' },
+  { id: 'tokens', titleKey: 'widgets.tokens', descKey: 'widgets.descTokens', icon: '🔋' },
 ];
 
 function getMaxVisiblePlans(): number {

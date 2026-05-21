@@ -12,6 +12,7 @@ const QUIT_ID: &str = "quit";
 const WIDGET_STATS_ID: &str = "widget-stats";
 const WIDGET_PLANS_ID: &str = "widget-plans";
 const WIDGET_ACTIVE_ID: &str = "widget-active-plans";
+const WIDGET_TOKENS_ID: &str = "widget-tokens";
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let show_app = MenuItem::with_id(app, SHOW_ID, "Show CogniStore", true, None::<&str>)?;
@@ -20,7 +21,8 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let w_stats = MenuItem::with_id(app, WIDGET_STATS_ID, "Knowledge Stats", true, None::<&str>)?;
     let w_plans = MenuItem::with_id(app, WIDGET_PLANS_ID, "Plan Stats", true, None::<&str>)?;
     let w_active = MenuItem::with_id(app, WIDGET_ACTIVE_ID, "Active Plans", true, None::<&str>)?;
-    let widgets_menu = Submenu::with_items(app, "Widgets", true, &[&w_stats, &w_plans, &w_active])?;
+    let w_tokens = MenuItem::with_id(app, WIDGET_TOKENS_ID, "Token Consumption", true, None::<&str>)?;
+    let widgets_menu = Submenu::with_items(app, "Widgets", true, &[&w_stats, &w_plans, &w_active, &w_tokens])?;
 
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, QUIT_ID, "Quit", true, None::<&str>)?;
@@ -51,6 +53,9 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 x if x == WIDGET_ACTIVE_ID => {
                     let _ = widgets::open_widget(app.clone(), "active-plans".into(), None);
+                }
+                x if x == WIDGET_TOKENS_ID => {
+                    let _ = widgets::open_widget(app.clone(), "tokens".into(), None);
                 }
                 x if x == QUIT_ID => {
                     widgets::flush_widget_config(app);
