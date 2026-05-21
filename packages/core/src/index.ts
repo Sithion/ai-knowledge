@@ -10,3 +10,22 @@ export {
 } from './db/index.js';
 export { KnowledgeRepository } from './repositories/index.js';
 export { KnowledgeService, type EmbeddingProvider } from './services/index.js';
+
+// Token usage
+export { TokenUsageRepository } from './repositories/token-usage.repository.js';
+export { TokenUsageService } from './services/token-usage/service.js';
+export { TokenUsageScanner, type ScanResult } from './services/token-usage/scanner.js';
+export { ClaudeCodeAdapter } from './services/token-usage/adapters/claude-code.js';
+export type { TokenSourceAdapter, ScannedTokenRecord } from './services/token-usage/adapter.js';
+export type {
+  TokenUsageRecord,
+  TokenUsageFilter,
+  TokenUsageAggregates,
+  TokenUsageTotals,
+  TokenUsageByDay,
+  TokenUsageByModel,
+  TokenUsageByProject,
+  TokenUsageByHourDay,
+  TopSession,
+  ScanState,
+} from './services/token-usage/types.js';
