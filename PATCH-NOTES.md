@@ -2,6 +2,9 @@
 
 ## v1.3.1
 
+### Features
+- **Range-aware Consulted / Written cards on Stats**: Brings back the at-a-glance Consulted and Written counters that were removed in v1.3.0, but now they reflect the period chosen by the global date-range picker (1D / 1W / 1M / 1Y / custom) instead of the old fixed 1h / 24h windows. Total Entries remains range-independent (it's a "right now" count of the DB), so it stays at the top alone; Consulted and Written sit below it and update live whenever the picker changes. No new backend endpoint — the values are aggregated client-side from the same `rangedActivity` series the chart already loads.
+
 ### Security
 - **Drop unused `@tanstack/react-query` dependency**: The package was declared in `apps/dashboard/package.json` but never imported anywhere in the codebase. Removing it eliminates the transitive attack surface from a dependency that, even if patched against any specific CVE, was providing zero functional value. Verified: `grep -r "@tanstack" packages/ apps/ --include="*.ts" --include="*.tsx"` returns no matches; lockfile is now free of `@tanstack/*` packages.
 

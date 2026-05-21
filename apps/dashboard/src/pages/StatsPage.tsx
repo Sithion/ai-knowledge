@@ -536,9 +536,23 @@ export function StatsPage() {
         <DateRangePicker />
       </div>
 
-      {/* ── Total Entries (only metric card that stays) ── */}
+      {/* ── Total Entries (range-independent) ── */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
         <MetricCard label={t('stats.totalEntries')} value={stats?.total ?? 0} />
+      </div>
+
+      {/* ── Consulted / Written (range-dependent, reflects the selected period) ── */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+        <MetricCard
+          label={t('stats.consulted')}
+          value={rangedActivity.reduce((s, d) => s + d.reads, 0)}
+          sub={t('stats.consultedSub')}
+        />
+        <MetricCard
+          label={t('stats.written')}
+          value={rangedActivity.reduce((s, d) => s + d.writes, 0)}
+          sub={t('stats.writtenSub')}
+        />
       </div>
 
       {/* ── Charts Row ── */}
