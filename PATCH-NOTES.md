@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v1.3.1
+
+### Security
+- **Drop unused `@tanstack/react-query` dependency**: The package was declared in `apps/dashboard/package.json` but never imported anywhere in the codebase. Removing it eliminates the transitive attack surface from a dependency that, even if patched against any specific CVE, was providing zero functional value. Verified: `grep -r "@tanstack" packages/ apps/ --include="*.ts" --include="*.tsx"` returns no matches; lockfile is now free of `@tanstack/*` packages.
+
 ## v1.3.0
 
 ### Features
