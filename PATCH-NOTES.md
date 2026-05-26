@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v1.4.5
+
+### Infrastructure
+- **CI no longer re-runs on merge to `main`**: `ci.yml` dropped `main` from its `push` trigger. A merge to `main` now triggers only the `Publish` release workflow, instead of also re-running the full CI (which had been redundantly rebuilding the app on top of the pull-request run that already validated it). Pull requests still run the complete CI — including `osv-scan`, which remains the required status check — and the weekly Monday cron keeps scanning `main` for new advisories.
+
 ## v1.4.4
 
 ### Fixes
