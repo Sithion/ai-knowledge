@@ -17,7 +17,7 @@
     "test": "if find . -name '*.test.ts' -o -name '*.spec.ts' | grep -q .; then npx playwright test; else echo 'No tests found, skipping'; fi"
   },
   "dependencies": {
-    "zod": "^3.23.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
