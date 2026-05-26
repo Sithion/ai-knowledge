@@ -4,7 +4,18 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: ['feature/**']
+    branches: [main, 'feature/**']
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC — weekly full dependency vulnerability scan
+
+permissions:
+  contents: read
+
+env:
+  # OSV-Scanner pin; bump both together. SHA256 is for osv-scanner_linux_amd64
+  # from https://github.com/google/osv-scanner/releases (osv-scanner_SHA256SUMS).
+  OSV_SCANNER_VERSION: '2.3.8'
+  OSV_SCANNER_SHA256: 'bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc'
 
 jobs:
   version-check:
@@ -31,6 +42,7 @@ jobs:
           echo "Version bumped: ${{ steps.main.outputs.version }} → ${{ steps.pr.outputs.version }}"
 
   validate-dependencies:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -51,6 +63,7 @@ jobs:
           if [ "$FAILED" -ne 0 ]; then exit 1; fi
 
   build-and-test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -73,3 +86,27 @@ jobs:
             echo "::error::npm publish dry-run produced warnings. Fix package.json before merging."
             exit 1
           fi
+
+  # Free dependency vulnerability scanning via OSV-Scanner (osv.dev). Covers npm
+  # (pnpm-lock.yaml) and Cargo (apps/dashboard/src-tauri/Cargo.lock) in one pass.
+  # Runs on every PR/push and the weekly schedule. Self-contained (no third-party
+  # Action) to respect the repo's curated Actions allowlist; the binary is
+  # version-pinned and checksum-verified. This job is a required status check.
+  osv-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Install OSV-Scanner (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfL \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+            -o osv-scanner
+          echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+      - name: Scan dependencies (npm + Cargo lockfiles)
+        # Recursively finds every lockfile (.gitignore honoured, so node_modules
+        # and target/ are skipped). Exits non-zero on a known vulnerability, which
+        # fails the check. --config applies osv-scanner.toml (the ignore list of
+        # no-fix/unmaintained advisories) across all lockfiles.
+        run: ./osv-scanner --config=osv-scanner.toml -r ./
