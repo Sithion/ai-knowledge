@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, 'feature/**']
+    branches: ['feature/**']
   schedule:
     - cron: '0 6 * * 1' # Mondays 06:00 UTC — weekly full dependency vulnerability scan
 
