@@ -1,8 +1,12 @@
 name: Security
 
-# Free dependency vulnerability scanning via OSV-Scanner (osv.dev).
-# Covers both ecosystems in this repo in one pass: npm (pnpm-lock.yaml) and
-# Cargo (apps/dashboard/src-tauri/Cargo.lock).
+# Free dependency vulnerability scanning via OSV-Scanner (osv.dev). Covers both
+# ecosystems in this repo in one pass: npm (pnpm-lock.yaml) and Cargo
+# (apps/dashboard/src-tauri/Cargo.lock).
+#
+# Self-contained on purpose: the repo restricts Actions to a curated allowlist,
+# so instead of a third-party Action we use only actions/checkout (allowed) plus
+# the official OSV-Scanner release binary, version-pinned and checksum-verified.
 
 on:
   pull_request:
@@ -12,26 +16,32 @@ on:
   schedule:
     - cron: '0 6 * * 1' # Mondays 06:00 UTC
 
-# No permissions by default; each job widens only what it needs.
-permissions: {}
+permissions:
+  contents: read
+
+env:
+  # Pin the scanner; bump both together. SHA256 is for osv-scanner_linux_amd64
+  # from https://github.com/google/osv-scanner/releases (osv-scanner_SHA256SUMS).
+  OSV_SCANNER_VERSION: '2.3.8'
+  OSV_SCANNER_SHA256: 'bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc'
 
 jobs:
-  # On PRs: diff-aware scan that flags only the vulnerabilities a PR *introduces*,
-  # so pre-existing advisories never block an unrelated change.
-  scan-pr:
-    if: github.event_name == 'pull_request'
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+  osv-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-  # On push to main + weekly: full recursive scan of every lockfile; results are
-  # uploaded to the repository Security tab (Code scanning).
-  scan-full:
-    if: github.event_name != 'pull_request'
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+      - name: Install OSV-Scanner (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfL \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+            -o osv-scanner
+          echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+
+      - name: Scan dependencies (npm + Cargo lockfiles)
+        # Recursively finds every lockfile (.gitignore is honoured, so node_modules
+        # and target/ are skipped). Exits non-zero when a known vulnerability is
+        # found, which fails the check.
+        run: ./osv-scanner -r ./
