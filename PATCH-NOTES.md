@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v1.4.6
+
+### Fixes
+- **Floating widgets were invisible (nothing appeared) in release builds**: the widget windows were created with `transparent(true)`, and on macOS transparent webview windows render blank in bundled/DMG builds (a known upstream Tauri/wry issue — [tauri#13415](https://github.com/tauri-apps/tauri/issues/13415), [wry#1524](https://github.com/tauri-apps/tauri/issues/1524)) that the Tauri 2.11 / wry 0.55 bump in v1.4.5 exposed. The window was created and reported visible, but painted nothing, so widgets appeared not to open. Widget windows are now **opaque** with a solid dark background (`widget.css`), which renders reliably in release; the only visual change is square outer corners and no see-through. Widget-open failures (previously swallowed by the tray path) are now logged to `cognistore.log`.
+
 ## v1.4.5
 
 ### Infrastructure

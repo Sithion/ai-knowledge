@@ -5,6 +5,19 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::widget_config::{self, WidgetPositions};
 
+/// Append a widget diagnostic/error line to ~/.cognistore/cognistore.log and stderr.
+/// Widget-open failures used to be swallowed silently; now they are recorded.
+fn widget_log(msg: &str) {
+    eprintln!("[widget] {}", msg);
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".cognistore").join("cognistore.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write;
+            let _ = writeln!(f, "[widget] {}", msg);
+        }
+    }
+}
+
 /// Stores the sidecar port so widget windows can connect to the same server.
 pub struct PortState {
     pub port: u16,
@@ -69,11 +82,24 @@ pub fn open_widget(app: AppHandle, widget_id: String, params: Option<String>) ->
     let url = format!("http://localhost:{}/widgets/{}.html{}", port, widget_id, query);
     let (w, h) = widget_size(&widget_id);
 
-    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url.parse().unwrap()))
+    let parsed_url = match url.parse() {
+        Ok(u) => u,
+        Err(e) => {
+            widget_log(&format!("failed to parse widget URL for {}: {}", label, e));
+            return Err(format!("Failed to parse widget URL: {}", e));
+        }
+    };
+
+    // NOTE: widget windows are intentionally OPAQUE. macOS transparent webview
+    // windows render blank in release/DMG builds (tauri#13415 / wry#1524), which
+    // made widgets invisible ("nothing appears"). The content uses a solid dark
+    // background (widget.css) so an opaque window looks the same minus the
+    // see-through/rounded outer corners.
+    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed_url))
         .title("")
         .inner_size(w, h)
         .decorations(false)
-        .transparent(true)
+        .transparent(false)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false);
@@ -85,9 +111,11 @@ pub fn open_widget(app: AppHandle, widget_id: String, params: Option<String>) ->
         builder = builder.center();
     }
 
-    builder
-        .build()
-        .map_err(|e| format!("Failed to create widget window: {}", e))?;
+    // Surface failures that used to be swallowed (the tray path ignores the Result).
+    if let Err(e) = builder.build() {
+        widget_log(&format!("failed to create widget window {}: {}", label, e));
+        return Err(format!("Failed to create widget window: {}", e));
+    }
 
     if let Ok(mut map) = app.state::<WidgetRegistry>().instances.lock() {
         map.insert(label.clone(), widget_id);

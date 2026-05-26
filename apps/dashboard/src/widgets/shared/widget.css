@@ -1,5 +1,8 @@
 html, body {
-  background: transparent !important;
+  /* Opaque solid background. macOS transparent webview windows render blank in
+     release/DMG builds (tauri#13415 / wry#1524), so widgets use an opaque window
+     with a solid background instead. */
+  background: #0d0d1a !important;
   margin: 0;
   padding: 0;
   overflow: hidden;
@@ -10,9 +13,7 @@ html, body {
 
 .widget-shell {
   border-radius: 12px;
-  background: rgba(13, 13, 26, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: #0d0d1a;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   overflow: hidden;
