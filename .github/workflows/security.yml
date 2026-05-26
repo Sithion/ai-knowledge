@@ -43,5 +43,6 @@ jobs:
       - name: Scan dependencies (npm + Cargo lockfiles)
         # Recursively finds every lockfile (.gitignore is honoured, so node_modules
         # and target/ are skipped). Exits non-zero when a known vulnerability is
-        # found, which fails the check.
-        run: ./osv-scanner -r ./
+        # found, which fails the check. --config applies osv-scanner.toml (the
+        # ignore list of no-fix/unmaintained advisories) across all lockfiles.
+        run: ./osv-scanner --config=osv-scanner.toml -r ./
