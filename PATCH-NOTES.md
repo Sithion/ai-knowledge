@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v1.4.3
+
+### Features
+- **Platform column in the Token Consumption tables**: Top Projects and Top Sessions now show which AI tool each row came from — a colored `Claude` / `Copilot` badge derived from `token_usage.source`. A session maps to a single platform; a project that was worked on with both tools shows both badges side by side. The aggregations gained `GROUP_CONCAT(DISTINCT source)` (per project) and `MAX(source)` (per session); the additions are backward-compatible (the `getTokenUsage` MCP tool simply returns the extra fields). Labels are translated in en/es/pt.
+
 ## v1.4.1
 
 ### Features

@@ -4,7 +4,7 @@ import {
   AreaChart, Area, BarChart, Bar, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell, Legend,
 } from 'recharts';
 import { useAppSelector } from '../store/index.js';
-import { api, PROVIDER_SOURCE, type ProviderFilter, type TokenUsageAggregates } from '../api/client.js';
+import { api, PROVIDER_SOURCE, SOURCE_TO_PROVIDER, type ProviderFilter, type TokenUsageAggregates } from '../api/client.js';
 import { DateRangePicker } from '../components/DateRangePicker.js';
 import { MetricCard, WidgetCard, formatTokens, getHeatmapColor } from '../components/statsPrimitives.js';
 
@@ -15,6 +15,34 @@ const PROVIDERS: { key: ProviderFilter; labelKey: string }[] = [
   { key: 'claude', labelKey: 'tokens.claude' },
   { key: 'copilot', labelKey: 'tokens.copilot' },
 ];
+const PROVIDER_COLORS: Record<string, string> = { claude: '#8b5cf6', copilot: '#3b82f6' };
+
+function Badge({ label, color }: { label: string; color: string }) {
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+      fontSize: 11, fontWeight: 600, color,
+      backgroundColor: `${color}1f`, border: `1px solid ${color}55`,
+    }}>
+      {label}
+    </span>
+  );
+}
+
+/** One colored badge per platform from a comma-joined `sources` string — a project
+ *  worked on with both tools shows two badges (Claude + Copilot). */
+function PlatformBadge({ sources }: { sources: string }) {
+  const { t } = useTranslation();
+  const providers = Array.from(
+    new Set((sources ?? '').split(',').map((s) => SOURCE_TO_PROVIDER[s.trim()]).filter(Boolean)),
+  );
+  if (providers.length === 0) return <Badge label={t('tokens.unknown')} color="#6b7280" />;
+  return (
+    <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+      {providers.map((p) => <Badge key={p} label={t(`tokens.${p}`)} color={PROVIDER_COLORS[p] ?? '#6b7280'} />)}
+    </span>
+  );
+}
 
 function ModelsBar({ data }: { data: TokenUsageAggregates['byModel'] }) {
   if (data.length === 0) return null;
@@ -255,6 +283,7 @@ export function TokenConsumptionPage() {
                 <thead>
                   <tr style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
                     <th style={{ textAlign: 'left', padding: '6px 8px' }}>{t('tokens.projectCol')}</th>
+                    <th style={{ textAlign: 'left', padding: '6px 8px' }}>{t('tokens.platformCol')}</th>
                     <th style={{ textAlign: 'right', padding: '6px 8px' }}>{t('tokens.input')}</th>
                     <th style={{ textAlign: 'right', padding: '6px 8px' }}>{t('tokens.output')}</th>
                     <th style={{ textAlign: 'right', padding: '6px 8px' }}>{t('tokens.cacheRead')}</th>
@@ -266,6 +295,7 @@ export function TokenConsumptionPage() {
                   {data.byProject.slice(0, 15).map((p) => (
                     <tr key={p.project} style={{ borderBottom: '1px solid var(--border)' }}>
                       <td style={{ padding: '6px 8px' }}>{p.project}</td>
+                      <td style={{ padding: '6px 8px' }}><PlatformBadge sources={p.sources} /></td>
                       <td style={{ padding: '6px 8px', textAlign: 'right' }}>{formatTokens(p.inputTokens)}</td>
                       <td style={{ padding: '6px 8px', textAlign: 'right' }}>{formatTokens(p.outputTokens)}</td>
                       <td style={{ padding: '6px 8px', textAlign: 'right' }}>{formatTokens(p.cacheReadTokens)}</td>
@@ -286,6 +316,7 @@ export function TokenConsumptionPage() {
                   <tr style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
                     <th style={{ textAlign: 'left', padding: '6px 8px' }}>{t('tokens.sessionIdCol')}</th>
                     <th style={{ textAlign: 'left', padding: '6px 8px' }}>{t('tokens.projectCol')}</th>
+                    <th style={{ textAlign: 'left', padding: '6px 8px' }}>{t('tokens.platformCol')}</th>
                     <th style={{ textAlign: 'left', padding: '6px 8px' }}>{t('tokens.modelCol')}</th>
                     <th style={{ textAlign: 'right', padding: '6px 8px' }}>{t('tokens.startedCol')}</th>
                     <th style={{ textAlign: 'right', padding: '6px 8px' }}>{t('tokens.tokensCol')}</th>
@@ -296,6 +327,7 @@ export function TokenConsumptionPage() {
                     <tr key={s.sessionId} style={{ borderBottom: '1px solid var(--border)' }}>
                       <td style={{ padding: '6px 8px', fontFamily: 'monospace', fontSize: 11 }}>{s.sessionId.slice(0, 8)}…</td>
                       <td style={{ padding: '6px 8px' }}>{s.project ?? t('tokens.unknown')}</td>
+                      <td style={{ padding: '6px 8px' }}><PlatformBadge sources={s.source} /></td>
                       <td style={{ padding: '6px 8px' }}>{s.model}</td>
                       <td style={{ padding: '6px 8px', textAlign: 'right' }}>{new Date(s.startedAt).toLocaleString()}</td>
                       <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--accent)' }}>{formatTokens(s.totalTokens)}</td>

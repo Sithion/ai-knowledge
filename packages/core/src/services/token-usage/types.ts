@@ -65,6 +65,8 @@ export interface TokenUsageByProject {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Comma-joined distinct sources contributing to this project (e.g. "claude-code,copilot-cli"). */
+  sources: string;
 }
 
 export interface TokenUsageByHourDay {
@@ -81,6 +83,8 @@ export interface TopSession {
   endedAt: string;
   messageCount: number;
   totalTokens: number;
+  /** Source/tool that produced the session (e.g. "claude-code" | "copilot-cli"). */
+  source: string;
 }
 
 export interface TokenUsageAggregates {
