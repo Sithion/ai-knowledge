@@ -1,8 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, type TokenUsageAggregates } from '../../api/client.js';
+import { api, PROVIDER_SOURCE, type ProviderFilter, type TokenUsageAggregates } from '../../api/client.js';
 import { useWidgetClose } from '../shared/useWidgetClose.js';
 
 const REFRESH_INTERVAL = 30_000;
+
+const PROVIDER_SEGMENTS: { key: ProviderFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'claude', label: 'Claude' },
+  { key: 'copilot', label: 'Copilot' },
+];
 
 function navigateMainApp(route: string) {
   import('@tauri-apps/api/event').then(({ emit }) => emit('navigate', route)).catch(() => {});
@@ -38,23 +44,36 @@ function Row({ label, value, color = '#a5b4fc' }: { label: string; value: number
 export function TokenConsumptionWidget() {
   const [data, setData] = useState<TokenUsageAggregates | null>(null);
   const [loading, setLoading] = useState(true);
+  const [provider, setProvider] = useState<ProviderFilter>('all');
   const handleClose = useWidgetClose();
+
+  // Hydrate the persisted provider filter (shared with the full page via settings.json).
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => setProvider(s.tokenProviderFilter ?? 'all'))
+      .catch(() => { /* keep default */ });
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
       const now = new Date().toISOString();
-      const result = await api.getTokenUsage({ from: isoWeekAgo(), to: now });
+      const result = await api.getTokenUsage({ from: isoWeekAgo(), to: now, source: PROVIDER_SOURCE[provider] });
       setData(result);
     } catch { /* keep last value */ } finally {
       setLoading(false);
     }
-  }, []);
+  }, [provider]);
 
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, REFRESH_INTERVAL);
     return () => clearInterval(interval);
   }, [fetchData]);
+
+  const changeProvider = (p: ProviderFilter) => {
+    setProvider(p);
+    void api.updateSettings({ tokenProviderFilter: p }).catch(() => {});
+  };
 
   const totals = data?.totals;
   const total = totals ? totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheCreationTokens : 0;
@@ -67,6 +86,31 @@ export function TokenConsumptionWidget() {
       </div>
 
       <div className="widget-content">
+        <div style={{ display: 'flex', gap: 4, paddingBottom: 8 }}>
+          {PROVIDER_SEGMENTS.map(({ key, label }) => {
+            const active = provider === key;
+            return (
+              <button
+                key={key}
+                onClick={() => changeProvider(key)}
+                style={{
+                  flex: 1,
+                  padding: '3px 0',
+                  borderRadius: 5,
+                  border: `1px solid ${active ? '#6366f1' : 'rgba(255,255,255,0.12)'}`,
+                  background: active ? '#6366f1' : 'transparent',
+                  color: active ? '#fff' : 'rgba(255,255,255,0.6)',
+                  fontSize: 10,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
         {loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 40 }}>
             <div style={{

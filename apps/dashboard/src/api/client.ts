@@ -277,4 +277,15 @@ export interface AppSettings {
   autoUpdate: boolean;
   dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
+  tokenProviderFilter: ProviderFilter;
 }
+
+/** UI-level token provider filter. Maps to the backend `token_usage.source` column. */
+export type ProviderFilter = 'all' | 'claude' | 'copilot';
+
+/** Map a UI provider choice to the `source` filter passed to `getTokenUsage`. `all` → no filter. */
+export const PROVIDER_SOURCE: Record<ProviderFilter, string | undefined> = {
+  all: undefined,
+  claude: 'claude-code',
+  copilot: 'copilot-cli',
+};

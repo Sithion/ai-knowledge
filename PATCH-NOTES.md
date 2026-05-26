@@ -1,5 +1,11 @@
 # Patch Notes
 
+## v1.4.1
+
+### Features
+- **Filter Token Consumption by provider**: Both the Token Consumption page and the floating widget gain an `All / Claude / Copilot` filter. `All` shows the combined total of both supported tools (the previous behavior); `Claude` scopes everything to the Claude Code adapter (`source = 'claude-code'`) and `Copilot` to the GitHub Copilot CLI adapter (`source = 'copilot-cli'`). On the page the filter sits next to the date-range picker and drives every section (totals, activity chart, models, cache gauge, time-of-day heatmap, top projects and top sessions); on the widget it's a compact segmented toggle under the title. The backend already supported `source` filtering end-to-end (`token_usage.source` column indexed via `idx_token_usage_source_model`, threaded through every aggregation and the `/api/token-usage` endpoint), so this is a UI change plus one persisted setting.
+- **Provider choice persists**: The selection is stored in `~/.cognistore/settings.json` as `tokenProviderFilter`, alongside the date-range preference, so it is shared between the page and the widget and survives app restarts and upgrades. Defaults to `All`.
+
 ## v1.4.0
 
 ### Features

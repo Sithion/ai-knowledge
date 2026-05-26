@@ -4,12 +4,17 @@ import {
   AreaChart, Area, BarChart, Bar, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell, Legend,
 } from 'recharts';
 import { useAppSelector } from '../store/index.js';
-import { api, type TokenUsageAggregates } from '../api/client.js';
+import { api, PROVIDER_SOURCE, type ProviderFilter, type TokenUsageAggregates } from '../api/client.js';
 import { DateRangePicker } from '../components/DateRangePicker.js';
 import { MetricCard, WidgetCard, formatTokens, getHeatmapColor } from '../components/statsPrimitives.js';
 
 const MODEL_COLORS = ['#8b5cf6', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899'];
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const PROVIDERS: { key: ProviderFilter; labelKey: string }[] = [
+  { key: 'all', labelKey: 'tokens.all' },
+  { key: 'claude', labelKey: 'tokens.claude' },
+  { key: 'copilot', labelKey: 'tokens.copilot' },
+];
 
 function ModelsBar({ data }: { data: TokenUsageAggregates['byModel'] }) {
   if (data.length === 0) return null;
@@ -93,16 +98,32 @@ export function TokenConsumptionPage() {
   const { range } = useAppSelector((s) => s.dateRange);
   const [data, setData] = useState<TokenUsageAggregates | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [provider, setProvider] = useState<ProviderFilter>('all');
+  const [hydrated, setHydrated] = useState(false);
+
+  // Hydrate the persisted provider filter once (shared with the widget via settings.json).
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => setProvider(s.tokenProviderFilter ?? 'all'))
+      .catch(() => { /* keep default */ })
+      .finally(() => setHydrated(true));
+  }, []);
 
   const load = () => {
-    api.getTokenUsage({ from: range.from, to: range.to })
+    api.getTokenUsage({ from: range.from, to: range.to, source: PROVIDER_SOURCE[provider] })
       .then(setData)
       .catch(() => setData(null));
   };
 
+  // Wait for hydration so we fetch once with the persisted provider, not twice.
   useEffect(() => {
-    load();
-  }, [range.from, range.to]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (hydrated) load();
+  }, [range.from, range.to, provider, hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const changeProvider = (p: ProviderFilter) => {
+    setProvider(p);
+    void api.updateSettings({ tokenProviderFilter: p }).catch(() => {});
+  };
 
   const rescan = async () => {
     setScanning(true);
@@ -130,6 +151,29 @@ export function TokenConsumptionPage() {
           <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{t('tokens.subtitle')}</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {PROVIDERS.map(({ key, labelKey }) => {
+              const active = provider === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => changeProvider(key)}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 6,
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                    backgroundColor: active ? 'var(--accent)' : 'var(--bg-card)',
+                    color: active ? '#fff' : 'var(--text-primary)',
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 500,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {t(labelKey)}
+                </button>
+              );
+            })}
+          </div>
           <DateRangePicker />
           <button
             onClick={rescan}
