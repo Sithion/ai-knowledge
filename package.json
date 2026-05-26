@@ -13,7 +13,7 @@
     "dmg": "pnpm --filter @cognistore/dashboard tauri:dmg"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^25.9.1",
     "turbo": "^2.4.0",
     "typescript": "^5.7.0"
   },
