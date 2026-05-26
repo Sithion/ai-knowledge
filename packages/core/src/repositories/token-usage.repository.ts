@@ -129,7 +129,8 @@ export class TokenUsageRepository {
         COALESCE(SUM(output_tokens), 0)         as outputTokens,
         COALESCE(SUM(cache_read_tokens), 0)     as cacheReadTokens,
         COALESCE(SUM(cache_creation_tokens), 0) as cacheCreationTokens,
-        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0) as totalTokens
+        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0) as totalTokens,
+        GROUP_CONCAT(DISTINCT source) as sources
       FROM token_usage WHERE ${sql}
       GROUP BY project
       ORDER BY totalTokens DESC
@@ -161,7 +162,8 @@ export class TokenUsageRepository {
         MIN(occurred_at) as startedAt,
         MAX(occurred_at) as endedAt,
         COUNT(*) as messageCount,
-        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0) as totalTokens
+        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0) as totalTokens,
+        MAX(source) as source
       FROM token_usage WHERE ${sql} AND session_id IS NOT NULL
       GROUP BY session_id
       ORDER BY totalTokens DESC

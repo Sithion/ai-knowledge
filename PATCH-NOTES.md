@@ -2,6 +2,9 @@
 
 ## v1.4.2
 
+### Features
+- **Platform column in the Token Consumption tables**: Top Projects and Top Sessions now show which AI tool each row came from — a colored `Claude` / `Copilot` badge derived from `token_usage.source`. A session maps to a single platform; a project that was worked on with both tools shows both badges side by side. The aggregations gained `GROUP_CONCAT(DISTINCT source)` (per project) and `MAX(source)` (per session); the additions are backward-compatible (the `getTokenUsage` MCP tool simply returns the extra fields). Labels are translated in en/es/pt.
+
 ### Security
 - **Free dependency vulnerability scanning in CI**: New `.github/workflows/security.yml` runs [OSV-Scanner](https://google.github.io/osv-scanner/) (Google, OSS, backed by osv.dev) over the whole repo, covering both dependency ecosystems in a single pass — npm (`pnpm-lock.yaml`) and Cargo (`apps/dashboard/src-tauri/Cargo.lock`) — on pull requests, pushes to `main`, and weekly (Mondays 06:00 UTC). The check fails when a known vulnerability is found. To respect the repo's curated Actions allowlist, the workflow is self-contained: it uses only `actions/checkout` plus the official OSV-Scanner release binary, version-pinned (v2.3.8) and SHA256 checksum-verified — no third-party Action. This gives Snyk/Aqua-equivalent coverage at no cost.
 - **Dependabot enabled**: New `.github/dependabot.yml` opens weekly update PRs for three ecosystems — npm/pnpm (root workspace), Cargo (Tauri shell), and GitHub Actions (keeps the workflow SHA pins current) — with minor/patch updates grouped to reduce PR noise. OSV-Scanner gates on known vulnerabilities; Dependabot opens the bump PRs that resolve them.
