@@ -267,9 +267,9 @@ export interface TokenUsageAggregates {
   totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number };
   byDay: { date: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }[];
   byModel: { model: string; totalTokens: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }[];
-  byProject: { project: string; totalTokens: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }[];
+  byProject: { project: string; totalTokens: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; sources: string }[];
   byHourDay: { dayOfWeek: number; hour: number; totalTokens: number }[];
-  topSessions: { sessionId: string; project: string | null; model: string; startedAt: string; endedAt: string; messageCount: number; totalTokens: number }[];
+  topSessions: { sessionId: string; project: string | null; model: string; startedAt: string; endedAt: string; messageCount: number; totalTokens: number; source: string }[];
   cacheEfficiency: number;
 }
 
@@ -288,4 +288,10 @@ export const PROVIDER_SOURCE: Record<ProviderFilter, string | undefined> = {
   all: undefined,
   claude: 'claude-code',
   copilot: 'copilot-cli',
+};
+
+/** Reverse of PROVIDER_SOURCE: a backend `source` value → its UI provider key. */
+export const SOURCE_TO_PROVIDER: Record<string, Exclude<ProviderFilter, 'all'>> = {
+  'claude-code': 'claude',
+  'copilot-cli': 'copilot',
 };

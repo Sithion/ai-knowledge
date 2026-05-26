@@ -1,0 +1,53 @@
+# OSV-Scanner ignore list (applied via --config in .github/workflows/security.yml).
+#
+# Only advisories with NO available fix in our dependency tree are ignored, each
+# with a rationale. Everything fixable is fixed (npm via pnpm overrides in the
+# root package.json; Cargo via pinned versions in Cargo.lock). Re-evaluate the
+# entries below whenever Tauri upgrades its Linux GTK stack.
+
+# ── Tauri 2.x Linux GTK stack: "unmaintained" advisories, no fixed version ──
+# These crates are pulled transitively by Tauri 2.x's GTK3 bindings on Linux.
+# gtk-rs deprecated them; there is no fixed release and no app-level remediation
+# until Tauri migrates its windowing stack.
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0411" # gdkwayland-sys — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0412" # gdk — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0413" # atk — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0414" # gdkx11-sys — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0415" # gtk — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0416" # atk-sys — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0417" # gdkx11 — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0418" # gdk-sys — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0419" # gtk3-macros — unmaintained (Tauri GTK stack)
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0420" # gtk-sys — unmaintained (Tauri GTK stack)
+
+# ── Other unmaintained transitive crates, no fixed version ──
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370" # proc-macro-error — unmaintained, no fix; transitive via macro crates
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0057" # fxhash — unmaintained, no fix; transitive
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0075" # unic-char-range — unmaintained, no fix
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0080" # unic-common — unmaintained, no fix
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0081" # unic-char-property — unmaintained, no fix
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0098" # unic-ucd-version — unmaintained, no fix
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0100" # unic-ucd-ident — unmaintained, no fix
+
+# ── Fix exists upstream but not reachable in our tree yet ──
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429" # glib < 0.20 — pinned by Tauri 2.x GTK stack (glib 0.18); fix needs an upstream Tauri upgrade
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0097" # rand — the 0.8.x line is bumped to 0.8.6; a transitive rand 0.7.3 remains with no in-major fix
