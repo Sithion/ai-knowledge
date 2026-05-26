@@ -1,5 +1,11 @@
 # Patch Notes
 
+## v1.4.3
+
+### Infrastructure
+- **One CI pipeline**: The standalone `security.yml` workflow was folded into `ci.yml`, so a single "CI" workflow now runs every pull-request check together — `version-check`, `validate-dependencies`, `build-and-test`, and `osv-scan`. The `osv-scan` job id is unchanged, so it remains the required status check on `main`. The weekly full vulnerability scan stays (only `osv-scan` runs on the schedule; the other jobs are skipped). The release workflow (`publish.yml`) is unchanged.
+- **Switched dependency updates from Dependabot to Renovate**: `dependabot.yml` is removed and replaced by `renovate.json`, which groups all three ecosystems — npm/pnpm, Cargo, and GitHub Actions — into a **single combined update PR** (weekly, `separateMajorMinor: false`, one concurrent PR) instead of one PR per ecosystem. Requires installing the Renovate GitHub App on the repository.
+
 ## v1.4.2
 
 ### Features
