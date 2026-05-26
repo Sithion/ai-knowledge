@@ -1,5 +1,14 @@
 # Patch Notes
 
+## v1.4.4
+
+### Fixes
+- **Release build was broken by a Tauri version mismatch**: v1.4.2 bumped the Rust `tauri` crate to 2.11.1 (security fix) but left the JS `@tauri-apps/api` at 2.10.1; Tauri requires both on the same major/minor, so `tauri build` (release) failed its preflight check — which CI's `pnpm build` never runs. Aligned the JS packages to 2.11 (`@tauri-apps/api` 2.11.0, `@tauri-apps/cli` 2.11.2). Verified with a local `tauri build` (full Rust release compile succeeds).
+- **Automatic updates never started**: `UpdateChecker` armed its 30-minute check from a synchronous cache that is `false` at mount and only hydrates from `settings.json` a moment later, so the periodic check was never scheduled even with auto-update enabled (only the manual button worked). It now reacts to the hydrated preference (React state) and re-arms when the setting loads or is toggled, and all hook instances stay in sync so toggling in Settings takes effect immediately.
+
+### Infrastructure
+- **Renovate runs once a week, Mondays**: `renovate.json` now schedules the single combined update PR for **Mondays 9am–12pm (America/Sao_Paulo)** with `prConcurrentLimit: 1`, instead of the earlier Sunday-night UTC window.
+
 ## v1.4.3
 
 ### Infrastructure

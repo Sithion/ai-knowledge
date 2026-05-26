@@ -69,12 +69,17 @@ export function useAutoUpdateSetting(): [boolean, (value: boolean) => Promise<vo
         setValue(autoUpdateCache);
       } catch { /* keep current cache */ }
     })();
-    return () => { cancelled = true; };
+    // Keep every hook instance (e.g. SettingsPage + UpdateChecker) in sync when
+    // the preference is toggled, so the periodic checker reacts immediately.
+    const onChange = () => setValue(autoUpdateCache);
+    updateEvents.addEventListener('autoUpdateChanged', onChange);
+    return () => { cancelled = true; updateEvents.removeEventListener('autoUpdateChanged', onChange); };
   }, []);
 
   const update = useCallback(async (next: boolean) => {
     autoUpdateCache = next;
     setValue(next);
+    updateEvents.dispatchEvent(new Event('autoUpdateChanged'));
     try { await api.updateSettings({ autoUpdate: next }); } catch { /* swallow */ }
   }, []);
 
@@ -129,9 +134,11 @@ export function UpdateChecker() {
   const [dismissed, setDismissed] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState('');
   const manualRef = useRef(false);
-  // Hydrate the module-level cache so the 30-min interval reads a fresh value.
-  // The component doesn't render anything based on it — it only wants the side effect.
-  useAutoUpdateSetting();
+  // Drive the periodic checker off the *hydrated* preference value. The setting
+  // loads asynchronously from settings.json, so we must react when it resolves
+  // (and when it's toggled) — reading a synchronous cache at mount would always
+  // see the default `false` and the interval would never start.
+  const [autoUpdateEnabled] = useAutoUpdateSetting();
 
   const broadcastState = useCallback((s: UpdateState) => {
     setState(s);
@@ -259,13 +266,15 @@ export function UpdateChecker() {
     }
   }, [broadcastState, state]);
 
-  // Check on mount + every 30 minutes (only if auto-update is enabled)
+  // Check shortly after launch + every 30 minutes, but only while auto-update is
+  // enabled. Re-runs when the hydrated preference flips (load or toggle), which is
+  // what makes the periodic check actually start.
   useEffect(() => {
-    if (!getAutoUpdateEnabledCached()) return;
+    if (!autoUpdateEnabled) return;
     const initial = setTimeout(checkForUpdate, 2000);
     const interval = setInterval(checkForUpdate, CHECK_INTERVAL_MS);
     return () => { clearTimeout(initial); clearInterval(interval); };
-  }, [checkForUpdate]);
+  }, [autoUpdateEnabled, checkForUpdate]);
 
   // Listen for external check triggers (manual)
   useEffect(() => {
