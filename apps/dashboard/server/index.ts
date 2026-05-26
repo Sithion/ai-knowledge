@@ -80,12 +80,14 @@ export interface AppSettings {
   autoUpdate: boolean;
   dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
+  tokenProviderFilter: 'all' | 'claude' | 'copilot';
 }
 
 const SETTINGS_DEFAULTS: AppSettings = {
   autoUpdate: false,
   dateRangePreset: '1w',
   lastSelectedRange: null,
+  tokenProviderFilter: 'all',
 };
 
 function readSettings(): AppSettings {
