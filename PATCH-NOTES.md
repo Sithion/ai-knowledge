@@ -1,5 +1,11 @@
 # Patch Notes
 
+## v1.4.2
+
+### Security
+- **Free dependency vulnerability scanning in CI**: New `.github/workflows/security.yml` runs [OSV-Scanner](https://google.github.io/osv-scanner/) (Google, OSS, backed by osv.dev) over the whole repo, covering both dependency ecosystems in a single pass — npm (`pnpm-lock.yaml`) and Cargo (`apps/dashboard/src-tauri/Cargo.lock`). On pull requests it runs the diff-aware scan, so it flags only the vulnerabilities a PR *introduces* and never blocks an unrelated change on a pre-existing advisory; on pushes to `main` and weekly (Mondays 06:00 UTC) it runs a full recursive scan whose findings are uploaded to the repository Security tab (Code scanning, free for this public repo). Reusable workflows are SHA-pinned (`@9a49870`, v2.3.8) to match the existing CI convention. This gives Snyk/Aqua-equivalent coverage at no cost.
+- **Dependabot enabled**: New `.github/dependabot.yml` opens weekly update PRs for three ecosystems — npm/pnpm (root workspace), Cargo (Tauri shell), and GitHub Actions (keeps the workflow SHA pins current) — with minor/patch updates grouped to reduce PR noise. OSV-Scanner gates on known vulnerabilities; Dependabot opens the bump PRs that resolve them.
+
 ## v1.4.1
 
 ### Features
