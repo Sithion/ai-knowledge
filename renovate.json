@@ -1,8 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "schedule": ["before 6am on monday"],
-  "timezone": "UTC",
+  "schedule": ["after 9am and before 12pm on monday"],
+  "timezone": "America/Sao_Paulo",
   "separateMajorMinor": false,
   "prConcurrentLimit": 1,
   "prHourlyLimit": 0,
@@ -14,6 +14,6 @@
   ],
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["before 6am on monday"]
+    "schedule": ["after 9am and before 12pm on monday"]
   }
 }
