@@ -39,8 +39,10 @@ export function ProvidersSection() {
   };
   const remove = async (id: string) => {
     try {
+      // Keychain first: if providers.json still lists the id, cleanup_provider_secrets
+      // will catch it on uninstall even if the keychain delete failed here.
+      try { const { invoke } = await import('@tauri-apps/api/core'); await invoke('delete_provider_secret', { id }); } catch { /* not Tauri or no secret */ }
       await api.deleteProvider(id);
-      try { const { invoke } = await import('@tauri-apps/api/core'); await invoke('delete_provider_secret', { id }); } catch { /* not Tauri */ }
       load();
     } catch (e: any) { setError(e?.message ?? 'delete failed'); }
   };
@@ -55,8 +57,15 @@ export function ProvidersSection() {
     setError('');
     try {
       const existing = providers.some((p) => p.id === draft.id);
-      if (secret && draft[draft.kind]?.auth?.secretRef) await setProviderSecret(draft[draft.kind]!.auth!.secretRef!, secret);
+      // Server write first — it's the source of truth. Keychain is best-effort after.
       if (existing) await api.updateProvider(draft.id, draft); else await api.addProvider(draft);
+      if (secret && draft[draft.kind]?.auth?.secretRef) {
+        const ref = draft[draft.kind]!.auth!.secretRef!;
+        // Inject into the live server process so the provider works without restart.
+        await api.injectProviderSecret(draft[draft.kind]!.id ?? draft.id, secret).catch(() => {});
+        // Persist to OS keychain (Tauri only; silent in dev/browser context).
+        try { await setProviderSecret(ref, secret); } catch { /* not Tauri */ }
+      }
       setDraft(null); setSecret(''); load();
     } catch (e: any) { setError(e?.message ?? 'save failed'); }
   };

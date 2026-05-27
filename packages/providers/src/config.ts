@@ -82,7 +82,8 @@ export function loadProviders(configPath: string, secrets: ISecretStore): Provid
   try {
     const parsed = providersConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')));
     return new ProviderManager(parsed.providers.map((e) => buildProvider(e, secrets)));
-  } catch {
+  } catch (e) {
+    console.error('[CogniStore] Failed to load providers.json:', e instanceof Error ? e.message : String(e));
     return new ProviderManager([]);
   }
 }

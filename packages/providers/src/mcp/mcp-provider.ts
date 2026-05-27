@@ -57,6 +57,7 @@ export class McpKnowledgeProvider implements KnowledgeProvider {
   readonly enabled: boolean;
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
+  private disposed = false;
 
   constructor(
     private readonly opts: McpProviderOptions,
@@ -89,11 +90,17 @@ export class McpKnowledgeProvider implements KnowledgeProvider {
   }
 
   private async getClient(): Promise<Client> {
+    if (this.disposed) throw new Error('McpKnowledgeProvider has been disposed');
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
       const client = new Client({ name: 'cognistore', version: '1.0.0' });
       await client.connect(await this.buildTransport());
+      // Guard: if dispose() was called while we were connecting, close immediately.
+      if (this.disposed) {
+        try { await client.close(); } catch { /* ignore */ }
+        throw new Error('McpKnowledgeProvider was disposed during connect');
+      }
       this.client = client;
       return client;
     })();
@@ -159,6 +166,11 @@ export class McpKnowledgeProvider implements KnowledgeProvider {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
+    // Null connecting so any concurrent getClient() call that hasn't resolved yet
+    // won't re-use the in-flight promise after dispose. The IIFE itself checks
+    // this.disposed after connect() and closes the client if set.
+    this.connecting = null;
     try { await this.client?.close(); } catch { /* ignore */ }
     this.client = null;
   }

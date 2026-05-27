@@ -247,6 +247,11 @@ export const api = {
     request<{ removed: boolean }>(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   testProvider: (id: string) =>
     request<{ ok: boolean; message?: string }>(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  injectProviderSecret: (id: string, value: string) =>
+    request<{ ok: boolean }>(`/api/providers/${encodeURIComponent(id)}/secret`, {
+      method: 'POST',
+      body: JSON.stringify({ value }),
+    }),
   searchFederated: (query: string, options?: Record<string, unknown>) =>
     request<FederatedSearchResult>('/api/knowledge/search', {
       method: 'POST',

@@ -167,15 +167,11 @@ fn check_node_major(node_bin: &PathBuf, major: u32) -> bool {
     false
 }
 
-/// Generate a random sidecar identity token (simple hex string).
+/// Generate a cryptographically-random 16-byte sidecar identity token.
 fn generate_token() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    let pid = std::process::id();
-    format!("{:08x}{:08x}", pid, nanos)
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).expect("getrandom failed");
+    buf.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Spawn the Fastify server as a child process.

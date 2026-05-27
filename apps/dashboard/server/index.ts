@@ -8,7 +8,7 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { KnowledgeSDK } from '@cognistore/sdk';
 import { ConfigManager } from '@cognistore/config';
-import { providersConfigSchema, providerEntrySchema, buildProvider, EnvSecretStore } from '@cognistore/providers';
+import { providersConfigSchema, providerEntrySchema, buildProvider, EnvSecretStore, secretRefToEnvKey } from '@cognistore/providers';
 import type {
   CreateKnowledgeInput,
   UpdateKnowledgeInput,
@@ -1898,6 +1898,19 @@ Pass an array to addKnowledge to create multiple entries at once.
     writeProvidersConfig(cfg);
     sdk.reloadProviders();
     return { removed: true };
+  });
+
+  // Inject a provider secret into process.env so EnvSecretStore can resolve it
+  // for providers added after the sidecar started (env was frozen at spawn time).
+  // The secret value comes from the UI (user typed it); this is loopback-only.
+  app.post<{ Params: { id: string }; Body: { value: string } }>('/api/providers/:id/secret', async (request, reply) => {
+    const { value } = request.body ?? {};
+    if (typeof value !== 'string' || !value) {
+      reply.code(400);
+      return { error: 'value is required' };
+    }
+    process.env[secretRefToEnvKey(request.params.id)] = value;
+    return { ok: true };
   });
 
   app.post<{ Params: { id: string } }>('/api/providers/:id/test', async (request, reply) => {

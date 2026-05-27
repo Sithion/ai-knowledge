@@ -83,6 +83,38 @@ test('http provider: SSRF guard rejects non-https / loopback by default', async 
   await expect(p.search('q', 1, ac())).rejects.toThrow(/non-https|loopback|private/);
 });
 
+test('http provider: SSRF guard rejects IPv6 loopback [::1]', async () => {
+  const p = new HttpKnowledgeProvider({ id: 'v6lo', name: 'V6Lo', enabled: true, url: 'https://[::1]/api' }, secrets);
+  await expect(p.search('q', 1, ac())).rejects.toThrow(/loopback|private/);
+});
+
+test('http provider: SSRF guard rejects unique-local IPv6 [fc00::1]', async () => {
+  const p = new HttpKnowledgeProvider({ id: 'v6ul', name: 'V6UL', enabled: true, url: 'https://[fc00::1]/api' }, secrets);
+  await expect(p.search('q', 1, ac())).rejects.toThrow(/loopback|private/);
+});
+
+test('http provider: SSRF guard rejects link-local IPv6 [fe80::1]', async () => {
+  const p = new HttpKnowledgeProvider({ id: 'v6ll', name: 'V6LL', enabled: true, url: 'https://[fe80::1]/api' }, secrets);
+  await expect(p.search('q', 1, ac())).rejects.toThrow(/loopback|private/);
+});
+
+test('http provider: SSRF guard rejects IPv4-mapped IPv6 [::ffff:127.0.0.1]', async () => {
+  const p = new HttpKnowledgeProvider({ id: 'v6m', name: 'V6M', enabled: true, url: 'https://[::ffff:127.0.0.1]/api' }, secrets);
+  await expect(p.search('q', 1, ac())).rejects.toThrow(/loopback|private/);
+});
+
+test('http provider: endpoint URL built via URL object — /search appended to path even if base URL has query string', async () => {
+  const mock = await startMock({ body: { results: [] } });
+  try {
+    // Base URL contains a query string. With the old string-concat approach,
+    // /search would land inside the query string and the mock returns 404.
+    // With URL-object construction the path is /search (query cleared), so it resolves.
+    const p = new HttpKnowledgeProvider({ id: 'qs', name: 'QS', enabled: true, url: mock.url + '?foo=bar', allowInsecure: true }, secrets);
+    const results = await p.search('q', 1, ac());
+    expect(results).toEqual([]);
+  } finally { await mock.close(); }
+});
+
 test('http provider: testConnection reports ok / failure', async () => {
   const mock = await startMock({ body: { results: [] } });
   try {

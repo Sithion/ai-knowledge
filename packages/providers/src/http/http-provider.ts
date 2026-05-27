@@ -36,14 +36,40 @@ export interface HttpProviderOptions {
 }
 
 function isLoopbackOrPrivate(hostname: string): boolean {
-  return (
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '::1' ||
-    /^10\./.test(hostname) ||
-    /^192\.168\./.test(hostname) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
-  );
+  // URL.hostname wraps IPv6 in brackets — strip them before matching.
+  const h = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1).toLowerCase()
+    : hostname.toLowerCase();
+
+  // IPv4 loopback / private
+  if (h === 'localhost' || h === '127.0.0.1') return true;
+  if (/^10\./.test(h)) return true;
+  if (/^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+
+  // IPv6 loopback (full and compressed forms)
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+
+  // IPv4-mapped IPv6: ::ffff:<ipv4>
+  // Node.js URL normalises these to hex — e.g. ::ffff:127.0.0.1 → ::ffff:7f00:1
+  // Ranges: 127.x (7f), 10.x (a00:–aff:), 192.168.x (c0a8:), 172.16–31.x (ac1x:)
+  if (h.startsWith('::ffff:')) {
+    const mapped = h.slice(7);
+    if (
+      /^7f/.test(mapped) ||                  // 127.x.x.x
+      /^a[0-9a-f]{2}:/.test(mapped) ||       // 10.x.x.x  (0x0a00–0x0aff)
+      /^c0a8:/.test(mapped) ||               // 192.168.x.x
+      /^ac1[0-9a-f]:/.test(mapped)           // 172.16–31.x.x (0xac10–0xac1f)
+    ) return true;
+  }
+
+  // IPv6 unique-local (fc00::/7 — fc and fd prefixes)
+  if (/^f[cd]/i.test(h)) return true;
+
+  // IPv6 link-local (fe80::/10 — fe80..feb... but not fec+)
+  if (/^fe[89ab]/i.test(h)) return true;
+
+  return false;
 }
 
 /** Queries any service implementing the documented HTTP contract (POST /search). */
@@ -74,7 +100,12 @@ export class HttpKnowledgeProvider implements KnowledgeProvider {
       if (u.protocol !== 'https:') throw new Error(`refusing non-https provider URL (${u.protocol})`);
       if (isLoopbackOrPrivate(u.hostname)) throw new Error(`refusing loopback/private provider host (${u.hostname})`);
     }
-    return this.url.replace(/\/+$/, '') + '/search';
+    // Build the endpoint via the parsed URL object so the validated URL and the
+    // fetch target are always in sync (string concat diverges for URLs with ? or #).
+    u.pathname = u.pathname.replace(/\/+$/, '') + '/search';
+    u.search = '';
+    u.hash = '';
+    return u.toString();
   }
 
   private async authHeaders(): Promise<Record<string, string>> {

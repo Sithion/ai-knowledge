@@ -76,3 +76,27 @@ test('mcp provider: dispose closes the client (idempotent)', async () => {
   await p.dispose(); // no throw
   expect(true).toBe(true);
 });
+
+test('mcp provider: dispose() called mid-connect does not leak a connected client', async () => {
+  const { clientTransport } = await mockServer();
+  const p = new McpKnowledgeProvider(
+    { id: 'race', name: 'Race', enabled: true, transport: 'stdio', mode: 'tool', toolName: 'search' },
+    secrets,
+    clientTransport,
+  );
+  // Start a search (triggers getClient → connect), then immediately dispose.
+  const searchPromise = p.search('x', 1, sig()).catch(() => {});
+  await p.dispose();
+  await searchPromise;
+  // After dispose, further searches must throw (not silently use a leaked client).
+  await expect(p.search('y', 1, sig())).rejects.toThrow(/disposed/);
+});
+
+test('mcp provider: dispose() before any connection never throws', async () => {
+  const p = new McpKnowledgeProvider(
+    { id: 'pre', name: 'Pre', enabled: true, transport: 'stdio', mode: 'tool', toolName: 'search' },
+    secrets,
+  );
+  await p.dispose(); // no connection started — must not throw
+  expect(true).toBe(true);
+});

@@ -184,8 +184,8 @@ export class KnowledgeSDK {
         ? (JSON.parse(readFileSync(settingsPath, 'utf-8')) as { alwaysSearchExternalProviders?: boolean })
             ?.alwaysSearchExternalProviders === true
         : false;
-    } catch {
-      /* keep current state on error */
+    } catch (e) {
+      console.error('[CogniStore] reloadProviders failed:', e instanceof Error ? e.message : String(e));
     }
   }
 
