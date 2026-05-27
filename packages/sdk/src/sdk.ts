@@ -31,7 +31,7 @@ import {
   type SDKConfig,
   type FederatedSearchResult,
 } from '@cognistore/shared';
-import { loadProviders, ProviderManager, EnvSecretStore } from '@cognistore/providers';
+import { loadProviders, ProviderManager, EnvSecretStore, FileTokenStore } from '@cognistore/providers';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
@@ -178,7 +178,8 @@ export class KnowledgeSDK {
   reloadProviders(): void {
     try {
       const dir = dirname(expandHome(this.config.database.path));
-      this.providerManager = loadProviders(join(dir, 'providers.json'), new EnvSecretStore());
+      const tokenStore = new FileTokenStore(join(dir, 'oauth-tokens.json'));
+      this.providerManager = loadProviders(join(dir, 'providers.json'), new EnvSecretStore(), tokenStore);
       const settingsPath = join(dir, 'settings.json');
       this.alwaysExternal = existsSync(settingsPath)
         ? (JSON.parse(readFileSync(settingsPath, 'utf-8')) as { alwaysSearchExternalProviders?: boolean })

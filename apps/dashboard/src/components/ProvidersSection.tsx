@@ -14,8 +14,9 @@ const btn: React.CSSProperties = {
   color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer',
 };
 
-const emptyHttp = (): ProviderEntry => ({ id: '', name: '', kind: 'http', enabled: true, http: { url: '', auth: { type: 'none' } } });
-const emptyMcp = (): ProviderEntry => ({ id: '', name: '', kind: 'mcp', enabled: true, mcp: { transport: 'stdio', mode: 'tool', command: '', toolName: 'search' } });
+// All providers are MCP connectors now. stdio = local subprocess; remote = Streamable HTTP.
+const emptyStdio = (): ProviderEntry => ({ id: '', name: '', enabled: true, transport: 'stdio', mode: 'tool', command: '', toolName: 'search' });
+const emptyRemote = (): ProviderEntry => ({ id: '', name: '', enabled: true, transport: 'http', mode: 'tool', url: '', toolName: 'search', auth: { type: 'none' } });
 
 export function ProvidersSection() {
   const { t } = useTranslation();
@@ -41,34 +42,64 @@ export function ProvidersSection() {
     try {
       // Keychain first: if providers.json still lists the id, cleanup_provider_secrets
       // will catch it on uninstall even if the keychain delete failed here.
-      try { const { invoke } = await import('@tauri-apps/api/core'); await invoke('delete_provider_secret', { id }); } catch { /* not Tauri or no secret */ }
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('delete_provider_secret', { id });
+        await invoke('delete_oauth_tokens', { id }); // clear the oauth keychain mirror too
+      } catch { /* not Tauri or no secret */ }
       await api.deleteProvider(id);
       load();
     } catch (e: any) { setError(e?.message ?? 'delete failed'); }
   };
   const test = async (id: string) => {
     setTestResult((r) => ({ ...r, [id]: t('providers.testing') }));
-    try { const res = await api.testProvider(id); setTestResult((r) => ({ ...r, [id]: res.ok ? t('providers.testOk') : `✕ ${res.message ?? ''}` })); }
-    catch (e: any) { setTestResult((r) => ({ ...r, [id]: `✕ ${e?.message ?? ''}` })); }
+    try {
+      const res = await api.testProvider(id);
+      const label = res.ok ? t('providers.testOk') : (res.needsAuth ? `🔑 ${res.message ?? 'needs auth'}` : `✕ ${res.message ?? ''}`);
+      setTestResult((r) => ({ ...r, [id]: label }));
+    } catch (e: any) { setTestResult((r) => ({ ...r, [id]: `✕ ${e?.message ?? ''}` })); }
+  };
+  // Interactive OAuth 2.1: Tauri reserves a loopback port → server builds the
+  // authorization URL → Tauri opens the browser and captures the redirect → server
+  // exchanges the code for tokens. Requires the desktop app (Tauri invoke).
+  const connect = async (id: string) => {
+    setTestResult((r) => ({ ...r, [id]: t('providers.connecting') }));
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const { port, redirect_uri } = await invoke<{ port: number; redirect_uri: string }>('oauth_reserve');
+      const started = await api.oauthStart(id, redirect_uri);
+      if (started.alreadyConnected) { setTestResult((r) => ({ ...r, [id]: t('providers.connected') })); return; }
+      if (!started.ok || !started.authorizeUrl) throw new Error(started.message ?? 'could not start OAuth');
+      const cb = await invoke<{ code?: string; state?: string; error?: string }>('oauth_await', { port, authorizeUrl: started.authorizeUrl });
+      if (cb.error || !cb.code) throw new Error(cb.error ?? 'no authorization code returned');
+      const fin = await api.oauthFinish(id, cb.code);
+      setTestResult((r) => ({ ...r, [id]: fin.ok ? t('providers.connected') : `✕ ${fin.message ?? ''}` }));
+    } catch (e: any) {
+      setTestResult((r) => ({ ...r, [id]: `✕ ${e?.message ?? String(e)}` }));
+    }
   };
 
   const save = async () => {
     if (!draft) return;
     setError('');
     try {
-      const existing = providers.some((p) => p.id === draft.id);
+      // Default secretRef to the provider id for static-header auth.
+      const entry: ProviderEntry = draft.transport === 'http' && draft.auth?.type === 'header'
+        ? { ...draft, auth: { ...draft.auth, secretRef: draft.auth.secretRef ?? draft.id } }
+        : draft;
+      const existing = providers.some((p) => p.id === entry.id);
       // Server write first — it's the source of truth. Keychain is best-effort after.
-      if (existing) await api.updateProvider(draft.id, draft); else await api.addProvider(draft);
-      if (secret && draft[draft.kind]?.auth?.secretRef) {
-        const ref = draft[draft.kind]!.auth!.secretRef!;
-        // Inject into the live server process so the provider works without restart.
-        await api.injectProviderSecret(draft[draft.kind]!.id ?? draft.id, secret).catch(() => {});
-        // Persist to OS keychain (Tauri only; silent in dev/browser context).
+      if (existing) await api.updateProvider(entry.id, entry); else await api.addProvider(entry);
+      if (secret && entry.transport === 'http' && entry.auth?.type === 'header') {
+        const ref = entry.auth.secretRef ?? entry.id;
+        await api.injectProviderSecret(entry.id, secret).catch(() => {});
         try { await setProviderSecret(ref, secret); } catch { /* not Tauri */ }
       }
       setDraft(null); setSecret(''); load();
     } catch (e: any) { setError(e?.message ?? 'save failed'); }
   };
+
+  const isRemote = draft?.transport === 'http';
 
   return (
     <div style={{ marginBottom: 32 }}>
@@ -90,10 +121,15 @@ export function ProvidersSection() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <span>
               <strong>{p.name}</strong>{' '}
-              <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{p.kind}</span>
+              <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                mcp · {p.transport}{p.transport === 'http' && p.auth?.type === 'oauth' ? ' · oauth' : ''}
+              </span>
               {!p.enabled && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}> · {t('providers.disabled')}</span>}
             </span>
             <span style={{ display: 'flex', gap: 6 }}>
+              {p.transport === 'http' && p.auth?.type === 'oauth' && (
+                <button style={btn} onClick={() => connect(p.id)}>{t('providers.connect')}</button>
+              )}
               <button style={btn} onClick={() => test(p.id)}>{t('providers.test')}</button>
               <button style={btn} onClick={() => toggleEnabled(p)}>{p.enabled ? t('providers.disable') : t('providers.enable')}</button>
               <button style={btn} onClick={() => { setDraft(JSON.parse(JSON.stringify(p))); setSecret(''); }}>{t('actions.edit')}</button>
@@ -106,8 +142,8 @@ export function ProvidersSection() {
 
       {!draft && (
         <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-          <button style={btn} onClick={() => setDraft(emptyHttp())}>+ HTTP</button>
-          <button style={btn} onClick={() => setDraft(emptyMcp())}>+ MCP</button>
+          <button style={btn} onClick={() => setDraft(emptyStdio())}>+ {t('providers.addStdio')}</button>
+          <button style={btn} onClick={() => setDraft(emptyRemote())}>+ {t('providers.addRemote')}</button>
         </div>
       )}
 
@@ -117,33 +153,34 @@ export function ProvidersSection() {
             <input style={input} placeholder={t('providers.id')} value={draft.id} onChange={(e) => setDraft({ ...draft, id: (e.target as HTMLInputElement).value })} />
             <input style={input} placeholder={t('providers.name')} value={draft.name} onChange={(e) => setDraft({ ...draft, name: (e.target as HTMLInputElement).value })} />
           </div>
-          {draft.kind === 'http' && (
+
+          {!isRemote ? (
+            <input style={input} placeholder="command (e.g. npx)" value={draft.command ?? ''} onChange={(e) => setDraft({ ...draft, command: (e.target as HTMLInputElement).value })} />
+          ) : (
             <>
-              <input style={input} placeholder="https://provider.example/api" value={draft.http?.url ?? ''} onChange={(e) => setDraft({ ...draft, http: { ...draft.http!, url: (e.target as HTMLInputElement).value } })} />
+              <input style={input} placeholder="https://mcp.example/mcp" value={draft.url ?? ''} onChange={(e) => setDraft({ ...draft, url: (e.target as HTMLInputElement).value })} />
               <div style={{ display: 'flex', gap: 8 }}>
-                <select style={input} value={draft.http?.auth?.type ?? 'none'} onChange={(e) => setDraft({ ...draft, http: { ...draft.http!, auth: { ...(draft.http?.auth ?? { type: 'none' }), type: (e.target as HTMLSelectElement).value as any, secretRef: draft.id } } })}>
+                <select
+                  style={input}
+                  value={draft.auth?.type ?? 'none'}
+                  onChange={(e) => setDraft({ ...draft, auth: { ...(draft.auth ?? { type: 'none' }), type: (e.target as HTMLSelectElement).value as any } })}
+                >
                   <option value="none">{t('providers.authNone')}</option>
-                  <option value="bearer">Bearer</option>
                   <option value="header">{t('providers.authHeader')}</option>
+                  <option value="oauth">OAuth 2.1</option>
                 </select>
-                {draft.http?.auth?.type !== 'none' && (
+                {draft.auth?.type === 'header' && (
                   <input style={input} type="password" placeholder={t('providers.secret')} value={secret} onChange={(e) => setSecret((e.target as HTMLInputElement).value)} />
                 )}
               </div>
+              {draft.auth?.type === 'oauth' && (
+                <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: 0 }}>{t('providers.oauthHint')}</p>
+              )}
             </>
           )}
-          {draft.kind === 'mcp' && (
-            <>
-              <select style={input} value={draft.mcp?.transport ?? 'stdio'} onChange={(e) => setDraft({ ...draft, mcp: { ...draft.mcp!, transport: (e.target as HTMLSelectElement).value as any } })}>
-                <option value="stdio">stdio</option>
-                <option value="http">http (streamable)</option>
-              </select>
-              {draft.mcp?.transport === 'stdio'
-                ? <input style={input} placeholder="command (e.g. npx)" value={draft.mcp?.command ?? ''} onChange={(e) => setDraft({ ...draft, mcp: { ...draft.mcp!, command: (e.target as HTMLInputElement).value } })} />
-                : <input style={input} placeholder="https://mcp.example/mcp" value={draft.mcp?.url ?? ''} onChange={(e) => setDraft({ ...draft, mcp: { ...draft.mcp!, url: (e.target as HTMLInputElement).value } })} />}
-              <input style={input} placeholder="tool name (e.g. search)" value={draft.mcp?.toolName ?? ''} onChange={(e) => setDraft({ ...draft, mcp: { ...draft.mcp!, toolName: (e.target as HTMLInputElement).value } })} />
-            </>
-          )}
+
+          <input style={input} placeholder="tool name (e.g. search)" value={draft.toolName ?? ''} onChange={(e) => setDraft({ ...draft, toolName: (e.target as HTMLInputElement).value })} />
+
           {error && <div style={{ fontSize: 11, color: 'var(--error)' }}>{error}</div>}
           <div style={{ display: 'flex', gap: 6 }}>
             <button style={{ ...btn, backgroundColor: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }} onClick={save}>{t('actions.save')}</button>

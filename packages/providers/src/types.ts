@@ -2,7 +2,7 @@ import type { ExternalResult } from '@cognistore/shared';
 
 export type { ExternalResult };
 
-export type ProviderKind = 'http' | 'mcp';
+export type ProviderKind = 'mcp';
 
 /** A pluggable external knowledge source queried during federated search. */
 export interface KnowledgeProvider {

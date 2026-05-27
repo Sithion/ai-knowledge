@@ -1,26 +1,8 @@
 import { test, expect } from '@playwright/test';
-import http from 'node:http';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadProviders, EnvSecretStore, providersConfigSchema } from '@cognistore/providers';
-
-function startMock(body: unknown): Promise<{ url: string; close: () => Promise<void> }> {
-  const server = http.createServer((req, res) => {
-    let d = '';
-    req.on('data', (c) => (d += c));
-    req.on('end', () => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(body));
-    });
-  });
-  return new Promise((resolve) =>
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address() as { port: number };
-      resolve({ url: `http://127.0.0.1:${addr.port}`, close: () => new Promise<void>((r) => server.close(() => r())) });
-    }),
-  );
-}
+import { loadProviders, migrateProvidersConfig, EnvSecretStore, providersConfigSchema } from '@cognistore/providers';
 
 test('loadProviders: missing file → empty manager (offline-first)', () => {
   const mgr = loadProviders(join(tmpdir(), `none-${Date.now()}.json`), new EnvSecretStore());
@@ -36,27 +18,59 @@ test('loadProviders: malformed file → empty manager (never breaks local)', () 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('loadProviders: builds an http provider and fanOut queries it', async () => {
-  const mock = await startMock({ results: [{ title: 'T', content: 'C' }] });
+test('migrateProvidersConfig: v1 → v2 flattens mcp, bearer→header, http→disabled stub', () => {
+  const { config, migrated } = migrateProvidersConfig({
+    version: 1,
+    providers: [
+      { id: 'docs', name: 'Docs', kind: 'mcp', enabled: true, mcp: { transport: 'stdio', command: 'npx', mode: 'tool', toolName: 'search', auth: { type: 'bearer', secretRef: 'docs' } } },
+      { id: 'legacy', name: 'Legacy', kind: 'http', enabled: true, http: { url: 'https://api.example/search' } },
+    ],
+  });
+  expect(migrated).toBe(true);
+  expect(config.version).toBe(2);
+
+  const docs = config.providers.find((p) => p.id === 'docs')!;
+  expect(docs.transport).toBe('stdio');
+  expect(docs.command).toBe('npx');
+  expect(docs.toolName).toBe('search');
+  expect(docs.auth).toEqual({ type: 'header', headerName: 'authorization', secretRef: 'docs' });
+
+  const legacy = config.providers.find((p) => p.id === 'legacy')!;
+  expect(legacy.enabled).toBe(false);           // http providers can't auto-convert → disabled stub
+  expect(legacy.name).toContain('re-add as MCP');
+});
+
+test('migrateProvidersConfig: a v2 config passes through unchanged', () => {
+  const v2 = { version: 2, providers: [{ id: 'a', name: 'A', enabled: true, transport: 'stdio', command: 'npx', mode: 'tool', toolName: 'search' }] };
+  const { config, migrated } = migrateProvidersConfig(v2);
+  expect(migrated).toBe(false);
+  expect(config.providers[0].id).toBe('a');
+});
+
+test('loadProviders: rewrites a v1 file to v2 on disk and lists providers', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cog-prov-'));
   try {
     const f = join(dir, 'providers.json');
     writeFileSync(f, JSON.stringify({
       version: 1,
-      providers: [
-        { id: 'wiki', name: 'Wiki', kind: 'http', enabled: true, http: { url: mock.url, allowInsecure: true } },
-        { id: 'off', name: 'Off', kind: 'http', enabled: false, http: { url: mock.url, allowInsecure: true } },
-      ],
+      providers: [{ id: 'docs', name: 'Docs', kind: 'mcp', enabled: true, mcp: { transport: 'stdio', command: 'npx', mode: 'tool', toolName: 'search' } }],
     }));
     const mgr = loadProviders(f, new EnvSecretStore());
-    expect(mgr.list().map((p) => p.id).sort()).toEqual(['off', 'wiki']);
-    const sections = await mgr.fanOut('q', 5, 1000);    // disabled excluded
-    expect(sections.map((s) => s.providerId)).toEqual(['wiki']);
-    expect(sections[0].results).toEqual([{ title: 'T', content: 'C' }]);
-  } finally { await mock.close(); rmSync(dir, { recursive: true, force: true }); }
+    expect(mgr.list().map((p) => p.id)).toEqual(['docs']);
+    // file rewritten in place to v2
+    const rewritten = JSON.parse(readFileSync(f, 'utf-8'));
+    expect(rewritten.version).toBe(2);
+    expect(rewritten.providers[0].transport).toBe('stdio');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('providersConfigSchema rejects a kind/block mismatch', () => {
-  expect(() => providersConfigSchema.parse({ version: 1, providers: [{ id: 'x', name: 'X', kind: 'http' }] })).toThrow();
-  expect(() => providersConfigSchema.parse({ version: 1, providers: [{ id: 'BAD ID', name: 'X', kind: 'http', http: { url: 'https://x.test' } }] })).toThrow();
+test('providerEntry schema (v2): rejects bad id and transport/field mismatches', () => {
+  // bad slug
+  expect(() => providersConfigSchema.parse({ version: 2, providers: [{ id: 'BAD ID', name: 'X', transport: 'stdio', command: 'npx' }] })).toThrow();
+  // stdio without command
+  expect(() => providersConfigSchema.parse({ version: 2, providers: [{ id: 'x', name: 'X', transport: 'stdio' }] })).toThrow();
+  // http without url
+  expect(() => providersConfigSchema.parse({ version: 2, providers: [{ id: 'x', name: 'X', transport: 'http' }] })).toThrow();
+  // wrong version literal
+  expect(() => providersConfigSchema.parse({ version: 1, providers: [] })).toThrow();
 });

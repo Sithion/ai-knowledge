@@ -13,7 +13,14 @@ import type {
   FederatedSearchResult,
   ExternalSection,
 } from '@cognistore/shared';
-import { DEFAULT_SEARCH_LIMIT } from '@cognistore/shared';
+import {
+  DEFAULT_SEARCH_LIMIT,
+  PLAN_DEDUP_THRESHOLD,
+  PLAN_ACTIVE_MERGE_THRESHOLD,
+  PLAN_CONTEXT_THRESHOLD,
+  PLAN_CONTEXT_LIMIT,
+  PLAN_CONTEXT_EXTRA,
+} from '@cognistore/shared';
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
@@ -70,10 +77,62 @@ export class KnowledgeService {
     const queryEmbedding = await this.embeddingProvider.embed(query);
     const results = await this.repository.searchBySimilarity(queryEmbedding, options);
     this.logOp('read', results.length);
-    return results.map((r) => ({
+    const direct: SearchResult[] = results.map((r) => ({
       entry: this.toKnowledgeEntry(r.entry),
       similarity: r.similarity,
     }));
+
+    if (!options?.includePlanContext) return direct;
+    try {
+      return await this.augmentWithPlanContext(queryEmbedding, options, direct);
+    } catch {
+      return direct; // augmentation is best-effort; never fail the base search
+    }
+  }
+
+  /**
+   * Plan-augmented retrieval: mine knowledge linked (input + output) to plans whose
+   * embedding is similar to the query, dedup against direct hits, and append them
+   * AFTER all direct results (hard-demoted), capped at PLAN_CONTEXT_EXTRA.
+   */
+  private async augmentWithPlanContext(
+    queryEmbedding: number[],
+    options: SearchOptions,
+    direct: SearchResult[],
+  ): Promise<SearchResult[]> {
+    const scope = options.scope ?? 'global';
+    const plans = this.repository.findSimilarPlansAnyStatus(
+      queryEmbedding,
+      scope,
+      PLAN_CONTEXT_THRESHOLD,
+      PLAN_CONTEXT_LIMIT,
+    );
+    if (!plans.length) return direct;
+
+    const seen = new Set(direct.map((r) => r.entry.id));
+    const extras: SearchResult[] = [];
+    for (const { plan, similarity } of plans) {
+      for (const rel of this.repository.getPlanRelations(plan.id)) {
+        if (extras.length >= PLAN_CONTEXT_EXTRA) break;
+        if (seen.has(rel.id)) continue;
+        const entry = await this.repository.findById(rel.id);
+        if (!entry) continue;
+        seen.add(rel.id);
+        extras.push({
+          entry: this.toKnowledgeEntry(entry),
+          similarity,
+          provenance: {
+            viaPlanId: plan.id,
+            viaPlanTitle: plan.title,
+            relationType: rel.relationType as 'input' | 'output',
+            viaPlanSimilarity: similarity,
+          },
+        });
+      }
+      if (extras.length >= PLAN_CONTEXT_EXTRA) break;
+    }
+
+    return [...direct, ...extras];
   }
 
   /**
@@ -267,7 +326,7 @@ export class KnowledgeService {
 
   // ─── Plans (separate entity) ────────────────────────────────
 
-  async createPlan(input: CreatePlanInput & { tasks?: { description: string; priority?: string }[]; skipDedup?: boolean }): Promise<Plan & { deduplicated?: boolean; deduplicatedAction?: string }> {
+  async createPlan(input: CreatePlanInput & { tasks?: { description: string; priority?: string }[]; skipDedup?: boolean }): Promise<Plan & { deduplicated?: boolean; deduplicatedAction?: string; dedupSkipped?: boolean; nearestSimilarity?: number; nearestPlanId?: string; hint?: string }> {
     const { tasks, skipDedup, ...planInput } = input;
     const embedding = await this.embeddingProvider.embed(`${input.title} ${input.content}`);
 
@@ -277,28 +336,41 @@ export class KnowledgeService {
       try { this.repository.archiveStaleDrafts(24); this.lastArchiveRunMs = now; } catch { /* best-effort */ }
     }
 
-    // ─── Dedup: check for semantically similar active/draft plans in same scope ───
-    const similarPlans = skipDedup ? [] : this.repository.findSimilarActivePlans(embedding, input.scope, 0.5);
+    // ─── Dedup: only merge into a genuinely related plan in the same scope. ───
+    // A DRAFT is unconfirmed and cheap to update (PLAN_DEDUP_THRESHOLD). Appending
+    // into an ACTIVE (in-progress) plan disturbs real work, so it needs a higher bar
+    // (PLAN_ACTIVE_MERGE_THRESHOLD). Different work — even in the same project — falls
+    // through to a new plan instead of being force-merged.
+    const similarPlans = skipDedup ? [] : this.repository.findSimilarActivePlans(embedding, input.scope, PLAN_DEDUP_THRESHOLD);
+    let nearest: { id: string; similarity: number; status: string } | undefined;
     if (similarPlans.length > 0) {
-      const { plan: existingRow } = similarPlans[0];
-      const isActive = (existingRow as any).status === 'active';
+      const { plan: existingRow, similarity } = similarPlans[0];
+      const status = (existingRow as any).status as string;
+      nearest = { id: existingRow.id, similarity, status };
+      const isActive = status === 'active';
 
-      if (isActive) {
-        // Active plan: add tasks to it (don't overwrite content)
+      if (isActive && similarity >= PLAN_ACTIVE_MERGE_THRESHOLD) {
+        // Active plan, clearly the same effort: add tasks to it (don't overwrite
+        // content). Still link the local plan file if one was provided.
         if (tasks && tasks.length > 0) {
           for (const task of tasks) {
             this.repository.createPlanTask({ planId: existingRow.id, description: task.description, priority: task.priority });
           }
         }
-        const plan = this.toPlan(existingRow);
+        let activeRow = existingRow;
+        if (input.planFilePath) {
+          activeRow = this.repository.updatePlan(existingRow.id, { planFilePath: input.planFilePath }) ?? existingRow;
+        }
+        const plan = this.toPlan(activeRow);
         return { ...plan, deduplicated: true, deduplicatedAction: 'tasks_added_to_active_plan' };
-      } else {
+      } else if (!isActive) {
         // Draft plan: update content and replace tasks
         this.repository.updatePlan(existingRow.id, {
           title: input.title,
           content: input.content,
           tags: input.tags,
           source: input.source,
+          planFilePath: input.planFilePath,
         });
         if (tasks && tasks.length > 0) {
           this.repository.deletePlanTasks(existingRow.id);
@@ -313,9 +385,10 @@ export class KnowledgeService {
         const plan = this.toPlan(updated);
         return { ...plan, deduplicated: true, deduplicatedAction: 'draft_plan_updated' };
       }
+      // Active but below the active-merge bar → keep separate; create a new plan.
     }
 
-    // 3. No duplicates found — create normally
+    // No (close enough) duplicate — create normally.
     const row = this.repository.createPlan({ ...planInput, embedding });
     const plan = this.toPlan(row);
 
@@ -328,6 +401,18 @@ export class KnowledgeService {
         this.repository.deletePlan(plan.id);
         throw err;
       }
+    }
+
+    if (nearest) {
+      // A related (but distinct) plan existed and we deliberately did NOT merge.
+      const pct = Math.round(nearest.similarity * 100);
+      return {
+        ...plan,
+        dedupSkipped: true,
+        nearestSimilarity: nearest.similarity,
+        nearestPlanId: nearest.id,
+        hint: `A related ${nearest.status} plan (${pct}% similar) exists in this scope but was different enough to keep as a separate plan. If this is actually the same effort, add to it via updatePlan("${nearest.id}", ...) instead.`,
+      };
     }
 
     return plan;
@@ -551,6 +636,7 @@ export class KnowledgeService {
       scope: row.scope,
       status: row.status,
       source: row.source ?? '',
+      planFilePath: row.plan_file_path ?? row.planFilePath ?? null,
       createdAt: new Date(row.created_at ?? row.createdAt),
       updatedAt: new Date(row.updated_at ?? row.updatedAt),
     };

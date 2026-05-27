@@ -10,6 +10,8 @@ use std::fs;
 use std::path::Path;
 
 const SERVICE: &str = "cognistore";
+/// Keychain service for OAuth sessions (tokens/clientInfo/verifier as a JSON blob, keyed by provider id).
+const OAUTH_SERVICE: &str = "cognistore-oauth";
 
 /// `company-wiki` -> `COGNISTORE_PROVIDER_SECRET__COMPANY_WIKI` (matches the TS side).
 pub fn sanitize_env_key(id: &str) -> String {
@@ -64,15 +66,57 @@ pub fn delete_provider_secret(id: String) -> Result<(), String> {
     }
 }
 
-/// Uninstall symmetry: delete every provider secret named in providers.json.
+// ─── OAuth sessions (remote MCP) ─────────────────────────────────────────────
+// Persisted as a JSON blob per provider under the `cognistore-oauth` service. The
+// sidecar's file store (~/.cognistore/oauth-tokens.json) is the source of truth;
+// this keychain entry is an at-rest mirror the frontend writes when the app is open.
+
+#[tauri::command]
+pub fn set_oauth_tokens(id: String, value: String) -> Result<(), String> {
+    keyring::Entry::new(OAUTH_SERVICE, &id)
+        .map_err(|e| e.to_string())?
+        .set_password(&value)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_oauth_tokens(id: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(OAUTH_SERVICE, &id).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn delete_oauth_tokens_internal(id: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(OAUTH_SERVICE, id).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn delete_oauth_tokens(id: String) -> Result<(), String> {
+    delete_oauth_tokens_internal(&id)
+}
+
+/// Uninstall symmetry: delete every provider secret AND oauth session named in
+/// providers.json, plus the sidecar oauth-tokens.json file.
 #[tauri::command]
 pub fn cleanup_provider_secrets(app: tauri::AppHandle) -> Result<(), String> {
     let _ = app;
     if let Some(home) = dirs::home_dir() {
-        let providers_json = home.join(".cognistore").join("providers.json");
+        let cog = home.join(".cognistore");
+        let providers_json = cog.join("providers.json");
         for id in provider_ids_from_config(&providers_json) {
-            let _ = delete_provider_secret(id);
+            let _ = delete_provider_secret(id.clone());
+            let _ = delete_oauth_tokens_internal(&id);
         }
+        // Remove the sidecar OAuth token file (source of truth).
+        let _ = fs::remove_file(cog.join("oauth-tokens.json"));
     }
     Ok(())
 }

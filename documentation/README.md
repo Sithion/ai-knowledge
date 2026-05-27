@@ -15,7 +15,7 @@ Technical documentation for CogniStore.
 | [Frontend](./frontend.md) | React pages, ConfirmModal, plan archive, Redux state, i18n, routing, loading strategy |
 | [API Reference](./api-reference.md) | Fastify sidecar REST endpoints: health, CRUD, stats, setup, upgrade, uninstall, providers, federated search, system guards |
 | [CI/CD](./ci-cd.md) | GitHub Actions workflows, instruction compilation, publish pipeline, agent test battery, version management |
-| **External Knowledge Providers** | [HTTP Contract](./providers/http-contract.md) · [Plug in HTTP](./providers/plug-http.md) · [Plug in MCP](./providers/plug-mcp.md) · [Config Reference](./providers/providers-config.md) · [Security Model](./providers/security.md) |
+| **External Knowledge Providers (MCP)** | [Plug in MCP](./providers/plug-mcp.md) · [Config Reference](./providers/providers-config.md) · [Security Model](./providers/security.md) |
 
 ## Quick Navigation
 
@@ -29,6 +29,6 @@ Technical documentation for CogniStore.
 
 **Adding a new AI client?** Follow [Config Injection](./config-injection.md) patterns.
 
-**Connecting external knowledge?** Start with [HTTP Contract](./providers/http-contract.md) (build a provider) or [Plug in MCP](./providers/plug-mcp.md) (connect an MCP server); read the [Security Model](./providers/security.md) first.
+**Connecting external knowledge?** See [Plug in MCP](./providers/plug-mcp.md) (connect an MCP server — stdio or remote with OAuth); read the [Security Model](./providers/security.md) first.
 
 **Running agent tests?** See [CI/CD](./ci-cd.md) for the agent test battery (`scripts/test-agents.sh`).

@@ -9,6 +9,7 @@ import { SettingsPage } from './pages/SettingsPage.js';
 import { WidgetsPage } from './pages/WidgetsPage.js';
 import { PlansPage } from './pages/PlansPage.js';
 import { TokenConsumptionPage } from './pages/TokenConsumptionPage.js';
+import { ProvidersPage } from './pages/ProvidersPage.js';
 import { SetupPage } from './pages/SetupPage.js';
 import { UpgradePage } from './pages/UpgradePage.js';
 import { api } from './api/client.js';
@@ -128,6 +129,7 @@ export function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/plans" element={<PlansPage />} />
           <Route path="/tokens" element={<TokenConsumptionPage />} />
+          <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/stats" element={<StatsPage />} />
           <Route path="/stats/plans" element={<PlanStatsPage />} />
           <Route path="/widgets" element={<WidgetsPage />} />

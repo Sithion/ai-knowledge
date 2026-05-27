@@ -134,6 +134,8 @@ CREATE TABLE IF NOT EXISTS scan_state (
   last_scanned_at TEXT NOT NULL,
   PRIMARY KEY (source, file_path)
 );
+
+ALTER TABLE plans ADD COLUMN plan_file_path TEXT;
 `,
 };
 

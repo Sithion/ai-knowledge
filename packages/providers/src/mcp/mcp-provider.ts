@@ -1,16 +1,21 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { ExternalResult } from '@cognistore/shared';
 import type { KnowledgeProvider, ProviderKind } from '../types.js';
 import type { ISecretStore } from '../secrets/secret-store.js';
+import { guardRemoteMcpUrl } from './url-guard.js';
 
 type ClientTransport = Parameters<Client['connect']>[0];
 
 export interface McpAuthConfig {
-  type: 'none' | 'bearer' | 'header';
+  type: 'none' | 'header' | 'oauth';
   headerName?: string;
   secretRef?: string;
+  scopes?: string[];
+  clientId?: string;
+  allowInsecure?: boolean;
 }
 
 export interface McpProviderOptions {
@@ -25,6 +30,8 @@ export interface McpProviderOptions {
   // http (Streamable HTTP)
   url?: string;
   auth?: McpAuthConfig;
+  /** OAuth client provider for `auth.type === 'oauth'` (injected by the host; see oauth-provider.ts). */
+  oauthProvider?: OAuthClientProvider;
   // query mapping
   mode?: 'tool' | 'resources';
   toolName?: string;
@@ -69,12 +76,12 @@ export class McpKnowledgeProvider implements KnowledgeProvider {
     this.enabled = opts.enabled;
   }
 
+  /** Static header auth (`auth.type === 'header'`). OAuth uses the SDK authProvider, not this. */
   private async authHeaders(): Promise<Record<string, string>> {
     const a = this.opts.auth;
-    if (!a || a.type === 'none') return {};
+    if (!a || a.type !== 'header') return {};
     const token = a.secretRef ? await this.secrets.get(a.secretRef) : null;
     if (!token) return {};
-    if (a.type === 'bearer') return { authorization: `Bearer ${token}` };
     return { [(a.headerName ?? 'authorization').toLowerCase()]: token };
   }
 
@@ -85,8 +92,14 @@ export class McpKnowledgeProvider implements KnowledgeProvider {
       return new StdioClientTransport({ command: this.opts.command, args: this.opts.args ?? [], env: this.opts.env }) as ClientTransport;
     }
     if (!this.opts.url) throw new Error('mcp http provider requires `url`');
+    // SSRF/egress guard: require https + public host unless allowInsecure (dev).
+    const url = guardRemoteMcpUrl(this.opts.url, this.opts.auth?.allowInsecure);
+    if (this.opts.auth?.type === 'oauth') {
+      if (!this.opts.oauthProvider) throw new Error('mcp oauth provider requires an oauthProvider');
+      return new StreamableHTTPClientTransport(url, { authProvider: this.opts.oauthProvider }) as ClientTransport;
+    }
     const headers = await this.authHeaders();
-    return new StreamableHTTPClientTransport(new URL(this.opts.url), { requestInit: { headers } }) as ClientTransport;
+    return new StreamableHTTPClientTransport(url, { requestInit: { headers } }) as ClientTransport;
   }
 
   private async getClient(): Promise<Client> {

@@ -15,6 +15,9 @@ Credential Manager, Linux Secret Service), not in `providers.json`, logs, or the
 - `providers.json` stores only a **`secretRef`** (a keychain reference, typically the provider `id`)
   and, for custom-header auth, the header name. No secret value.
 - The keychain stores the secret value under service `cognistore`, account = the `secretRef`.
+- **stdio** servers receive their credential as an `env` var the subprocess reads (e.g. `NOTION_TOKEN`);
+  the value is keychain-backed, not written to `providers.json`.
+- **OAuth tokens** are NOT in the keychain-env path (they refresh at runtime) — see §1b.
 
 ### Cross-process injection (why only Rust touches the keychain)
 
@@ -35,12 +38,42 @@ directly. Only the Tauri (Rust) process does:
 **Dev fallback:** outside the Tauri app you can set the `COGNISTORE_PROVIDER_SECRET__<KEY>` variable
 manually instead of using the keychain.
 
+## 1b. OAuth 2.1 for remote MCP servers
+
+Remote MCP servers can authenticate with **OAuth 2.1 + PKCE** instead of a static header. CogniStore
+reuses the MCP SDK's OAuth client (RFC 9728 / RFC 8414 discovery, PKCE S256, RFC 7591 Dynamic Client
+Registration, token exchange/refresh) and only supplies persistence + the desktop redirect.
+
+### Loopback redirect flow (RFC 8252)
+
+Desktop apps can't use a web redirect, so CogniStore uses a **loopback** redirect:
+
+1. The Tauri shell reserves an ephemeral port (`oauth_reserve` → `http://127.0.0.1:<port>/callback`).
+2. The sidecar builds the authorization URL (the SDK saves the PKCE verifier + any DCR client info).
+3. The shell opens the **system browser** at that URL and waits for the redirect on the reserved port
+   (`oauth_await`, 120 s timeout), capturing `?code=…&state=…`.
+4. The sidecar exchanges the code for tokens (`finishAuth`) and persists them.
+
+The authorization code and tokens never transit a third party; the loopback listener accepts exactly
+one request and returns a "you can close this tab" page.
+
+### Token storage
+
+OAuth tokens (access + refresh), the DCR client info, and the PKCE verifier are persisted by the
+**always-running sidecar** in `~/.cognistore/oauth-tokens.json` (mode `0600`, atomic writes) — the
+source of truth, so refresh works even when the dashboard window is closed. An optional OS-keychain
+mirror (service `cognistore-oauth`) is available. Tokens are read/refreshed at request time; a search
+never opens a browser (if a token is missing/unrefreshable the provider's section reports a re-auth
+prompt instead of crashing the fan-out).
+
 ### Uninstall symmetry
 
-The dashboard's uninstall flow enumerates configured providers and calls
-`delete_provider_secret`/`cleanup_provider_secrets` to remove their keychain entries **before** the
-`~/.cognistore` directory (including `providers.json`) is deleted. Nothing is left behind in the
-keychain. This mirrors the setup/uninstall rule in `CLAUDE.md`.
+The dashboard's uninstall flow calls `cleanup_provider_secrets`, which removes each provider's
+`cognistore` secret **and** its `cognistore-oauth` token entry, and deletes
+`~/.cognistore/oauth-tokens.json` — **before** the `~/.cognistore` directory (including `providers.json`)
+is deleted. Deleting a single provider in the UI likewise clears its static-secret and OAuth keychain
+entries plus its session in the token file. Nothing is left behind. This mirrors the setup/uninstall
+rule in `CLAUDE.md`.
 
 ## 2. Untrusted content — indirect prompt injection
 
@@ -61,9 +94,10 @@ prompt injection). CogniStore's defenses:
 
 ## 3. Network egress
 
-- **HTTPS only by default.** HTTP providers must use `https://` and a public host; loopback/private
-  hosts are rejected by an SSRF guard unless the entry sets `allowInsecure: true` (intended for local
-  development only).
+- **HTTPS only by default.** Remote MCP `url`s must use `https://` and a public host; loopback/private
+  hosts (IPv4 + IPv6 incl. unique-local, link-local, IPv4-mapped) are rejected by an SSRF guard unless
+  the entry sets `auth.allowInsecure: true` (local development only). stdio servers are local
+  subprocesses and aren't subject to this.
 - **Per-provider timeout.** Default 5 s, with per-provider abort. A slow, hanging, or failing provider
   affects only its own section — local search and other providers are isolated from it.
 - **Opt-in, small blast radius.** Providers are disabled until enabled, and external search runs only

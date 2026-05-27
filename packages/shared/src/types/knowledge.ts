@@ -81,6 +81,8 @@ export interface Plan {
   scope: string;
   status: KnowledgeStatus;
   source: string;
+  /** Absolute path to the local plan file this plan was authored from (plan mode), if any. */
+  planFilePath?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -92,6 +94,8 @@ export interface CreatePlanInput {
   scope: string;
   source: string;
   status?: KnowledgeStatus;
+  /** Absolute path to the local plan file (REQUIRED whenever a plan was persisted to a file). */
+  planFilePath?: string | null;
 }
 
 export interface UpdatePlanInput {
@@ -101,6 +105,7 @@ export interface UpdatePlanInput {
   scope?: string;
   status?: KnowledgeStatus;
   source?: string;
+  planFilePath?: string | null;
 }
 
 // ─── Plan Tasks ──────────────────────────────────────────────
@@ -158,11 +163,26 @@ export interface SearchOptions {
   scope?: string;
   limit?: number;
   threshold?: number;
+  /**
+   * Also surface knowledge linked to semantically similar plans (input = consulted,
+   * output = produced). Off by default; the MCP getKnowledge handler enables it.
+   */
+  includePlanContext?: boolean;
 }
 
 export interface SearchResult {
   entry: KnowledgeEntry;
   similarity: number;
+  /**
+   * Present when this result was surfaced via a similar plan rather than a direct
+   * match. Such results are ranked AFTER all direct hits.
+   */
+  provenance?: {
+    viaPlanId: string;
+    viaPlanTitle: string;
+    relationType: 'input' | 'output';
+    viaPlanSimilarity: number;
+  };
 }
 
 export interface HealthStatus {

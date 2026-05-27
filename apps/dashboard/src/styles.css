@@ -39,6 +39,28 @@ body {
   border-radius: 3px;
 }
 
+/* Native <select> on Linux WebKitGTK ignores background-color and renders with the
+   system (light) theme — making dark-on-light text nearly invisible. Force CSS control
+   with appearance:none and provide a custom dropdown arrow. Options are styled explicitly
+   because the GTK popup also defaults to system colors. Applies on all platforms. */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px;
+  padding-right: 32px;
+}
+
+select option {
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
 /* Markdown rendering */
 .plan-markdown h1, .plan-markdown h2, .plan-markdown h3 { color: var(--text-primary); margin-top: 16px; margin-bottom: 8px; }
 .plan-markdown h1 { font-size: 18px; } .plan-markdown h2 { font-size: 16px; } .plan-markdown h3 { font-size: 14px; }

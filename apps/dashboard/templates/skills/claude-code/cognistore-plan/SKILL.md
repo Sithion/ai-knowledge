@@ -20,9 +20,16 @@ argument-hint: <plan title and description>
 1. Follow plan mode's workflow normally — write the local plan file as instructed
 2. **BEFORE calling ExitPlanMode**, call `createPlan()` to persist the plan.
    MCP tools (createPlan, getKnowledge) work in plan mode — they don't edit local files.
+   **MANDATORY**: pass the local plan file's ABSOLUTE path as `planFilePath` (e.g.
+   `createPlan({ ..., planFilePath: "/home/you/.claude/plans/<name>.md" })`) so the
+   persisted plan always links back to the on-disk file. Always link it — never omit it
+   when a plan file exists.
 3. Then call ExitPlanMode. The local plan file is ephemeral; createPlan() persists across sessions.
 
 > **CRITICAL**: Call createPlan() BEFORE ExitPlanMode, not after. After ExitPlanMode your turn may end before you get a chance to persist the plan.
+
+> **MANDATORY**: Any time you write a plan to a file (plan mode or otherwise), the
+> createPlan()/updatePlan() call MUST carry that file's absolute `planFilePath`.
 
 **When NOT in plan mode:**
 - Call `createPlan()` directly — no local file needed

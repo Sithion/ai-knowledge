@@ -30,3 +30,8 @@ CREATE TABLE IF NOT EXISTS scan_state (
   last_scanned_at TEXT NOT NULL,
   PRIMARY KEY (source, file_path)
 );
+
+-- Plan-file linking: record the absolute path of the local plan file an agent wrote
+-- (plan mode), so every CogniStore plan can link back to its on-disk file. The runner
+-- tolerates a "duplicate column" error, so this is safe if the column already exists.
+ALTER TABLE plans ADD COLUMN plan_file_path TEXT;

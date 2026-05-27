@@ -11,7 +11,7 @@ function fake(
   return {
     id,
     name: `Provider ${id}`,
-    kind: 'http',
+    kind: 'mcp',
     enabled: opts.enabled ?? true,
     async search(_q, _k, signal) {
       if (signal.aborted) throw (signal.reason ?? new Error('aborted'));

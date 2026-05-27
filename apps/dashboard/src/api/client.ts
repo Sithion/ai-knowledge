@@ -246,7 +246,13 @@ export const api = {
   deleteProvider: (id: string) =>
     request<{ removed: boolean }>(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   testProvider: (id: string) =>
-    request<{ ok: boolean; message?: string }>(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+    request<{ ok: boolean; message?: string; needsAuth?: boolean }>(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  oauthStart: (id: string, redirectUri: string) =>
+    request<{ ok: boolean; authorizeUrl?: string; alreadyConnected?: boolean; message?: string }>(
+      `/api/providers/${encodeURIComponent(id)}/oauth/start`, { method: 'POST', body: JSON.stringify({ redirectUri }) }),
+  oauthFinish: (id: string, code: string) =>
+    request<{ ok: boolean; message?: string }>(
+      `/api/providers/${encodeURIComponent(id)}/oauth/finish`, { method: 'POST', body: JSON.stringify({ code }) }),
   injectProviderSecret: (id: string, value: string) =>
     request<{ ok: boolean }>(`/api/providers/${encodeURIComponent(id)}/secret`, {
       method: 'POST',
@@ -302,22 +308,30 @@ export interface AppSettings {
   alwaysSearchExternalProviders: boolean;
 }
 
-// ── External knowledge providers ──
-export interface ProviderAuth { type: 'none' | 'bearer' | 'header'; headerName?: string; secretRef?: string; }
+// ── External knowledge providers (MCP-only, config v2) ──
+export interface ProviderAuth {
+  type: 'none' | 'header' | 'oauth';
+  headerName?: string;
+  secretRef?: string;
+  scopes?: string[];
+  clientId?: string;
+  allowInsecure?: boolean;
+}
 export interface ProviderEntry {
   id: string;
   name: string;
-  kind: 'http' | 'mcp';
   enabled: boolean;
-  http?: { url: string; auth?: ProviderAuth; timeoutMs?: number; allowInsecure?: boolean };
-  mcp?: {
-    transport: 'stdio' | 'http';
-    command?: string; args?: string[]; env?: Record<string, string>;
-    url?: string; auth?: ProviderAuth;
-    mode?: 'tool' | 'resources'; toolName?: string; argMapping?: Record<string, string>; resultPath?: string;
-  };
+  transport: 'stdio' | 'http';
+  // stdio
+  command?: string; args?: string[]; env?: Record<string, string>;
+  // http (remote, Streamable HTTP)
+  url?: string;
+  auth?: ProviderAuth;
+  // query mapping
+  mode?: 'tool' | 'resources';
+  toolName?: string; argMapping?: Record<string, string>; resultPath?: string;
 }
-export interface ProvidersConfig { version: 1; providers: ProviderEntry[]; }
+export interface ProvidersConfig { version: 2; providers: ProviderEntry[]; }
 export interface ExternalResult { title: string; content: string; url?: string; score?: number; metadata?: Record<string, unknown>; }
 export interface ExternalSection { providerId: string; providerName: string; results: ExternalResult[]; error?: string; tookMs: number; }
 export interface KnowledgeSearchResult { entry: Record<string, unknown>; similarity: number; }
