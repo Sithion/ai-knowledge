@@ -14,6 +14,7 @@
     "@cognistore/core": "workspace:*",
     "@cognistore/shared": "workspace:*",
     "@cognistore/sdk": "workspace:*",
+    "@cognistore/providers": "workspace:*",
     "better-sqlite3": "^12.8.0"
   },
   "devDependencies": {

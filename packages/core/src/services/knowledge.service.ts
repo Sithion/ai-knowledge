@@ -9,7 +9,11 @@ import type {
   CreatePlanInput,
   UpdatePlanInput,
   PlanTask,
+  FederatedProviderSource,
+  FederatedSearchResult,
+  ExternalSection,
 } from '@cognistore/shared';
+import { DEFAULT_SEARCH_LIMIT } from '@cognistore/shared';
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
@@ -70,6 +74,26 @@ export class KnowledgeService {
       entry: this.toKnowledgeEntry(r.entry),
       similarity: r.similarity,
     }));
+  }
+
+  /**
+   * Local-first federated search: runs the local cosine search and, if a provider
+   * source is given, fans out to enabled external providers concurrently. External
+   * failures/timeouts are isolated inside `fanOut` and never affect local results.
+   */
+  async searchFederated(
+    query: string,
+    options?: SearchOptions,
+    source?: FederatedProviderSource,
+    opts?: { perProviderTimeoutMs?: number; signal?: AbortSignal },
+  ): Promise<FederatedSearchResult> {
+    const k = options?.limit ?? DEFAULT_SEARCH_LIMIT;
+    const localPromise = this.search(query, options);
+    const externalPromise: Promise<ExternalSection[]> = source
+      ? source.fanOut(query, k, opts?.perProviderTimeoutMs ?? 5000, opts?.signal)
+      : Promise.resolve([]);
+    const [local, external] = await Promise.all([localPromise, externalPromise]);
+    return { local, external };
   }
 
   async getById(id: string): Promise<KnowledgeEntry | null> {

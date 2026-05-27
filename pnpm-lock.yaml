@@ -226,6 +226,19 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/providers:
+    dependencies:
+      '@cognistore/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.58.2
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/sdk:
     dependencies:
       '@cognistore/core':
@@ -263,6 +276,9 @@ importers:
       '@cognistore/core':
         specifier: workspace:*
         version: link:../core
+      '@cognistore/providers':
+        specifier: workspace:*
+        version: link:../providers
       '@cognistore/sdk':
         specifier: workspace:*
         version: link:../sdk
