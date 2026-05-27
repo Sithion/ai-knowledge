@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useLocation } from 'react-router-dom';
-import { api } from '../api/client.js';
+import { api, type ExternalSection } from '../api/client.js';
 import { KnowledgeCard } from '../components/KnowledgeCard.js';
 import { TagBar } from '../components/TagBar.js';
 import { KnowledgeModal } from '../components/KnowledgeModal.js';
@@ -34,6 +34,11 @@ export function HomePage() {
   const [recentEntries, setRecentEntries] = useState<Record<string, unknown>[]>([]);
   const [typeFilter, setTypeFilter] = useState('');
   const [scopeFilter, setScopeFilter] = useState('');
+
+  // External knowledge providers (additive federated search; local list is unaffected)
+  const [externalSections, setExternalSections] = useState<ExternalSection[]>([]);
+  const [externalEnabled, setExternalEnabled] = useState(false);
+  const [searchingExt, setSearchingExt] = useState(false);
 
   // Tag state
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -103,6 +108,33 @@ export function HomePage() {
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [loadRecent, loadTags, typeFilter, scopeFilter]);
+
+  // Detect whether federating to external providers is worthwhile (any enabled provider or always-on)
+  useEffect(() => {
+    Promise.all([
+      api.listProviders().catch(() => ({ providers: [] as { enabled?: boolean }[] })),
+      api.getSettings().catch(() => ({} as { alwaysSearchExternalProviders?: boolean })),
+    ]).then(([cfg, settings]) => {
+      setExternalEnabled(
+        (cfg.providers?.some((p) => p.enabled) ?? false) || !!settings.alwaysSearchExternalProviders,
+      );
+    });
+  }, []);
+
+  // Federated external search — additive; the local recent list above is rendered exactly as before.
+  useEffect(() => {
+    const term = query.trim();
+    if (!externalEnabled || term.length < 2) { setExternalSections([]); setSearchingExt(false); return; }
+    let cancelled = false;
+    setSearchingExt(true);
+    const handle = setTimeout(() => {
+      api.searchFederated(term)
+        .then((fed) => { if (!cancelled) setExternalSections(fed.external ?? []); })
+        .catch(() => { if (!cancelled) setExternalSections([]); })
+        .finally(() => { if (!cancelled) setSearchingExt(false); });
+    }, 450);
+    return () => { cancelled = true; clearTimeout(handle); };
+  }, [query, externalEnabled]);
 
   // Read ?tag= from URL on mount
   useEffect(() => {
@@ -481,6 +513,45 @@ export function HomePage() {
         <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 40 }}>
           {hasActiveFilters ? t('search.noResults') : t('search.empty')}
         </p>
+      )}
+
+      {/* External provider results — provenance-labeled, untrusted, kept separate from local */}
+      {(searchingExt || externalSections.length > 0) && query.trim().length >= 2 && (
+        <div style={{ marginTop: 28 }}>
+          <h3 style={{ color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+            {t('providers.externalResults')}
+            {searchingExt && (
+              <span style={{ display: 'inline-block', width: 12, height: 12, border: '2px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            )}
+          </h3>
+          <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 14 }}>⚠ {t('providers.externalUntrusted')}</p>
+          {externalSections.map((sec) => (
+            <div key={sec.providerId} style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <strong style={{ fontSize: 13 }}>{sec.providerName}</strong>
+                <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{t('providers.untrustedBadge')}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{sec.tookMs}ms</span>
+              </div>
+              {sec.error ? (
+                <p style={{ fontSize: 12, color: 'var(--error)' }}>{t('providers.failed')}: {sec.error}</p>
+              ) : sec.results.length === 0 ? (
+                <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('providers.externalNoResults')}</p>
+              ) : (
+                sec.results.map((r, i) => (
+                  <div key={i} style={{ backgroundColor: 'var(--bg-card)', border: '1px dashed var(--border)', borderRadius: 8, padding: 12, marginBottom: 8 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+                      {r.url
+                        ? <a href={r.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{r.title}</a>
+                        : r.title}
+                      {typeof r.score === 'number' && <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 400 }}> · {r.score.toFixed(2)}</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{r.content}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Bulk action bar */}

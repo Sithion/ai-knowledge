@@ -237,6 +237,22 @@ export const api = {
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) }),
 
+  // External knowledge providers (~/.cognistore/providers.json)
+  listProviders: () => request<ProvidersConfig>('/api/providers'),
+  addProvider: (entry: ProviderEntry) =>
+    request<ProviderEntry>('/api/providers', { method: 'POST', body: JSON.stringify(entry) }),
+  updateProvider: (id: string, entry: Partial<ProviderEntry>) =>
+    request<ProviderEntry>(`/api/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(entry) }),
+  deleteProvider: (id: string) =>
+    request<{ removed: boolean }>(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testProvider: (id: string) =>
+    request<{ ok: boolean; message?: string }>(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  searchFederated: (query: string, options?: Record<string, unknown>) =>
+    request<FederatedSearchResult>('/api/knowledge/search', {
+      method: 'POST',
+      body: JSON.stringify({ query, includeExternal: true, ...options }),
+    }),
+
   // Ranged metrics (driven by the global date-range picker)
   getActivity: (from: string, to: string) =>
     request<{ operationsByDay: { date: string; reads: number; writes: number }[] }>(
@@ -278,6 +294,34 @@ export interface AppSettings {
   dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: ProviderFilter;
+  alwaysSearchExternalProviders: boolean;
+}
+
+// ── External knowledge providers ──
+export interface ProviderAuth { type: 'none' | 'bearer' | 'header'; headerName?: string; secretRef?: string; }
+export interface ProviderEntry {
+  id: string;
+  name: string;
+  kind: 'http' | 'mcp';
+  enabled: boolean;
+  http?: { url: string; auth?: ProviderAuth; timeoutMs?: number; allowInsecure?: boolean };
+  mcp?: {
+    transport: 'stdio' | 'http';
+    command?: string; args?: string[]; env?: Record<string, string>;
+    url?: string; auth?: ProviderAuth;
+    mode?: 'tool' | 'resources'; toolName?: string; argMapping?: Record<string, string>; resultPath?: string;
+  };
+}
+export interface ProvidersConfig { version: 1; providers: ProviderEntry[]; }
+export interface ExternalResult { title: string; content: string; url?: string; score?: number; metadata?: Record<string, unknown>; }
+export interface ExternalSection { providerId: string; providerName: string; results: ExternalResult[]; error?: string; tookMs: number; }
+export interface KnowledgeSearchResult { entry: Record<string, unknown>; similarity: number; }
+export interface FederatedSearchResult { local: KnowledgeSearchResult[]; external: ExternalSection[]; }
+
+/** Store a provider credential in the OS keychain (Tauri only; no-op outside Tauri). */
+export async function setProviderSecret(id: string, value: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('set_provider_secret', { id, value });
 }
 
 /** UI-level token provider filter. Maps to the backend `token_usage.source` column. */

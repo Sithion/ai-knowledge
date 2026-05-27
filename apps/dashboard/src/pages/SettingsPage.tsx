@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client.js';
 import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, useAutoUpdateSetting } from '../components/UpdateChecker.js';
 import { ConfirmModal } from '../components/ConfirmModal.js';
+import { ProvidersSection } from '../components/ProvidersSection.js';
 
 interface Health {
   database: { connected: boolean; path?: string; error?: string };
@@ -244,6 +245,9 @@ export function SettingsPage() {
           ))}
         </div>
       </div>
+
+      {/* ── External Knowledge Providers Section ── */}
+      <ProvidersSection />
 
       {/* ── Maintenance Section ── */}
       <MaintenanceSection />
