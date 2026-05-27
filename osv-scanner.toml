@@ -1,9 +1,27 @@
 # OSV-Scanner ignore list (applied via --config in .github/workflows/security.yml).
 #
 # Only advisories with NO available fix in our dependency tree are ignored, each
-# with a rationale. Everything fixable is fixed (npm via pnpm overrides in the
-# root package.json; Cargo via pinned versions in Cargo.lock). Re-evaluate the
-# entries below whenever Tauri upgrades its Linux GTK stack.
+# with a rationale. Re-evaluate the entries below whenever dependencies are upgraded.
+
+# ── npm: unfixable transitive deps ──
+
+# GHSA-67mh-4wv8-2f99 — esbuild dev-server CORS bypass (CVSS 5.3)
+# esbuild@0.18.20 is pinned by @esbuild-kit/core-utils@3.3.2 (latest published;
+# no newer version fixes the esbuild pin). @esbuild-kit/core-utils is a transitive
+# dep of @esbuild-kit/esm-loader, which drizzle-kit uses as a TS loader at build
+# time. The vulnerability is in esbuild's built-in HTTP dev server; drizzle-kit
+# uses esbuild as a compiler (no dev server is started). Not exploitable here.
+[[IgnoredVulns]]
+id = "GHSA-67mh-4wv8-2f99"
+
+# GHSA-v2v4-37r5-5v8g — ip-address SSRF bypass (CVSS 5.3)
+# ip-address@10.1.0 is pinned by express-rate-limit@8.3.1, which is a transitive
+# dep of @modelcontextprotocol/sdk. The sdk specifier (^8.2.1) resolves to 8.3.1;
+# upgrading requires an MCP SDK release that bumps express-rate-limit. The SSRF
+# risk applies to untrusted IP strings from user input; our usage is internal
+# rate-limiting on the Fastify sidecar which only binds to 127.0.0.1.
+[[IgnoredVulns]]
+id = "GHSA-v2v4-37r5-5v8g"
 
 # ── Tauri 2.x Linux GTK stack: "unmaintained" advisories, no fixed version ──
 # These crates are pulled transitively by Tauri 2.x's GTK3 bindings on Linux.

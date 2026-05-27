@@ -27,7 +27,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^12.8.0",
-    "drizzle-orm": "^0.38.0",
+    "drizzle-orm": "^0.45.0",
     "sqlite-vec": "^0.1.7",
     "zod": "^3.23.0"
   },
