@@ -35,6 +35,8 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 | Copy Claude skills to `~/.claude/skills/cognistore-*/` | Remove skill directories |
 | Copy Copilot skills to `~/.copilot/skills/cognistore-*/` | Remove skill directories |
 | App installed in /Applications/ (macOS) | Self-delete via rmSync |
+| Store external-provider secret in OS keychain (`set_provider_secret`) | Delete keychain entries via `cleanup_provider_secrets` on uninstall |
+| Create `~/.cognistore/providers.json` (external knowledge providers) | Removed with directory |
 
 ## Development Rules (MANDATORY)
 

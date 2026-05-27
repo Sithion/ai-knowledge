@@ -3,6 +3,7 @@
 
 mod sidecar;
 mod tray;
+mod secrets;
 mod widget_config;
 mod widgets;
 
@@ -116,6 +117,9 @@ fn main() {
             widgets::open_widget,
             widgets::close_widget,
             widgets::get_open_widgets,
+            secrets::set_provider_secret,
+            secrets::delete_provider_secret,
+            secrets::cleanup_provider_secrets,
         ])
         .setup(|app| {
             if let Err(msg) = run_setup(app) {

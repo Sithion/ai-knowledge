@@ -304,6 +304,12 @@ export function SettingsPage() {
           setUninstallStep(3);
           setActionMessage({ type: 'success', text: t('settings.uninstallingMsg') });
           try {
+            // Delete provider secrets from the OS keychain first — they live outside
+            // ~/.cognistore, so the directory removal in /api/uninstall won't cover them.
+            try {
+              const { invoke } = await import('@tauri-apps/api/core');
+              await invoke('cleanup_provider_secrets');
+            } catch { /* not running in Tauri, or no secrets — ignore */ }
             await api.uninstallAll();
           } catch {
             // Server shuts down during uninstall — expected

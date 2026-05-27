@@ -11,6 +11,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "time", "net", "io-util"] }
 dirs = "6"
+# Native OS keychains (macOS Keychain, Windows Credential Manager, Linux Secret
+# Service). keyring 3.x makes backends opt-in; without these it uses a non-persistent
+# mock store. crypto-rust avoids a system OpenSSL build dependency on Linux.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

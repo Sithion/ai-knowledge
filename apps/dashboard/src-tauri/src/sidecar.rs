@@ -192,8 +192,8 @@ pub fn spawn_node(
     let templates_path = resource_dir.join("templates");
     let token = generate_token();
 
-    let child = Command::new(node_bin)
-        .arg(script_path)
+    let mut cmd = Command::new(node_bin);
+    cmd.arg(script_path)
         .env("SQLITE_PATH", sqlite_path.to_string_lossy().to_string())
         .env("OLLAMA_HOST", "http://localhost:11434")
         .env("OLLAMA_MODEL", env::var("OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".into()))
@@ -203,7 +203,21 @@ pub fn spawn_node(
         .env("TEMPLATES_PATH", templates_path.to_string_lossy().to_string())
         .env("NODE_ENV", "production")
         .env("NODE_PATH", node_modules_path.to_string_lossy().to_string())
-        .env("SIDECAR_TOKEN", &token)
+        .env("SIDECAR_TOKEN", &token);
+
+    // Inject external-provider secrets from the OS keychain (Rust is the only
+    // keychain-touching process). The sidecar forwards these to the MCP subprocess
+    // via buildMcpEntry, and the SDK's EnvSecretStore reads them.
+    if let Some(dir) = sqlite_path.parent() {
+        let providers_json = dir.join("providers.json");
+        for id in crate::secrets::provider_ids_from_config(&providers_json) {
+            if let Some(secret) = crate::secrets::read_provider_secret(&id) {
+                cmd.env(crate::secrets::sanitize_env_key(&id), secret);
+            }
+        }
+    }
+
+    let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

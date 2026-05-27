@@ -418,6 +418,11 @@ Pass an array to addKnowledge to create multiple entries at once.
       // Use a broad fallback PATH to cover common executable locations.
       env.PATH = `${binDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
     }
+    // Forward external-provider secrets (injected into the sidecar by the Tauri
+    // shell from the OS keychain) so the MCP subprocess can authenticate.
+    for (const [key, val] of Object.entries(process.env)) {
+      if (key.startsWith('COGNISTORE_PROVIDER_SECRET__') && val) env[key] = val;
+    }
     return {
       type: 'stdio',
       command: binDir ? resolve(binDir, 'npx') : 'npx',
