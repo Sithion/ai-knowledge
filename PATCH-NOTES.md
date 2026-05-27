@@ -1,5 +1,26 @@
 # Patch Notes
 
+## v2.0.0
+
+Major release: **External Knowledge Providers**. CogniStore can now augment its local semantic search by also querying external knowledge sources you plug in. Search runs **local-first** and, when external search is active, **also** queries enabled providers — returning everything **sectioned by source**. External search is **opt-in and disabled by default**, so existing behavior is unchanged unless you turn it on.
+
+### Features
+- **Two provider kinds**: a generic **HTTP contract** (any service implementing `POST {url}/search` with `{query,k}` → `{results:[…]}` — no third-party code runs inside CogniStore, so any language/stack works) and an **MCP client** (connect any MCP server over **stdio** or **Streamable HTTP**; `tool` or `resources` mode; SSE is fallback-only). A new `@cognistore/providers` package implements the federation layer (`ProviderManager` fan-out with per-provider failure isolation, timeouts, and abort).
+- **Sectioned results**: external results are returned in **separate, source-labeled sections** (one per provider) alongside the local section — never merged or cross-ranked. Provider `score` values are not comparable to local cosine similarity, so the MVP keeps sections distinct.
+- **Opt-in, two ways**: per query via the new `includeExternal` / `providers` parameters (on the MCP `getKnowledge` tool and `POST /api/knowledge/search`), or globally via the new **`alwaysSearchExternalProviders`** setting (default `false`). `getKnowledge` with no flag returns a byte-identical local result — full backward compatibility.
+- **Dashboard provider manager** (**Settings → External Knowledge Providers**): list / add / edit / enable-disable / **test** providers, with kind-specific forms (HTTP url + auth; MCP transport + tool), an **always-on** toggle, and a secret field that writes to the OS keychain. The Home search view now renders an additive, provenance-labeled **"External provider results"** area below the local list, with an *external · untrusted* badge and per-section timing/error states. Localized in **en/es/pt**.
+
+### Security
+- **Secrets in the OS keychain**: provider credentials are stored in the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) via new Tauri commands using the `keyring` crate — **never** in `providers.json`, logs, or query strings. `providers.json` holds only a `secretRef`. Secrets reach Node processes only through a controlled cross-process flow: the Rust sidecar reads the keychain and injects `COGNISTORE_PROVIDER_SECRET__*` env vars, which the dashboard server propagates to the MCP subprocess and `EnvSecretStore` resolves at request time. Uninstall clears every provider's keychain entry before deleting `~/.cognistore`.
+- **Untrusted external content / indirect prompt injection**: external results are treated as untrusted reference data, never instructions. They stay in provenance-labeled sections (the MCP response carries an explicit `externalNote` warning; the dashboard shows an *untrusted* badge), are size-capped (~8 KB/result, ~64 KB/section), and links open with `rel=noreferrer`.
+- **Network egress controls**: HTTP providers are **HTTPS-only** by default with an SSRF guard that rejects loopback/private hosts unless explicitly marked `allowInsecure` (dev). Each provider runs under a per-provider timeout (default 5 s) with abort; a slow or failing provider only affects its own section.
+
+### Documentation
+- New `documentation/providers/`: the normative [HTTP contract](documentation/providers/http-contract.md), step-by-step guides for [HTTP](documentation/providers/plug-http.md) and [MCP](documentation/providers/plug-mcp.md) providers, the full [config reference](documentation/providers/providers-config.md), and the [security model](documentation/providers/security.md). Updated `architecture.md` (federation layer + federated read path), `mcp-server.md` (new `getKnowledge` params + sectioned response), `api-reference.md` (`/api/providers*` + federated search), `setup-uninstall.md` (keychain teardown), and the README index.
+
+### Infrastructure
+- New `@cognistore/providers` workspace package (depends only on `@cognistore/shared`); `core` receives a `FederatedProviderSource` by injection, avoiding a `core ↔ providers` cycle. Federated types (`ExternalResult`, `ExternalSection`, `FederatedSearchResult`, `FederatedProviderSource`) live in `@cognistore/shared`. Provider config is validated with zod (`providersConfigSchema`). No database migration — configuration and keychain only.
+
 ## v1.4.6
 
 ### Fixes

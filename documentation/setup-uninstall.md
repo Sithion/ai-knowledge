@@ -117,10 +117,11 @@ The uninstall button requires a 3-step confirmation to prevent accidental data l
 | 3 | Remove skills | Delete `~/.claude/skills/cognistore-*/` directories (query, capture, plan) and `~/.copilot/skills/cognistore-*.md` files |
 | 4 | Uninstall Ollama model | `ollama rm nomic-embed-text` |
 | 5 | Uninstall Ollama binary | `brew uninstall ollama` (macOS) or remove binary (Linux) |
-| 6 | Close SDK | Gracefully close database connections |
-| 7 | Remove data directory | `rm -rf ~/.cognistore/` (database + WAL files) |
-| 8 | Clean backup files | Remove `*.bak.*` files created during config injection |
-| 9 | Self-delete app | `setTimeout` → remove app from `/Applications/` (macOS) or `~/.local/bin/` (Linux) |
+| 6 | Clear provider secrets | `cleanup_provider_secrets` removes each provider's OS-keychain entry (run before the data dir is deleted) |
+| 7 | Close SDK | Gracefully close database connections |
+| 8 | Remove data directory | `rm -rf ~/.cognistore/` (database + WAL files + `providers.json`) |
+| 9 | Clean backup files | Remove `*.bak.*` files created during config injection |
+| 10 | Self-delete app | `setTimeout` → remove app from `/Applications/` (macOS) or `~/.local/bin/` (Linux) |
 
 ### Setup/Uninstall Symmetry Rule
 
@@ -144,4 +145,6 @@ Every resource created by setup **must** be removed by uninstall. This is a mand
 | OpenCode plugins | Remove `~/.config/opencode/plugins/cognistore-*` files |
 | Compiled instruction files | Removed with sidecar bundle (not deployed to user filesystem) |
 | System knowledge entries (`type=system`) | Removed with database directory |
+| `~/.cognistore/providers.json` | Removed with directory |
+| Provider secrets in OS keychain | `cleanup_provider_secrets` (Tauri) before the directory is deleted |
 | App in /Applications/ | Self-delete via rmSync |

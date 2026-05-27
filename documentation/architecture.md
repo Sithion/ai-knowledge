@@ -56,18 +56,25 @@ The system consists of three runtime subsystems:
 ```
 @cognistore/mcp-server ──→ @cognistore/sdk
                                     │
-                            ┌───────┴───────┐
-                            ▼               ▼
-                    @cognistore/core  @cognistore/embeddings
-                            │               │
-                            ▼               ▼
-                    @cognistore/shared  @cognistore/shared
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+            @cognistore/core  @cognistore/embeddings  @cognistore/providers
+                    │               │               │
+                    ▼               ▼               ▼
+            @cognistore/shared  @cognistore/shared  @cognistore/shared
 
 @cognistore/dashboard ──→ @cognistore/sdk
                          ──→ @cognistore/config
+                         ──→ @cognistore/providers
 ```
 
 All cross-package dependencies use `workspace:*` protocol via pnpm.
+
+`@cognistore/providers` is the external-knowledge federation layer (HTTP-contract and MCP-client
+providers, `ProviderManager` fan-out, secret resolution). It depends only on `@cognistore/shared`;
+`core` likewise depends only on `shared` and receives a `FederatedProviderSource` by injection — so
+there is no dependency cycle between `core` and `providers`. See
+[External Knowledge Providers](./providers/providers-config.md).
 
 ## Data Flow
 
@@ -96,6 +103,27 @@ All cross-package dependencies use `workspace:*` protocol via pnpm.
 6. Filter by threshold (default 0.3), sort descending, limit results
 7. Return [{ entry, similarity }]
 ```
+
+### Federated Read Path (getKnowledge with external providers)
+
+Opt-in (`includeExternal`/`providers` params, or the global `alwaysSearchExternalProviders` setting).
+Local and external run **concurrently** with per-provider failure isolation; results stay **sectioned
+by source** (never merged or cross-ranked).
+
+```
+1. SDK.getKnowledgeFederated(query, options?, { providers? })
+2. Start the local read path (above) AND ProviderManager.fanOut(query, k, timeout) in parallel
+3. fanOut runs each ENABLED provider via runOne():
+   - per-provider AbortController, chained to the parent signal + a setTimeout (default 5 s)
+   - try/catch: a throw/timeout becomes a section with { error, results: [] } — never rejects
+   - results capped (~8 KB/result, ~64 KB/section)
+4. Await both → { local: SearchResult[], external: ExternalSection[] }
+5. Callers render sections separately; the MCP response adds an `externalNote` (UNTRUSTED) warning
+```
+
+Secrets for providers are resolved at request time from `COGNISTORE_PROVIDER_SECRET__*` env vars
+(injected by the Rust sidecar from the OS keychain) via `EnvSecretStore`. See
+[providers/security.md](./providers/security.md).
 
 ### Update Path (updateKnowledge)
 

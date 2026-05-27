@@ -29,6 +29,7 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 
 - **Local-first** — All data stays on your machine. SQLite database with vector search via `sqlite-vec`.
 - **Semantic search** — Find knowledge by meaning, not just keywords. Powered by Ollama embeddings running natively.
+- **External knowledge providers** — Optionally augment local search with pluggable external sources: any service implementing the [HTTP contract](documentation/providers/http-contract.md), or an [MCP server](documentation/providers/plug-mcp.md) (stdio or Streamable HTTP). Results are returned **sectioned by source** and labeled untrusted; secrets live in the OS keychain. Opt-in and disabled by default — see the [providers docs](documentation/providers/providers-config.md).
 - **MCP integration** — Works as a plugin for Claude Code, GitHub Copilot, and OpenCode out of the box. OpenCode also gets a plan enforcement plugin for lifecycle tracking.
 - **Zero configuration** — The setup wizard handles everything: Ollama, database, model downloads, MCP config injection, AI skills installation, and system knowledge seeding.
 - **System knowledge** — Mandatory protocol entries (type `system`) are seeded on setup, injected into agent sessions via hooks, hidden from the dashboard, and protected from deletion. Agents always operate with the correct protocol without manual configuration.
@@ -109,7 +110,7 @@ If you prefer to configure the MCP server manually:
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `addKnowledge` | Store one or multiple knowledge entries (single object or array) | `entries` (object or object[]) |
-| `getKnowledge` | Search across entries using natural language queries | `query`, `tags`, `type`, `scope`, `limit`, `threshold` |
+| `getKnowledge` | Search across entries using natural language queries (optionally federates to external providers) | `query`, `tags`, `type`, `scope`, `limit`, `threshold`, `includeExternal`, `providers` |
 | `updateKnowledge` | Update an existing entry (re-embeds if tags change) | `id`, `title`, `content`, `tags` |
 | `deleteKnowledge` | Remove an entry by ID (rejects system entries) | `id` |
 | `listTags` | List all unique tags in the knowledge base | — |

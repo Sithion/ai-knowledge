@@ -68,7 +68,27 @@ Semantic search across knowledge entries.
 
 All fields except `query` are optional.
 
-**Response:** `{ entry: KnowledgeEntry, similarity: number }[]`
+**Response (local only):** `{ entry: KnowledgeEntry, similarity: number }[]`
+
+**Federated:** add `"includeExternal": true` (or `"providers": ["id", ...]`) to also query external
+knowledge providers. When external search is active — including via the global
+`alwaysSearchExternalProviders` setting — the response shape becomes:
+
+```json
+{
+  "local": [{ "entry": {}, "similarity": 0.0 }],
+  "external": [
+    { "providerId": "company-wiki", "providerName": "Company Wiki",
+      "results": [{ "title": "", "content": "", "url": "", "score": 0.0 }], "tookMs": 142 },
+    { "providerId": "docs-mcp", "providerName": "Docs MCP",
+      "results": [], "error": "timeout after 5000ms", "tookMs": 5001 }
+  ]
+}
+```
+
+Local results are ranked as before; external results stay sectioned by source (never merged). A failed
+provider yields a section with `error` and `results: []`, isolated from local and other providers. See
+[External Knowledge Providers](./providers/providers-config.md).
 
 ### GET /api/knowledge/:id
 
@@ -178,6 +198,43 @@ Detailed metrics for the stats dashboard.
 List all unique tags.
 
 **Response:** `string[]`
+
+## External Knowledge Providers
+
+CRUD for `~/.cognistore/providers.json`. Secret **values** are never sent through these routes — only a
+`secretRef`; values go to the OS keychain via the Tauri `set_provider_secret` command. See
+[providers-config.md](./providers/providers-config.md) and [security.md](./providers/security.md).
+
+### GET /api/providers
+
+Read the current providers config.
+
+**Response:** `{ "version": 1, "providers": ProviderEntry[] }`
+
+### POST /api/providers
+
+Add a provider (zod-validated `ProviderEntry`). Writes atomically (tmp + rename).
+
+**Body:** a `ProviderEntry` (`id`, `name`, `kind`, `enabled`, and a matching `http` or `mcp` block).
+**Response:** the created `ProviderEntry`.
+
+### PUT /api/providers/:id
+
+Update a provider (partial `ProviderEntry`).
+
+**Response:** the updated `ProviderEntry`.
+
+### DELETE /api/providers/:id
+
+Remove a provider from the config.
+
+**Response:** `{ "removed": boolean }` (the dashboard also clears the provider's keychain entry).
+
+### POST /api/providers/:id/test
+
+Instantiate the provider and run its `testConnection` (8 s timeout), then dispose it.
+
+**Response:** `{ "ok": boolean, "message"?: string }`
 
 ## Setup Endpoints
 
