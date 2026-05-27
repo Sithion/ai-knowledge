@@ -63,8 +63,22 @@ html, body {
 
 .widget-content {
   flex: 1;
+  min-height: 0; /* allow the flex child to shrink so overflow-y can scroll */
   padding: 4px 16px 16px;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Thin, unobtrusive scrollbar so overflowing widget content scrolls instead of clipping. */
+.widget-content::-webkit-scrollbar {
+  width: 6px;
+}
+.widget-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+.widget-content::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 @keyframes spin {

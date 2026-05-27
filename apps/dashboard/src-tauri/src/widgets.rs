@@ -7,7 +7,7 @@ use crate::widget_config::{self, WidgetPositions};
 
 /// Append a widget diagnostic/error line to ~/.cognistore/cognistore.log and stderr.
 /// Widget-open failures used to be swallowed silently; now they are recorded.
-fn widget_log(msg: &str) {
+pub fn widget_log(msg: &str) {
     eprintln!("[widget] {}", msg);
     if let Some(home) = dirs::home_dir() {
         let path = home.join(".cognistore").join("cognistore.log");
@@ -53,7 +53,7 @@ fn widget_size(widget_type: &str) -> (f64, f64) {
         "stats" => (300.0, 240.0),
         "plans" => (300.0, 260.0),
         "active-plans" => (320.0, 400.0),
-        "tokens" => (320.0, 260.0),
+        "tokens" => (320.0, 300.0),
         _ => (300.0, 220.0),
     }
 }
@@ -72,8 +72,10 @@ pub fn widget_type_from_label(label: &str) -> String {
     without_prefix.to_string()
 }
 
-#[tauri::command]
-pub fn open_widget(app: AppHandle, widget_id: String, params: Option<String>) -> Result<String, String> {
+/// Build and show a widget window synchronously. Must be called on the main thread
+/// (GTK requirement). Used directly by the tray path (already on the main thread)
+/// and dispatched via run_on_main_thread by the async command path.
+pub fn build_widget_window(app: &AppHandle, widget_id: String, params: Option<String>) -> Result<String, String> {
     let instance_num = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("widget-{}-{}", widget_id, instance_num);
 
@@ -95,14 +97,22 @@ pub fn open_widget(app: AppHandle, widget_id: String, params: Option<String>) ->
     // made widgets invisible ("nothing appears"). The content uses a solid dark
     // background (widget.css) so an opaque window looks the same minus the
     // see-through/rounded outer corners.
-    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed_url))
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed_url))
         .title("")
         .inner_size(w, h)
         .decorations(false)
         .transparent(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
         .resizable(false);
+
+    // always_on_top + skip_taskbar at creation time are unreliable on Linux
+    // WebKitGTK (X11/Wayland WMs): a borderless, always-on-top, taskbar-skipped
+    // window can fail to map, render blank, or land off-screen. On Linux we build
+    // without them and set always-on-top AFTER the window maps (see below); on
+    // macOS/Windows they're safe to set up front.
+    #[cfg(not(target_os = "linux"))]
+    {
+        builder = builder.always_on_top(true).skip_taskbar(true);
+    }
 
     // Restore saved position for this specific label, or center
     if let Some((x, y)) = widget_config::get_widget_position(&label) {
@@ -112,9 +122,20 @@ pub fn open_widget(app: AppHandle, widget_id: String, params: Option<String>) ->
     }
 
     // Surface failures that used to be swallowed (the tray path ignores the Result).
-    if let Err(e) = builder.build() {
-        widget_log(&format!("failed to create widget window {}: {}", label, e));
-        return Err(format!("Failed to create widget window: {}", e));
+    let window = match builder.build() {
+        Ok(win) => win,
+        Err(e) => {
+            widget_log(&format!("failed to create widget window {}: {}", label, e));
+            return Err(format!("Failed to create widget window: {}", e));
+        }
+    };
+
+    // On Linux, apply always-on-top post-map (more reliable than at build time).
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(e) = window.set_always_on_top(true) {
+            widget_log(&format!("set_always_on_top failed for {}: {}", label, e));
+        }
     }
 
     if let Ok(mut map) = app.state::<WidgetRegistry>().instances.lock() {
@@ -122,6 +143,26 @@ pub fn open_widget(app: AppHandle, widget_id: String, params: Option<String>) ->
     }
 
     Ok(label)
+}
+
+/// IPC command: open a widget window from the webview UI.
+///
+/// Must be `async` — creating a WebviewWindow inside a *synchronous* Tauri command
+/// deadlocks on Linux/WebKitGTK because the sync command runs on the main thread and
+/// `builder.build()` reenters the GTK event loop (which is blocked waiting for the
+/// command to return). Making the command async moves it off the main thread;
+/// `run_on_main_thread` then queues the actual build back onto the now-free GTK loop.
+/// The tray path (`build_widget_window` called directly from Rust) is unaffected
+/// because tray callbacks already run on the main thread and never go through IPC.
+#[tauri::command]
+pub async fn open_widget(app: AppHandle, widget_id: String, params: Option<String>) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(build_widget_window(&app_clone, widget_id, params));
+    })
+    .map_err(|e| format!("failed to dispatch to main thread: {e}"))?;
+    rx.recv().map_err(|e| format!("widget build channel closed unexpectedly: {e}"))?
 }
 
 #[tauri::command]

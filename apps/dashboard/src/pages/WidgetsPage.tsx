@@ -49,7 +49,7 @@ export function WidgetsPage() {
       const params = widgetId === 'active-plans' ? `max=${maxVisible}` : undefined;
       await invoke('open_widget', { widgetId, params });
       syncState();
-    } catch { /* ignore */ }
+    } catch (e) { console.error('[cognistore] open_widget failed:', e); }
   };
 
   const handleMaxChange = (val: number) => {

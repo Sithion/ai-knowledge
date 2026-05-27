@@ -1,0 +1,56 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-open-widget"
+description = "Allows the open_widget command."
+commands.allow = ["open_widget"]
+
+[[permission]]
+identifier = "allow-close-widget"
+description = "Allows the close_widget command."
+commands.allow = ["close_widget"]
+
+[[permission]]
+identifier = "allow-get-open-widgets"
+description = "Allows the get_open_widgets command."
+commands.allow = ["get_open_widgets"]
+
+[[permission]]
+identifier = "allow-set-provider-secret"
+description = "Allows the set_provider_secret command."
+commands.allow = ["set_provider_secret"]
+
+[[permission]]
+identifier = "allow-delete-provider-secret"
+description = "Allows the delete_provider_secret command."
+commands.allow = ["delete_provider_secret"]
+
+[[permission]]
+identifier = "allow-cleanup-provider-secrets"
+description = "Allows the cleanup_provider_secrets command."
+commands.allow = ["cleanup_provider_secrets"]
+
+[[permission]]
+identifier = "allow-set-oauth-tokens"
+description = "Allows the set_oauth_tokens command."
+commands.allow = ["set_oauth_tokens"]
+
+[[permission]]
+identifier = "allow-get-oauth-tokens"
+description = "Allows the get_oauth_tokens command."
+commands.allow = ["get_oauth_tokens"]
+
+[[permission]]
+identifier = "allow-delete-oauth-tokens"
+description = "Allows the delete_oauth_tokens command."
+commands.allow = ["delete_oauth_tokens"]
+
+[[permission]]
+identifier = "allow-oauth-reserve"
+description = "Allows the oauth_reserve command."
+commands.allow = ["oauth_reserve"]
+
+[[permission]]
+identifier = "allow-oauth-await"
+description = "Allows the oauth_await command."
+commands.allow = ["oauth_await"]

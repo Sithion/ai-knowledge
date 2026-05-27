@@ -4,6 +4,7 @@
 mod sidecar;
 mod tray;
 mod secrets;
+mod oauth;
 mod widget_config;
 mod widgets;
 
@@ -86,7 +87,7 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
             // Restore saved widgets after sidecar is ready
             let config = widget_config::load_config();
             for ws in &config.widgets {
-                if let Ok(new_label) = widgets::open_widget(app_handle_for_restore.clone(), ws.widget_type.clone(), None) {
+                if let Ok(new_label) = widgets::open_widget(app_handle_for_restore.clone(), ws.widget_type.clone(), None).await {
                     // Set position for the new instance and move the window
                     if let Some(positions) = app_handle_for_restore.try_state::<WidgetPositions>() {
                         if let Ok(mut pos) = positions.positions.lock() {
@@ -129,7 +130,13 @@ fn main() {
             secrets::set_provider_secret,
             secrets::delete_provider_secret,
             secrets::cleanup_provider_secrets,
+            secrets::set_oauth_tokens,
+            secrets::get_oauth_tokens,
+            secrets::delete_oauth_tokens,
+            oauth::oauth_reserve,
+            oauth::oauth_await,
         ])
+        .manage(oauth::OAuthListeners::default())
         .setup(|app| {
             if let Err(msg) = run_setup(app) {
                 eprintln!("Setup error: {}", msg);
