@@ -98,19 +98,7 @@ export class KnowledgeSDK {
       this.tokenService = new TokenUsageService(tokenRepo);
 
       // Step 6: External knowledge providers (federated search — opt-in, off by default).
-      // Reads ~/.cognistore/providers.json + the alwaysSearchExternalProviders setting.
-      // Never fatal: a missing/bad config just means no external providers.
-      try {
-        const dir = dirname(expandHome(this.config.database.path));
-        this.providerManager = loadProviders(join(dir, 'providers.json'), new EnvSecretStore());
-        const settingsPath = join(dir, 'settings.json');
-        if (existsSync(settingsPath)) {
-          const s = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { alwaysSearchExternalProviders?: boolean };
-          this.alwaysExternal = s?.alwaysSearchExternalProviders === true;
-        }
-      } catch {
-        this.providerManager = null;
-      }
+      this.reloadProviders();
 
       this.initialized = true;
     } catch (error) {
@@ -180,6 +168,25 @@ export class KnowledgeSDK {
   /** Whether the global "always search external providers" setting is on. */
   get alwaysSearchExternalProviders(): boolean {
     return this.alwaysExternal;
+  }
+
+  /**
+   * Re-read providers.json + the alwaysSearchExternalProviders setting. Call after
+   * the dashboard mutates either, so federated search reflects changes without a
+   * restart. Never throws (a bad config keeps the previous state).
+   */
+  reloadProviders(): void {
+    try {
+      const dir = dirname(expandHome(this.config.database.path));
+      this.providerManager = loadProviders(join(dir, 'providers.json'), new EnvSecretStore());
+      const settingsPath = join(dir, 'settings.json');
+      this.alwaysExternal = existsSync(settingsPath)
+        ? (JSON.parse(readFileSync(settingsPath, 'utf-8')) as { alwaysSearchExternalProviders?: boolean })
+            ?.alwaysSearchExternalProviders === true
+        : false;
+    } catch {
+      /* keep current state on error */
+    }
   }
 
   async getKnowledgeById(id: string): Promise<KnowledgeEntry | null> {

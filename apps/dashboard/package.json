@@ -20,6 +20,7 @@
   "dependencies": {
     "@cognistore/config": "workspace:*",
     "@cognistore/core": "workspace:*",
+    "@cognistore/providers": "workspace:*",
     "@cognistore/sdk": "workspace:*",
     "@cognistore/shared": "workspace:*",
     "@fastify/cors": "^11.2.0",

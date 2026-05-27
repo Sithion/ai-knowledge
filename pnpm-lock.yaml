@@ -44,6 +44,9 @@ importers:
       '@cognistore/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cognistore/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@cognistore/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk

@@ -8,6 +8,7 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { KnowledgeSDK } from '@cognistore/sdk';
 import { ConfigManager } from '@cognistore/config';
+import { providersConfigSchema, providerEntrySchema, buildProvider, EnvSecretStore } from '@cognistore/providers';
 import type {
   CreateKnowledgeInput,
   UpdateKnowledgeInput,
@@ -81,6 +82,7 @@ export interface AppSettings {
   dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: 'all' | 'claude' | 'copilot';
+  alwaysSearchExternalProviders: boolean;
 }
 
 const SETTINGS_DEFAULTS: AppSettings = {
@@ -88,6 +90,7 @@ const SETTINGS_DEFAULTS: AppSettings = {
   dateRangePreset: '1w',
   lastSelectedRange: null,
   tokenProviderFilter: 'all',
+  alwaysSearchExternalProviders: false,
 };
 
 function readSettings(): AppSettings {
@@ -112,6 +115,32 @@ function writeSettings(patch: Partial<AppSettings>): AppSettings {
     try { unlinkSync(tmp); } catch { /* ignore */ }
   }
   return merged;
+}
+
+// ─── External knowledge providers (~/.cognistore/providers.json) ─────
+const PROVIDERS_FILE = resolve(INSTALL_DIR, 'providers.json');
+type ProvidersConfig = ReturnType<typeof providersConfigSchema.parse>;
+
+function readProvidersConfig(): ProvidersConfig {
+  try {
+    if (!existsSync(PROVIDERS_FILE)) return { version: 1, providers: [] };
+    return providersConfigSchema.parse(JSON.parse(readFileSync(PROVIDERS_FILE, 'utf-8')));
+  } catch {
+    return { version: 1, providers: [] };
+  }
+}
+
+function writeProvidersConfig(config: ProvidersConfig): void {
+  const validated = providersConfigSchema.parse(config);
+  mkdirSync(INSTALL_DIR, { recursive: true });
+  const tmp = PROVIDERS_FILE + '.tmp';
+  writeFileSync(tmp, JSON.stringify(validated, null, 2));
+  try {
+    renameSync(tmp, PROVIDERS_FILE);
+  } catch {
+    copyFileSync(tmp, PROVIDERS_FILE);
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+  }
 }
 
 /** Compare two semver strings. Returns positive if a > b, negative if a < b, zero if equal. */
@@ -1494,11 +1523,16 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
     const body = request.body as any;
-    const { query, ...options } = body;
+    const { query, includeExternal, providers, ...options } = body;
     if (!query || typeof query !== 'string') {
       throw new Error('Query is required and must be a string');
     }
-    return sdk.getKnowledge(query, options as Partial<SearchOptions>);
+    const wantExternal = includeExternal === true || Array.isArray(providers) || readSettings().alwaysSearchExternalProviders;
+    return wantExternal
+      ? sdk.getKnowledgeFederated(query, options as Partial<SearchOptions>, {
+          providers: Array.isArray(providers) ? providers : undefined,
+        })
+      : sdk.getKnowledge(query, options as Partial<SearchOptions>);
   });
 
   app.get<{ Params: { id: string } }>('/api/knowledge/:id', async (request, reply) => {
@@ -1810,7 +1844,71 @@ Pass an array to addKnowledge to create multiple entries at once.
       reply.code(400);
       return { error: 'Body must be an object' };
     }
-    return writeSettings(body);
+    const merged = writeSettings(body);
+    // The always-on flag is read by the SDK for federated search.
+    sdk.reloadProviders();
+    return merged;
+  });
+
+  // ─── External knowledge providers (federated search) ────────────
+  app.get('/api/providers', async () => readProvidersConfig());
+
+  app.post<{ Body: unknown }>('/api/providers', async (request, reply) => {
+    try {
+      const entry = providerEntrySchema.parse(request.body);
+      const cfg = readProvidersConfig();
+      if (cfg.providers.some((p) => p.id === entry.id)) {
+        reply.code(409);
+        return { error: `Provider id '${entry.id}' already exists` };
+      }
+      cfg.providers.push(entry);
+      writeProvidersConfig(cfg);
+      sdk.reloadProviders();
+      return entry;
+    } catch (e: any) {
+      reply.code(400);
+      return { error: e?.message ?? 'Invalid provider' };
+    }
+  });
+
+  app.put<{ Params: { id: string }; Body: Record<string, unknown> }>('/api/providers/:id', async (request, reply) => {
+    try {
+      const cfg = readProvidersConfig();
+      const idx = cfg.providers.findIndex((p) => p.id === request.params.id);
+      if (idx === -1) { reply.code(404); return { error: 'Not found' }; }
+      const entry = providerEntrySchema.parse({ ...request.body, id: request.params.id });
+      cfg.providers[idx] = entry;
+      writeProvidersConfig(cfg);
+      sdk.reloadProviders();
+      return entry;
+    } catch (e: any) {
+      reply.code(400);
+      return { error: e?.message ?? 'Invalid provider' };
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/providers/:id', async (request) => {
+    const cfg = readProvidersConfig();
+    cfg.providers = cfg.providers.filter((p) => p.id !== request.params.id);
+    writeProvidersConfig(cfg);
+    sdk.reloadProviders();
+    return { removed: true };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/providers/:id/test', async (request, reply) => {
+    const entry = readProvidersConfig().providers.find((p) => p.id === request.params.id);
+    if (!entry) { reply.code(404); return { error: 'Not found' }; }
+    const provider = buildProvider(entry, new EnvSecretStore());
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      return provider.testConnection ? await provider.testConnection(ctrl.signal) : { ok: true };
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) };
+    } finally {
+      clearTimeout(timer);
+      await provider.dispose?.();
+    }
   });
 
   // ─── Start server ──────────────────────────────────────────────
