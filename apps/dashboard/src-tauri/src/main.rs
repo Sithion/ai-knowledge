@@ -110,6 +110,15 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
 }
 
 fn main() {
+    // Workaround for EGL_NOT_INITIALIZED crash on Linux with certain GPU/driver
+    // configurations where WebKitGTK's DMABUF renderer fails to initialise.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
