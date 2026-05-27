@@ -4,3 +4,4 @@ export * from './secrets/secret-store.js';
 export * from './secrets/env-secret-store.js';
 export * from './http/http-provider.js';
 export * from './mcp/mcp-provider.js';
+export * from './config.js';

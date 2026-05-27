@@ -29,9 +29,18 @@ import {
   type PlanTask,
   type HealthStatus,
   type SDKConfig,
+  type FederatedSearchResult,
 } from '@cognistore/shared';
+import { loadProviders, ProviderManager, EnvSecretStore } from '@cognistore/providers';
+import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolveConfig } from './config.js';
 import { ConnectionError, EmbeddingError, ValidationError } from './errors.js';
+
+function expandHome(p: string): string {
+  return p.startsWith('~') ? join(homedir(), p.slice(1)) : p;
+}
 
 export class KnowledgeSDK {
   private config: SDKConfig;
@@ -40,6 +49,8 @@ export class KnowledgeSDK {
   private service: KnowledgeService | null = null;
   private tokenService: TokenUsageService | null = null;
   private ollamaClient: OllamaEmbeddingClient;
+  private providerManager: ProviderManager | null = null;
+  private alwaysExternal = false;
   private initialized = false;
 
   constructor(config?: Partial<SDKConfig>) {
@@ -86,6 +97,21 @@ export class KnowledgeSDK {
       const tokenRepo = new TokenUsageRepository(this.sqlite!);
       this.tokenService = new TokenUsageService(tokenRepo);
 
+      // Step 6: External knowledge providers (federated search — opt-in, off by default).
+      // Reads ~/.cognistore/providers.json + the alwaysSearchExternalProviders setting.
+      // Never fatal: a missing/bad config just means no external providers.
+      try {
+        const dir = dirname(expandHome(this.config.database.path));
+        this.providerManager = loadProviders(join(dir, 'providers.json'), new EnvSecretStore());
+        const settingsPath = join(dir, 'settings.json');
+        if (existsSync(settingsPath)) {
+          const s = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { alwaysSearchExternalProviders?: boolean };
+          this.alwaysExternal = s?.alwaysSearchExternalProviders === true;
+        }
+      } catch {
+        this.providerManager = null;
+      }
+
       this.initialized = true;
     } catch (error) {
       await this.cleanup();
@@ -122,6 +148,38 @@ export class KnowledgeSDK {
     } catch (error) {
       throw this.wrapError(error, 'Failed to search knowledge');
     }
+  }
+
+  /**
+   * Federated search: local results + one section per enabled external provider.
+   * Use when the caller opted in (param) or the global always-on setting is true.
+   * `getKnowledge` stays local-only and backward-compatible.
+   */
+  async getKnowledgeFederated(
+    query: string,
+    options?: SearchOptions,
+    opts?: { providers?: string[]; perProviderTimeoutMs?: number },
+  ): Promise<FederatedSearchResult> {
+    this.ensureInitialized();
+    if (!query || query.trim().length === 0) {
+      throw new ValidationError('Query cannot be empty');
+    }
+    const parsedOptions = options ? (searchOptionsSchema.parse(options) as SearchOptions) : undefined;
+    const source = this.providerManager
+      ? (opts?.providers ? this.providerManager.subset(opts.providers) : this.providerManager)
+      : undefined;
+    try {
+      return await this.service!.searchFederated(query, parsedOptions, source, {
+        perProviderTimeoutMs: opts?.perProviderTimeoutMs,
+      });
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to search knowledge (federated)');
+    }
+  }
+
+  /** Whether the global "always search external providers" setting is on. */
+  get alwaysSearchExternalProviders(): boolean {
+    return this.alwaysExternal;
   }
 
   async getKnowledgeById(id: string): Promise<KnowledgeEntry | null> {

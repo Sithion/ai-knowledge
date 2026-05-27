@@ -253,6 +253,9 @@ importers:
       '@cognistore/embeddings':
         specifier: workspace:*
         version: link:../embeddings
+      '@cognistore/providers':
+        specifier: workspace:*
+        version: link:../providers
       '@cognistore/shared':
         specifier: workspace:*
         version: link:../shared
