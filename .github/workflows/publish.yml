@@ -35,14 +35,37 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
-      - name: Validate MCP server package (fail on warnings)
+      - name: Strip workspace-only devDependencies from MCP package.json
+        # pnpm v9 does not run npm lifecycle scripts (prepack/postpack/
+        # prepublishOnly) during pack or publish, so the strip must be invoked
+        # explicitly here. This removes @cognistore/sdk and @cognistore/shared
+        # (bundled into dist/index.js by tsup, never published to npm) so
+        # downstream `npm install` does not 404 on them.
+        run: node apps/mcp-server/scripts/strip-workspace-deps.mjs
+
+      - name: Validate MCP server tarball
+        # Must run after `pnpm build` (dist/ must exist) and after the strip
+        # step above. Catches the v2.0.0 publish regression where `workspace:*`
+        # markers and references to private @cognistore/* packages leaked into
+        # the npm tarball and made `npm install` fail with EUNSUPPORTEDPROTOCOL.
         run: |
-          OUTPUT=$(cd apps/mcp-server && npm publish --dry-run --access public 2>&1)
-          echo "$OUTPUT"
-          WARNINGS=$(echo "$OUTPUT" | grep "npm warn publish" | grep -v "script name was cleaned" | grep -v "auto-corrected some errors" | grep -v "errors corrected" || true)
-          if [ -n "$WARNINGS" ]; then
-            echo "$WARNINGS"
-            echo "::error::npm publish dry-run produced warnings that may cause provenance failure."
+          cd apps/mcp-server
+          rm -rf /tmp/cog-validate
+          pnpm pack --pack-destination /tmp/cog-validate
+          TAR=$(ls /tmp/cog-validate/cognistore-mcp-server-*.tgz | head -1)
+          if [ -z "$TAR" ]; then
+            echo "::error::pnpm pack did not produce a tarball in /tmp/cog-validate"
+            exit 1
+          fi
+          PKG=$(tar -xzOf "$TAR" package/package.json)
+          if echo "$PKG" | grep -q '"workspace:'; then
+            echo "::error::tarball contains 'workspace:' protocol reference"
+            echo "$PKG"
+            exit 1
+          fi
+          if echo "$PKG" | grep -Eq '"@cognistore/(sdk|shared|core|embeddings|providers)"'; then
+            echo "::error::tarball references a private @cognistore/* package that is not published to npm"
+            echo "$PKG"
             exit 1
           fi
 
@@ -58,9 +81,13 @@ jobs:
 
       - name: Publish to npm
         if: steps.version-check.outputs.exists == 'false'
-        run: cd apps/mcp-server && npm publish --provenance --access public
+        run: cd apps/mcp-server && pnpm publish --provenance --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Restore stripped package.json
+        if: always()
+        run: node apps/mcp-server/scripts/restore-workspace-deps.mjs
 
   # ── Create GitHub Release (single job to avoid race condition) ──
   create-release:

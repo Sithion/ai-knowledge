@@ -1,5 +1,16 @@
 # Patch Notes
 
+## v2.0.1
+
+### Fixes
+- **`@cognistore/mcp-server` failed to install via `npx` / `npm install`**: the v2.0.0 tarball carried `workspace:*` markers in `devDependencies` pointing at private `@cognistore/*` packages that are never published to npm, so `npm install` rejected the package with `EUNSUPPORTEDPROTOCOL`. The bundled SDK/shared/core/embeddings/providers code is already inlined into `dist/index.js` by tsup (`noExternal`), so those workspace entries only existed for local IDE/build resolution and had no business being in the published tarball. The publish workflow now:
+  - (a) runs `apps/mcp-server/scripts/strip-workspace-deps.mjs` before pack to remove `@cognistore/sdk` and `@cognistore/shared` from `devDependencies` (pnpm v9 does **not** run `prepack` / `prepublishOnly` lifecycle scripts during `pack` / `publish`, so this is invoked directly from CI, not via an npm hook);
+  - (b) packs the tarball with `pnpm pack` and greps `package/package.json` inside it — failing the build if any `workspace:` token or private `@cognistore/(sdk|shared|core|embeddings|providers)` reference survives;
+  - (c) publishes via `pnpm publish --provenance --access public --no-git-checks` so any residual `workspace:` ranges added in the future are rewritten as a second safety net;
+  - (d) restores the working-copy `package.json` after publish via `scripts/restore-workspace-deps.mjs` (`if: always()`, idempotent).
+
+  Consumers should pin `@cognistore/mcp-server@>=2.0.1`; v2.0.0 will be unpublished from npm.
+
 ## v2.0.0
 
 Major release: **External Knowledge Providers (MCP)**. CogniStore can now augment its local semantic search by also querying external **MCP servers** you connect. Search runs **local-first** and, when external search is active, **also** queries enabled providers — returning everything **sectioned by source**. External search is **opt-in and disabled by default**, so existing behavior is unchanged unless you turn it on.
