@@ -43,3 +43,4 @@ pnpm-debug.log*
 
 # Backup files
 *.bak
+sandbox/
