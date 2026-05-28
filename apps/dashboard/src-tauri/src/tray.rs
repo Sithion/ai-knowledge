@@ -14,6 +14,17 @@ const WIDGET_PLANS_ID: &str = "widget-plans";
 const WIDGET_ACTIVE_ID: &str = "widget-active-plans";
 const WIDGET_TOKENS_ID: &str = "widget-tokens";
 
+/// Open a widget from the tray, recording (instead of silently discarding) any
+/// failure. Widget-open errors used to vanish via `let _ = ...`, so a click that
+/// failed looked identical to the feature not existing — especially on Linux.
+fn open_widget_from_tray(app: &AppHandle, widget_id: &str) {
+    // Call the sync helper directly — the tray callback already runs on the main
+    // thread, so we skip the async command + run_on_main_thread indirection.
+    if let Err(e) = widgets::build_widget_window(app, widget_id.into(), None) {
+        widgets::widget_log(&format!("tray failed to open widget '{}': {}", widget_id, e));
+    }
+}
+
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let show_app = MenuItem::with_id(app, SHOW_ID, "Show CogniStore", true, None::<&str>)?;
 
@@ -45,19 +56,18 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = win.set_focus();
                     }
                 }
-                x if x == WIDGET_STATS_ID => {
-                    let _ = widgets::open_widget(app.clone(), "stats".into(), None);
-                }
-                x if x == WIDGET_PLANS_ID => {
-                    let _ = widgets::open_widget(app.clone(), "plans".into(), None);
-                }
-                x if x == WIDGET_ACTIVE_ID => {
-                    let _ = widgets::open_widget(app.clone(), "active-plans".into(), None);
-                }
-                x if x == WIDGET_TOKENS_ID => {
-                    let _ = widgets::open_widget(app.clone(), "tokens".into(), None);
-                }
+                x if x == WIDGET_STATS_ID => open_widget_from_tray(app, "stats"),
+                x if x == WIDGET_PLANS_ID => open_widget_from_tray(app, "plans"),
+                x if x == WIDGET_ACTIVE_ID => open_widget_from_tray(app, "active-plans"),
+                x if x == WIDGET_TOKENS_ID => open_widget_from_tray(app, "tokens"),
                 x if x == QUIT_ID => {
+                    // Signal intentional quit BEFORE app.exit(0) so the
+                    // ExitRequested handler doesn't call prevent_exit() and
+                    // silently cancel the quit. Without this flag the app stays
+                    // running even after the user clicks Quit.
+                    if let Some(flag) = app.try_state::<crate::QuitFlag>() {
+                        flag.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     widgets::flush_widget_config(app);
                     app.exit(0);
                 }

@@ -38,6 +38,7 @@ interface PlanEntry {
   scope: string;
   source: string;
   status: string;
+  planFilePath?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -686,6 +687,23 @@ export function PlansPage() {
           </div>
         </div>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>{selectedPlan.title}</h1>
+
+        {/* Local plan file path (if this plan was authored from a plan-mode file) */}
+        {selectedPlan.planFilePath && (
+          <div
+            title={selectedPlan.planFilePath}
+            onClick={() => navigator.clipboard?.writeText(selectedPlan.planFilePath!)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, padding: '6px 10px',
+              backgroundColor: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 8,
+              fontFamily: 'monospace', fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}
+          >
+            <span aria-hidden>📄</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedPlan.planFilePath}</span>
+          </div>
+        )}
 
         {/* Tasks */}
         {tasks.length > 0 && (

@@ -37,6 +37,40 @@ export function createTestContext(): TestContext {
   return { service, repository, sqlite, db, dbPath };
 }
 
+/**
+ * Controlled embedding provider for similarity-threshold tests. The default mock
+ * encodes text length/char distribution, NOT semantics, so it cannot produce a
+ * known cosine between two different-topic strings. This provider lets a test embed
+ * an exact vector by including `VEC[a,b,c,...]` in the text (first N dims, normalized);
+ * other text falls back to the char-code hash.
+ */
+function createControlledEmbeddingProvider(): EmbeddingProvider {
+  const dims = DEFAULT_EMBEDDING_DIMENSIONS;
+  return {
+    async embed(text: string): Promise<number[]> {
+      const vec = new Array(dims).fill(0);
+      const m = text.match(/VEC\[([-0-9.,\s]+)\]/);
+      if (m) {
+        const nums = m[1].split(',').map((s) => parseFloat(s.trim()));
+        for (let i = 0; i < nums.length && i < dims; i++) vec[i] = nums[i] || 0;
+      } else {
+        for (let i = 0; i < text.length; i++) vec[i % dims] += text.charCodeAt(i) / 1000;
+      }
+      const mag = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+      return vec.map((v) => v / mag);
+    },
+  };
+}
+
+/** Like createTestContext but with the controllable VEC[...] embedding provider. */
+export function createControlledContext(): TestContext {
+  const dbPath = join(tmpdir(), `cognistore-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const { db, sqlite } = createDbClient(dbPath);
+  const repository = new KnowledgeRepository(db, sqlite);
+  const service = new KnowledgeService(repository, createControlledEmbeddingProvider());
+  return { service, repository, sqlite, db, dbPath };
+}
+
 /** Destroy test context */
 export function destroyTestContext(ctx: TestContext): void {
   try { ctx.sqlite.close(); } catch {}

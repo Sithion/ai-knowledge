@@ -13,6 +13,17 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "updater:default",
-    "process:default"
+    "process:default",
+    "allow-open-widget",
+    "allow-close-widget",
+    "allow-get-open-widgets",
+    "allow-set-provider-secret",
+    "allow-delete-provider-secret",
+    "allow-cleanup-provider-secrets",
+    "allow-set-oauth-tokens",
+    "allow-get-oauth-tokens",
+    "allow-delete-oauth-tokens",
+    "allow-oauth-reserve",
+    "allow-oauth-await"
   ]
 }

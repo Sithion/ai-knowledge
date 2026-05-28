@@ -26,6 +26,9 @@ Optional: **## Reusable Code**, **## Edge Cases & Risks**
 
 Include file paths, function names, and specific technical details — not generic descriptions.
 
+If you wrote the plan to a local file (plan mode), pass its ABSOLUTE path as `planFilePath`
+in `createPlan()` — mandatory whenever a plan file exists, so the plan links back to it.
+
 Track each task:
 - Before: `updatePlanTask(taskId, { status: "in_progress" })`
 - After: `updatePlanTask(taskId, { status: "completed" })`

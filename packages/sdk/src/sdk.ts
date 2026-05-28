@@ -29,9 +29,18 @@ import {
   type PlanTask,
   type HealthStatus,
   type SDKConfig,
+  type FederatedSearchResult,
 } from '@cognistore/shared';
+import { loadProviders, ProviderManager, EnvSecretStore, FileTokenStore } from '@cognistore/providers';
+import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolveConfig } from './config.js';
 import { ConnectionError, EmbeddingError, ValidationError } from './errors.js';
+
+function expandHome(p: string): string {
+  return p.startsWith('~') ? join(homedir(), p.slice(1)) : p;
+}
 
 export class KnowledgeSDK {
   private config: SDKConfig;
@@ -40,6 +49,8 @@ export class KnowledgeSDK {
   private service: KnowledgeService | null = null;
   private tokenService: TokenUsageService | null = null;
   private ollamaClient: OllamaEmbeddingClient;
+  private providerManager: ProviderManager | null = null;
+  private alwaysExternal = false;
   private initialized = false;
 
   constructor(config?: Partial<SDKConfig>) {
@@ -86,6 +97,9 @@ export class KnowledgeSDK {
       const tokenRepo = new TokenUsageRepository(this.sqlite!);
       this.tokenService = new TokenUsageService(tokenRepo);
 
+      // Step 6: External knowledge providers (federated search — opt-in, off by default).
+      this.reloadProviders();
+
       this.initialized = true;
     } catch (error) {
       await this.cleanup();
@@ -121,6 +135,58 @@ export class KnowledgeSDK {
       return await this.service!.search(query, parsedOptions as SearchOptions | undefined);
     } catch (error) {
       throw this.wrapError(error, 'Failed to search knowledge');
+    }
+  }
+
+  /**
+   * Federated search: local results + one section per enabled external provider.
+   * Use when the caller opted in (param) or the global always-on setting is true.
+   * `getKnowledge` stays local-only and backward-compatible.
+   */
+  async getKnowledgeFederated(
+    query: string,
+    options?: SearchOptions,
+    opts?: { providers?: string[]; perProviderTimeoutMs?: number },
+  ): Promise<FederatedSearchResult> {
+    this.ensureInitialized();
+    if (!query || query.trim().length === 0) {
+      throw new ValidationError('Query cannot be empty');
+    }
+    const parsedOptions = options ? (searchOptionsSchema.parse(options) as SearchOptions) : undefined;
+    const source = this.providerManager
+      ? (opts?.providers ? this.providerManager.subset(opts.providers) : this.providerManager)
+      : undefined;
+    try {
+      return await this.service!.searchFederated(query, parsedOptions, source, {
+        perProviderTimeoutMs: opts?.perProviderTimeoutMs,
+      });
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to search knowledge (federated)');
+    }
+  }
+
+  /** Whether the global "always search external providers" setting is on. */
+  get alwaysSearchExternalProviders(): boolean {
+    return this.alwaysExternal;
+  }
+
+  /**
+   * Re-read providers.json + the alwaysSearchExternalProviders setting. Call after
+   * the dashboard mutates either, so federated search reflects changes without a
+   * restart. Never throws (a bad config keeps the previous state).
+   */
+  reloadProviders(): void {
+    try {
+      const dir = dirname(expandHome(this.config.database.path));
+      const tokenStore = new FileTokenStore(join(dir, 'oauth-tokens.json'));
+      this.providerManager = loadProviders(join(dir, 'providers.json'), new EnvSecretStore(), tokenStore);
+      const settingsPath = join(dir, 'settings.json');
+      this.alwaysExternal = existsSync(settingsPath)
+        ? (JSON.parse(readFileSync(settingsPath, 'utf-8')) as { alwaysSearchExternalProviders?: boolean })
+            ?.alwaysSearchExternalProviders === true
+        : false;
+    } catch (e) {
+      console.error('[CogniStore] reloadProviders failed:', e instanceof Error ? e.message : String(e));
     }
   }
 

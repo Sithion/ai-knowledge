@@ -46,6 +46,7 @@ export const searchOptionsSchema = z.object({
   scope: scopeSchema.optional(),
   limit: z.number().int().min(1).max(100).optional().default(DEFAULT_SEARCH_LIMIT),
   threshold: z.number().min(0).max(1).optional().default(DEFAULT_SIMILARITY_THRESHOLD),
+  includePlanContext: z.boolean().optional().default(false),
 });
 
 // ─── Plans ────────────────────────────────────────────────────
@@ -57,6 +58,7 @@ export const createPlanSchema = z.object({
   scope: scopeSchema,
   source: z.string().min(1, 'Source is required'),
   status: knowledgeStatusSchema.optional().default(KnowledgeStatus.DRAFT),
+  planFilePath: z.string().min(1).nullable().optional(),
   tasks: z.array(z.object({
     description: z.string().min(1),
     priority: z.enum(['low', 'medium', 'high']).optional(),
@@ -70,6 +72,7 @@ export const updatePlanSchema = z.object({
   scope: scopeSchema.optional(),
   status: knowledgeStatusSchema.optional(),
   source: z.string().min(1).optional(),
+  planFilePath: z.string().min(1).nullable().optional(),
 });
 
 // ─── Plan Tasks ───────────────────────────────────────────────

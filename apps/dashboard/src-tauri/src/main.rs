@@ -3,14 +3,23 @@
 
 mod sidecar;
 mod tray;
+mod secrets;
+mod oauth;
 mod widget_config;
 mod widgets;
 
 use sidecar::SidecarState;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Manager;
 use widget_config::WidgetPositions;
 use widgets::{PortState, WidgetRegistry};
+
+/// Set to true by the tray Quit handler before calling app.exit(0). The
+/// ExitRequested listener checks this flag so it only calls prevent_exit()
+/// when the exit was NOT explicitly requested by the user — otherwise
+/// app.exit(0) is immediately cancelled by prevent_exit() and Quit never works.
+pub struct QuitFlag(pub AtomicBool);
 
 /// Generate a user-friendly error page HTML for the webview.
 fn error_page_html(title: &str, detail: &str) -> String {
@@ -85,7 +94,7 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
             // Restore saved widgets after sidecar is ready
             let config = widget_config::load_config();
             for ws in &config.widgets {
-                if let Ok(new_label) = widgets::open_widget(app_handle_for_restore.clone(), ws.widget_type.clone(), None) {
+                if let Ok(new_label) = widgets::open_widget(app_handle_for_restore.clone(), ws.widget_type.clone(), None).await {
                     // Set position for the new instance and move the window
                     if let Some(positions) = app_handle_for_restore.try_state::<WidgetPositions>() {
                         if let Ok(mut pos) = positions.positions.lock() {
@@ -109,14 +118,33 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
 }
 
 fn main() {
+    // Workaround for EGL_NOT_INITIALIZED crash on Linux with certain GPU/driver
+    // configurations where WebKitGTK's DMABUF renderer fails to initialise.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(QuitFlag(AtomicBool::new(false)))
         .invoke_handler(tauri::generate_handler![
             widgets::open_widget,
             widgets::close_widget,
             widgets::get_open_widgets,
+            secrets::set_provider_secret,
+            secrets::delete_provider_secret,
+            secrets::cleanup_provider_secrets,
+            secrets::set_oauth_tokens,
+            secrets::get_oauth_tokens,
+            secrets::delete_oauth_tokens,
+            oauth::oauth_reserve,
+            oauth::oauth_await,
         ])
+        .manage(oauth::OAuthListeners::default())
         .setup(|app| {
             if let Err(msg) = run_setup(app) {
                 eprintln!("Setup error: {}", msg);
@@ -181,8 +209,15 @@ fn main() {
                 }
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                // Keep running in background when main window is hidden
-                api.prevent_exit();
+                // Only keep running in background when the exit was NOT explicitly
+                // requested via the tray Quit item. When QuitFlag is true the user
+                // chose to quit; let app.exit(0) go through unblocked.
+                let user_quit = app
+                    .try_state::<QuitFlag>()
+                    .map_or(false, |f| f.0.load(Ordering::Relaxed));
+                if !user_quit {
+                    api.prevent_exit();
+                }
             }
         });
 }

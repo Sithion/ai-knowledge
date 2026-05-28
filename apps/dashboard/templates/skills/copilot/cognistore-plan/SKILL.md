@@ -57,6 +57,14 @@ description: >
 5. **CRITICAL**: Call `createPlan()` BEFORE exiting plan mode — your turn may end after exit.
    MCP tools work in plan mode (they don't edit local files).
 
+## If a host REQUIRES a local plan file
+
+The rule above is "never write a plan ONLY to a local file." If your host *forces* a
+local plan file (some plan modes do), that's fine — but you MUST then pass that file's
+ABSOLUTE path as `planFilePath` to `createPlan()` (or `updatePlan()` to backfill), so the
+CogniStore plan links back to it. Always link it — never leave `planFilePath` empty when a
+plan file exists.
+
 ## How to Create (with Tasks)
 
 ```

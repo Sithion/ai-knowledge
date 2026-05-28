@@ -8,6 +8,7 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { KnowledgeSDK } from '@cognistore/sdk';
 import { ConfigManager } from '@cognistore/config';
+import { providersConfigSchema, providerEntrySchema, buildProvider, migrateProvidersConfig, EnvSecretStore, FileTokenStore, InteractiveOAuthFlow, secretRefToEnvKey } from '@cognistore/providers';
 import type {
   CreateKnowledgeInput,
   UpdateKnowledgeInput,
@@ -81,6 +82,7 @@ export interface AppSettings {
   dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: 'all' | 'claude' | 'copilot';
+  alwaysSearchExternalProviders: boolean;
 }
 
 const SETTINGS_DEFAULTS: AppSettings = {
@@ -88,6 +90,7 @@ const SETTINGS_DEFAULTS: AppSettings = {
   dateRangePreset: '1w',
   lastSelectedRange: null,
   tokenProviderFilter: 'all',
+  alwaysSearchExternalProviders: false,
 };
 
 function readSettings(): AppSettings {
@@ -112,6 +115,36 @@ function writeSettings(patch: Partial<AppSettings>): AppSettings {
     try { unlinkSync(tmp); } catch { /* ignore */ }
   }
   return merged;
+}
+
+// ─── External knowledge providers (~/.cognistore/providers.json) ─────
+const PROVIDERS_FILE = resolve(INSTALL_DIR, 'providers.json');
+type ProvidersConfig = ReturnType<typeof providersConfigSchema.parse>;
+
+const OAUTH_TOKENS_FILE = resolve(INSTALL_DIR, 'oauth-tokens.json');
+const providerTokenStore = new FileTokenStore(OAUTH_TOKENS_FILE);
+
+function readProvidersConfig(): ProvidersConfig {
+  try {
+    if (!existsSync(PROVIDERS_FILE)) return { version: 2, providers: [] };
+    // migrateProvidersConfig handles both v2 (validate) and v1→v2 (migrate).
+    return migrateProvidersConfig(JSON.parse(readFileSync(PROVIDERS_FILE, 'utf-8'))).config;
+  } catch {
+    return { version: 2, providers: [] };
+  }
+}
+
+function writeProvidersConfig(config: ProvidersConfig): void {
+  const validated = providersConfigSchema.parse(config);
+  mkdirSync(INSTALL_DIR, { recursive: true });
+  const tmp = PROVIDERS_FILE + '.tmp';
+  writeFileSync(tmp, JSON.stringify(validated, null, 2));
+  try {
+    renameSync(tmp, PROVIDERS_FILE);
+  } catch {
+    copyFileSync(tmp, PROVIDERS_FILE);
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+  }
 }
 
 /** Compare two semver strings. Returns positive if a > b, negative if a < b, zero if equal. */
@@ -167,6 +200,7 @@ Save the returned planId — you need it in step 4.
 Dedup is automatic: active plan in same scope gets tasks added, similar drafts get updated.
 Plan activates automatically when you start the first task.
 Plan completes automatically when all tasks are done.
+MANDATORY: if you wrote the plan to a local file (e.g. plan mode writes ~/.claude/plans/<name>.md), you MUST pass its ABSOLUTE path as planFilePath so the CogniStore plan links back to the on-disk file. Always.
 
 ### 3. Track each task
 Before starting a task: mcp__cognistore__updatePlanTask(taskId, { status: "in_progress" })
@@ -389,12 +423,38 @@ Pass an array to addKnowledge to create multiple entries at once.
       // Use a broad fallback PATH to cover common executable locations.
       env.PATH = `${binDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
     }
+    // Forward external-provider secrets (injected into the sidecar by the Tauri
+    // shell from the OS keychain) so the MCP subprocess can authenticate.
+    for (const [key, val] of Object.entries(process.env)) {
+      if (key.startsWith('COGNISTORE_PROVIDER_SECRET__') && val) env[key] = val;
+    }
     return {
       type: 'stdio',
       command: binDir ? resolve(binDir, 'npx') : 'npx',
       args: ['-y', '@cognistore/mcp-server'],
       env,
     };
+  }
+
+  /**
+   * Deploy the global enforcement hooks: copy scripts into ~/.cognistore/hooks/ and
+   * inject the hook config into ~/.claude/settings.json (Claude Code) and
+   * ~/.copilot/hooks/hooks.json (Copilot, reminder-only). Idempotent — safe to re-run
+   * on setup, upgrade, and redeploy. Copilot failures are non-fatal.
+   */
+  async function deployGlobalHooks(): Promise<void> {
+    const hooksDir = await configManager.setupHooks(TEMPLATES_PATH);
+    if (hooksDir) {
+      await configManager.injectHooks(
+        ConfigManager.CLAUDE_SETTINGS,
+        ConfigManager.buildClaudeHookConfig(hooksDir)
+      );
+    }
+    try {
+      await configManager.setupCopilotHooks(TEMPLATES_PATH);
+    } catch (e) {
+      console.warn('[CogniStore] Copilot hooks setup failed (non-fatal):', e);
+    }
   }
 
   app.post('/api/setup/node', async () => {
@@ -685,46 +745,31 @@ Pass an array to addKnowledge to create multiple entries at once.
       // Inject tool permissions for auto-approve (read + write)
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); results.push('Claude permissions injected'); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
 
-      // Install skills
+      // Global enforcement hooks. Skill-dir hooks never registered with Claude Code;
+      // real global hooks must live in ~/.claude/settings.json (and ~/.copilot/hooks/).
+      try { await deployGlobalHooks(); results.push('Global hooks injected (Claude + Copilot)'); }
+      catch (e: any) { console.warn('[CogniStore] Hook injection failed:', e?.message); results.push('Hooks injection error'); }
+
+      // Install skills (SKILL.md instructions; hooks are deployed separately above)
       const skillsDir = resolve(TEMPLATES_PATH, 'skills');
       const home = homedir();
 
-      // Claude Code skills (with hooks directories)
       for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
         const srcDir = resolve(skillsDir, 'claude-code', name);
         if (existsSync(srcDir)) {
           const destDir = resolve(home, '.claude', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
-          // Make hook scripts executable
-          const hooksDir = resolve(destDir, 'hooks');
-          if (existsSync(hooksDir)) {
-            for (const file of readdirSync(hooksDir)) {
-              if (file.endsWith('.sh')) {
-                chmodSync(resolve(hooksDir, file), 0o755);
-              }
-            }
-          }
           results.push(`Skill ${name} installed (Claude)`);
         }
       }
 
-      // Copilot skills (directory format with hooks)
       for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
         const srcDir = resolve(skillsDir, 'copilot', name);
         if (existsSync(srcDir)) {
           const destDir = resolve(home, '.copilot', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
-          // Make hook scripts executable
-          const hooksDir = resolve(destDir, 'hooks');
-          if (existsSync(hooksDir)) {
-            for (const file of readdirSync(hooksDir)) {
-              if (file.endsWith('.sh')) {
-                chmodSync(resolve(hooksDir, file), 0o755);
-              }
-            }
-          }
           results.push(`Skill ${name} installed (Copilot)`);
         }
       }
@@ -1005,6 +1050,14 @@ Pass an array to addKnowledge to create multiple entries at once.
       results.push({ step: 'skills', status: 'error', message: e.message });
     }
 
+    // Step 4b: Re-deploy global enforcement hooks (settings.json + ~/.copilot/hooks)
+    try {
+      await deployGlobalHooks();
+      results.push({ step: 'hooks', status: 'success' });
+    } catch (e: any) {
+      results.push({ step: 'hooks', status: 'error', message: e.message });
+    }
+
     // Step 5: Save new version
     try {
       saveDeployedVersion();
@@ -1104,6 +1157,12 @@ Pass an array to addKnowledge to create multiple entries at once.
       results.push({ step: 'skills', status: 'success' });
     } catch (e: any) { results.push({ step: 'skills', status: 'error', message: e.message }); }
 
+    // 4. Re-deploy global enforcement hooks (settings.json + ~/.copilot/hooks)
+    try {
+      await deployGlobalHooks();
+      results.push({ step: 'hooks', status: 'success' });
+    } catch (e: any) { results.push({ step: 'hooks', status: 'error', message: e.message }); }
+
     const allSuccess = results.every((r) => r.status === 'success');
     return { success: allSuccess, results };
   });
@@ -1133,6 +1192,8 @@ Pass an array to addKnowledge to create multiple entries at once.
       await step('Copilot MCP cleaned', () => configManager.removeMcpEntry(ConfigManager.COPILOT_MCP_CONFIG, 'cognistore'), results, errors);
       await step('OpenCode MCP cleaned', () => configManager.removeOpenCodeMcp(), results, errors);
       await step('Claude permissions cleaned', () => configManager.removePermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS), results, errors);
+      await step('Claude hooks cleaned', () => configManager.removeHooks(ConfigManager.CLAUDE_SETTINGS), results, errors);
+      await step('Copilot hooks cleaned', () => configManager.removeCopilotHooks(), results, errors);
 
       // 3. Remove skills
       for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
@@ -1184,10 +1245,12 @@ Pass an array to addKnowledge to create multiple entries at once.
       const backupTargets = [
         { dir: resolve(home, '.claude'), prefix: 'CLAUDE.md.bak.' },
         { dir: resolve(home, '.claude'), prefix: 'mcp-config.json.bak.' },
+        { dir: resolve(home, '.claude'), prefix: 'settings.json.bak.' },
         { dir: home, prefix: '.claude.json.bak.' },
         { dir: resolve(home, '.github'), prefix: 'copilot-instructions.md.bak.' },
         { dir: resolve(home, '.copilot'), prefix: 'copilot-instructions.md.bak.' },
         { dir: resolve(home, '.copilot'), prefix: 'mcp-config.json.bak.' },
+        { dir: resolve(home, '.copilot', 'hooks'), prefix: 'hooks.json.bak.' },
       ];
       for (const target of backupTargets) {
         try {
@@ -1494,11 +1557,17 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
     const body = request.body as any;
-    const { query, ...options } = body;
+    const { query, includeExternal, providers, ...options } = body;
     if (!query || typeof query !== 'string') {
       throw new Error('Query is required and must be a string');
     }
-    return sdk.getKnowledge(query, options as Partial<SearchOptions>);
+    // `providers: []` means "no specific filter" not "enable external search" —
+    // only treat a non-empty array as an explicit external-search request.
+    const providerFilter = Array.isArray(providers) && providers.length > 0 ? providers : undefined;
+    const wantExternal = includeExternal === true || providerFilter != null || readSettings().alwaysSearchExternalProviders;
+    return wantExternal
+      ? sdk.getKnowledgeFederated(query, options as Partial<SearchOptions>, { providers: providerFilter })
+      : sdk.getKnowledge(query, options as Partial<SearchOptions>);
   });
 
   app.get<{ Params: { id: string } }>('/api/knowledge/:id', async (request, reply) => {
@@ -1646,12 +1715,12 @@ Pass an array to addKnowledge to create multiple entries at once.
     });
   });
 
-  app.post<{ Body: { title: string; content: string; tags?: string[]; scope?: string; source?: string; tasks?: { description: string; priority?: string }[] } }>('/api/plans', async (request, reply) => {
+  app.post<{ Body: { title: string; content: string; tags?: string[]; scope?: string; source?: string; planFilePath?: string | null; tasks?: { description: string; priority?: string }[] } }>('/api/plans', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
     try {
-      const { title, content, tags = [], scope = 'global', source = 'dashboard', tasks = [] } = request.body;
-      const plan = await sdk.createPlan({ title, content, tags, scope, source, tasks });
+      const { title, content, tags = [], scope = 'global', source = 'dashboard', planFilePath, tasks = [] } = request.body;
+      const plan = await sdk.createPlan({ title, content, tags, scope, source, planFilePath, tasks });
       reply.code(201);
       return plan;
     } catch (error) {
@@ -1810,7 +1879,151 @@ Pass an array to addKnowledge to create multiple entries at once.
       reply.code(400);
       return { error: 'Body must be an object' };
     }
-    return writeSettings(body);
+    const merged = writeSettings(body);
+    // The always-on flag is read by the SDK for federated search.
+    sdk.reloadProviders();
+    return merged;
+  });
+
+  // ─── External knowledge providers (federated search) ────────────
+  app.get('/api/providers', async () => readProvidersConfig());
+
+  app.post<{ Body: unknown }>('/api/providers', async (request, reply) => {
+    try {
+      const entry = providerEntrySchema.parse(request.body);
+      const cfg = readProvidersConfig();
+      if (cfg.providers.some((p) => p.id === entry.id)) {
+        reply.code(409);
+        return { error: `Provider id '${entry.id}' already exists` };
+      }
+      cfg.providers.push(entry);
+      writeProvidersConfig(cfg);
+      sdk.reloadProviders();
+      return entry;
+    } catch (e: any) {
+      reply.code(400);
+      return { error: e?.message ?? 'Invalid provider' };
+    }
+  });
+
+  app.put<{ Params: { id: string }; Body: Record<string, unknown> }>('/api/providers/:id', async (request, reply) => {
+    try {
+      const cfg = readProvidersConfig();
+      const idx = cfg.providers.findIndex((p) => p.id === request.params.id);
+      if (idx === -1) { reply.code(404); return { error: 'Not found' }; }
+      const entry = providerEntrySchema.parse({ ...request.body, id: request.params.id });
+      cfg.providers[idx] = entry;
+      writeProvidersConfig(cfg);
+      sdk.reloadProviders();
+      return entry;
+    } catch (e: any) {
+      reply.code(400);
+      return { error: e?.message ?? 'Invalid provider' };
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/providers/:id', async (request) => {
+    const cfg = readProvidersConfig();
+    cfg.providers = cfg.providers.filter((p) => p.id !== request.params.id);
+    writeProvidersConfig(cfg);
+    // Drop any persisted OAuth session for this provider (keychain teardown is the
+    // Tauri shell's job on uninstall; this clears the sidecar file store).
+    try { await providerTokenStore.delete(request.params.id); } catch { /* ignore */ }
+    sdk.reloadProviders();
+    return { removed: true };
+  });
+
+  // Inject a provider secret into process.env so EnvSecretStore can resolve it
+  // for providers added after the sidecar started (env was frozen at spawn time).
+  // The secret value comes from the UI (user typed it); this is loopback-only.
+  app.post<{ Params: { id: string }; Body: { value: string } }>('/api/providers/:id/secret', async (request, reply) => {
+    const { value } = request.body ?? {};
+    if (typeof value !== 'string' || !value) {
+      reply.code(400);
+      return { error: 'value is required' };
+    }
+    process.env[secretRefToEnvKey(request.params.id)] = value;
+    return { ok: true };
+  });
+
+  // Interactive OAuth 2.1 (PKCE) for a remote MCP provider, in two phases held by
+  // `pendingOauth`. The desktop shell reserves a loopback redirect_uri (Tauri
+  // `oauth_reserve`), POSTs it to /oauth/start to get the authorization URL, opens
+  // the browser (`oauth_await`), then POSTs the captured code to /oauth/finish.
+  const pendingOauth = new Map<string, InteractiveOAuthFlow>();
+
+  app.post<{ Params: { id: string }; Body: { redirectUri?: string } }>('/api/providers/:id/oauth/start', async (request, reply) => {
+    const entry = readProvidersConfig().providers.find((p) => p.id === request.params.id);
+    if (!entry) { reply.code(404); return { error: 'Not found' }; }
+    if (entry.transport !== 'http' || entry.auth?.type !== 'oauth' || !entry.url) {
+      reply.code(400); return { ok: false, message: 'not an OAuth provider' };
+    }
+    const redirectUri = request.body?.redirectUri;
+    if (!redirectUri) { reply.code(400); return { ok: false, message: 'redirectUri is required' }; }
+    // Validate that the redirectUri is a loopback address (RFC 8252 §7.3).
+    // An arbitrary redirectUri would let the authorization server send the
+    // authorization code to a third-party host instead of our local listener.
+    try {
+      const rHost = new URL(redirectUri).hostname;
+      if (rHost !== '127.0.0.1' && rHost !== 'localhost' && rHost !== '::1') {
+        reply.code(400); return { ok: false, message: 'redirectUri must be a loopback address (127.0.0.1 or localhost)' };
+      }
+    } catch {
+      reply.code(400); return { ok: false, message: 'redirectUri is not a valid URL' };
+    }
+    try {
+      const flow = new InteractiveOAuthFlow({
+        providerId: entry.id, url: entry.url, redirectUrl: redirectUri,
+        scopes: entry.auth.scopes, clientId: entry.auth.clientId, allowInsecure: entry.auth.allowInsecure,
+        tokenStore: providerTokenStore,
+      });
+      const authUrl = await flow.begin();
+      if (authUrl === null) { await flow.dispose(); return { ok: true, alreadyConnected: true }; }
+      // Hold the flow (with its PKCE verifier + transport) until /finish.
+      await pendingOauth.get(entry.id)?.dispose();
+      pendingOauth.set(entry.id, flow);
+      return { ok: true, authorizeUrl: authUrl };
+    } catch (e: any) {
+      reply.code(502); return { ok: false, message: e?.message ?? String(e) };
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: { code?: string } }>('/api/providers/:id/oauth/finish', async (request, reply) => {
+    const flow = pendingOauth.get(request.params.id);
+    if (!flow) { reply.code(409); return { ok: false, message: 'no pending OAuth flow — start again' }; }
+    const code = request.body?.code;
+    if (!code) { reply.code(400); return { ok: false, message: 'code is required' }; }
+    try {
+      await flow.finish(code);
+      pendingOauth.delete(request.params.id);
+      sdk.reloadProviders(); // pick up the freshly-saved tokens
+      return { ok: true };
+    } catch (e: any) {
+      pendingOauth.delete(request.params.id);
+      reply.code(502); return { ok: false, message: e?.message ?? String(e) };
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/providers/:id/test', async (request, reply) => {
+    const entry = readProvidersConfig().providers.find((p) => p.id === request.params.id);
+    if (!entry) { reply.code(404); return { error: 'Not found' }; }
+    // OAuth providers can't authorize from a headless route (no browser). If no
+    // tokens are stored yet, tell the UI to run the interactive Connect flow.
+    if (entry.transport === 'http' && entry.auth?.type === 'oauth') {
+      const session = await providerTokenStore.get(entry.id);
+      if (!session.tokens) return { ok: false, needsAuth: true, message: 'OAuth not connected — click Connect' };
+    }
+    const provider = buildProvider(entry, new EnvSecretStore(), providerTokenStore);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      return provider.testConnection ? await provider.testConnection(ctrl.signal) : { ok: true };
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) };
+    } finally {
+      clearTimeout(timer);
+      await provider.dispose?.();
+    }
   });
 
   // ─── Start server ──────────────────────────────────────────────

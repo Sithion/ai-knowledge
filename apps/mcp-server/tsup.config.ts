@@ -20,6 +20,7 @@ export default defineConfig({
     '@cognistore/shared',
     '@cognistore/core',
     '@cognistore/embeddings',
+    '@cognistore/providers',
   ],
   external: [
     'better-sqlite3',

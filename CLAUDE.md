@@ -32,16 +32,22 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 | Add `cognistore` to `~/.copilot/mcp-config.json` | Remove entry via ConfigManager |
 | Add `cognistore` to `~/.config/opencode/opencode.json` | Remove entry via ConfigManager |
 | Inject read-only tool permissions in `~/.claude/settings.json` | Remove permission entries via ConfigManager |
+| Copy global hook scripts to `~/.cognistore/hooks/{claude-code,copilot}/` | Removed with `~/.cognistore` directory |
+| Inject hooks into `~/.claude/settings.json` (`hooks` key) | Remove cognistore hook entries via `ConfigManager.removeHooks` |
+| Write `~/.copilot/hooks/hooks.json` reminder hooks | Remove cognistore entries via `ConfigManager.removeCopilotHooks` |
 | Copy Claude skills to `~/.claude/skills/cognistore-*/` | Remove skill directories |
 | Copy Copilot skills to `~/.copilot/skills/cognistore-*/` | Remove skill directories |
 | App installed in /Applications/ (macOS) | Self-delete via rmSync |
+| Store external-provider secret in OS keychain (`set_provider_secret`) | Delete keychain entries via `cleanup_provider_secrets` on uninstall |
+| Create `~/.cognistore/providers.json` (external knowledge providers) | Removed with directory |
 
 ## Development Rules (MANDATORY)
 
 ### Upgrade Scripts
 Every feature that changes **any** of the following MUST include an upgrade script that runs automatically when the app updates:
 - **Database schema** → add a `.sql` migration file in `packages/core/src/db/migrations/{version}.sql`
-- **Skills/hooks** → the upgrade system re-copies all templates on version change (no extra work needed)
+- **Skills** → the upgrade system re-copies all skill templates on version change (no extra work needed)
+- **Hooks** → global hooks are re-deployed on version change via `deployGlobalHooks()` (idempotent `injectHooks`/`setupCopilotHooks`) in `/api/upgrade/run` and `/api/redeploy`. Hook scripts live in `~/.cognistore/hooks/`; settings-file entries are strip-then-append merged so re-runs never duplicate or clobber user hooks
 - **Agent instructions** → re-injected automatically on version change
 - **MCP configs** → re-written automatically on version change
 

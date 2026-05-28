@@ -11,7 +11,7 @@ Store, search, and retrieve knowledge using local vector embeddings — directly
 [![GitHub Release](https://img.shields.io/github/v/release/Sithion/cognistore)](https://github.com/Sithion/cognistore/releases)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-yellow.svg)](LICENSE)
 
-[Download](#quick-start) · [Features](#features) · [MCP Integration](#mcp-integration) · [Dashboard](#dashboard) · [Development](#development) · [Patch Notes](PATCH-NOTES.md)
+[Download](#quick-start) · [Features](#features) · [MCP Integration](#mcp-integration) · [External Providers](#external-knowledge-providers) · [Dashboard](#dashboard) · [Development](#development) · [Patch Notes](PATCH-NOTES.md)
 
 ![CogniStore Dashboard](screenshot.png)
 
@@ -29,6 +29,7 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 
 - **Local-first** — All data stays on your machine. SQLite database with vector search via `sqlite-vec`.
 - **Semantic search** — Find knowledge by meaning, not just keywords. Powered by Ollama embeddings running natively.
+- **External knowledge providers (MCP)** — Optionally augment local search by connecting [MCP servers](documentation/providers/plug-mcp.md) — local **stdio** subprocesses or **remote** Streamable HTTP servers (authenticated with **OAuth 2.1** or a static header). Results are returned **sectioned by source** and labeled untrusted; secrets live in the OS keychain. Opt-in and disabled by default — see the [providers docs](documentation/providers/providers-config.md).
 - **MCP integration** — Works as a plugin for Claude Code, GitHub Copilot, and OpenCode out of the box. OpenCode also gets a plan enforcement plugin for lifecycle tracking.
 - **Zero configuration** — The setup wizard handles everything: Ollama, database, model downloads, MCP config injection, AI skills installation, and system knowledge seeding.
 - **System knowledge** — Mandatory protocol entries (type `system`) are seeded on setup, injected into agent sessions via hooks, hidden from the dashboard, and protected from deletion. Agents always operate with the correct protocol without manual configuration.
@@ -109,7 +110,7 @@ If you prefer to configure the MCP server manually:
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `addKnowledge` | Store one or multiple knowledge entries (single object or array) | `entries` (object or object[]) |
-| `getKnowledge` | Search across entries using natural language queries | `query`, `tags`, `type`, `scope`, `limit`, `threshold` |
+| `getKnowledge` | Search across entries using natural language queries (optionally federates to external providers) | `query`, `tags`, `type`, `scope`, `limit`, `threshold`, `includeExternal`, `providers` |
 | `updateKnowledge` | Update an existing entry (re-embeds if tags change) | `id`, `title`, `content`, `tags` |
 | `deleteKnowledge` | Remove an entry by ID (rejects system entries) | `id` |
 | `listTags` | List all unique tags in the knowledge base | — |
@@ -148,6 +149,85 @@ Hooks are non-blocking (system messages only) and skip automatically when the ag
 ### Hook-Based Protocol Injection
 
 In addition to skills, `UserPromptSubmit` hooks read system knowledge entries (`type=system`) from the database and inject them as a `[COGNISTORE-PROTOCOL]` system message at the start of every agent session. This ensures agents always receive the correct protocol instructions without relying on manual CLAUDE.md configuration alone.
+
+## External Knowledge Providers
+
+CogniStore can act as an **MCP client** and query any compliant MCP server as an additional knowledge
+source. External search is **opt-in and off by default** — local search is unaffected unless you
+enable it.
+
+### Transports
+
+| Transport | How it works | When to use |
+|-----------|-------------|-------------|
+| **stdio** | CogniStore spawns the server as a child process and speaks MCP over stdin/stdout | Local tools, private scripts, packages installable via `npx` |
+| **Streamable HTTP** | CogniStore connects to a hosted MCP server over HTTPS | Shared team knowledge bases, hosted documentation services |
+
+### Result modes
+
+| Mode | How results are extracted |
+|------|--------------------------|
+| `tool` (default) | Calls a named tool (e.g. `search`) and maps its JSON output to results |
+| `resources` | Lists the server's resources and reads the top matches |
+
+### Authentication
+
+- **stdio** — pass secrets via `env` (stored in the OS keychain, injected at spawn)
+- **Static header** — sends a fixed `Authorization` header; value lives in the OS keychain
+- **OAuth 2.1 + PKCE** — one-click browser flow; tokens are persisted and refreshed automatically
+
+### Result shape
+
+External results are returned **sectioned by source** alongside the local results — never merged or
+re-ranked against local cosine scores:
+
+```json
+{
+  "local": [ { "entry": { ... }, "similarity": 0.87 } ],
+  "external": [
+    {
+      "providerId": "my-docs",
+      "providerName": "My Docs Server",
+      "results": [
+        { "title": "Getting Started", "content": "...", "url": "docs://getting-started" }
+      ]
+    }
+  ]
+}
+```
+
+### Enable external search
+
+**Per query** — pass `includeExternal: true` to the `getKnowledge` MCP tool or the REST endpoint:
+
+```bash
+# REST
+curl -X POST http://localhost:3210/api/knowledge/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "authentication patterns", "includeExternal": true}'
+
+# MCP tool (in your agent session)
+mcp__cognistore__getKnowledge(query: "authentication patterns", includeExternal: true)
+```
+
+**Globally** — toggle **Always search external providers** in **Settings → External Knowledge Providers**.
+
+### Add a provider
+
+1. Open **Settings → External Knowledge Providers** in the dashboard.
+2. Click **+ stdio** (local process) or **+ remote** (Streamable HTTP).
+3. Set `id` (lowercase slug), `name`, command/URL, and tool name.
+4. Click **Test** to validate the connection, then **Enable**.
+
+For advanced fields (`argMapping`, `resultPath`, `env`, `mode: "resources"`), edit
+`~/.cognistore/providers.json` directly — see the [config reference](documentation/providers/providers-config.md).
+
+> **Build your own** — See the [local MCP server example](documentation/providers/example-local-mcp.md)
+> for a complete walkthrough of writing, testing, and registering a custom Node.js MCP knowledge server.
+
+Full documentation: [Plug in MCP](documentation/providers/plug-mcp.md) · [Config reference](documentation/providers/providers-config.md) · [Security model](documentation/providers/security.md)
+
+---
 
 ## Dashboard
 
@@ -188,6 +268,7 @@ The desktop app includes a full dashboard with four main pages:
 - Language selection (English, Spanish, Portuguese)
 - Unified data export/import — single JSON file with selectable knowledge and plans via modal
 - Maintenance: re-deploy configurations, remove unused embeddings
+- **External Knowledge Providers** — list, add, edit, enable/disable, and test MCP knowledge connectors; **Connect** button for the OAuth browser flow; **Always search external providers** global toggle
 - Uninstall wizard with confirmation (removes all data, configs, and dependencies)
 
 ## Architecture
@@ -201,6 +282,7 @@ cognistore/
 │   ├── shared/             # Types, constants, validation schemas
 │   ├── core/               # SQLite + sqlite-vec, data repositories
 │   ├── embeddings/         # Ollama embedding client
+│   ├── providers/          # External provider federation (MCP client, fan-out, auth)
 │   ├── sdk/                # Public SDK (main entry point for consumers)
 │   ├── config/             # Config injection (Claude, Copilot, OpenCode)
 │   └── tests/              # Playwright end-to-end tests

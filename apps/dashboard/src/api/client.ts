@@ -237,6 +237,33 @@ export const api = {
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) }),
 
+  // External knowledge providers (~/.cognistore/providers.json)
+  listProviders: () => request<ProvidersConfig>('/api/providers'),
+  addProvider: (entry: ProviderEntry) =>
+    request<ProviderEntry>('/api/providers', { method: 'POST', body: JSON.stringify(entry) }),
+  updateProvider: (id: string, entry: Partial<ProviderEntry>) =>
+    request<ProviderEntry>(`/api/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(entry) }),
+  deleteProvider: (id: string) =>
+    request<{ removed: boolean }>(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testProvider: (id: string) =>
+    request<{ ok: boolean; message?: string; needsAuth?: boolean }>(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  oauthStart: (id: string, redirectUri: string) =>
+    request<{ ok: boolean; authorizeUrl?: string; alreadyConnected?: boolean; message?: string }>(
+      `/api/providers/${encodeURIComponent(id)}/oauth/start`, { method: 'POST', body: JSON.stringify({ redirectUri }) }),
+  oauthFinish: (id: string, code: string) =>
+    request<{ ok: boolean; message?: string }>(
+      `/api/providers/${encodeURIComponent(id)}/oauth/finish`, { method: 'POST', body: JSON.stringify({ code }) }),
+  injectProviderSecret: (id: string, value: string) =>
+    request<{ ok: boolean }>(`/api/providers/${encodeURIComponent(id)}/secret`, {
+      method: 'POST',
+      body: JSON.stringify({ value }),
+    }),
+  searchFederated: (query: string, options?: Record<string, unknown>) =>
+    request<FederatedSearchResult>('/api/knowledge/search', {
+      method: 'POST',
+      body: JSON.stringify({ query, includeExternal: true, ...options }),
+    }),
+
   // Ranged metrics (driven by the global date-range picker)
   getActivity: (from: string, to: string) =>
     request<{ operationsByDay: { date: string; reads: number; writes: number }[] }>(
@@ -278,6 +305,42 @@ export interface AppSettings {
   dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: ProviderFilter;
+  alwaysSearchExternalProviders: boolean;
+}
+
+// ── External knowledge providers (MCP-only, config v2) ──
+export interface ProviderAuth {
+  type: 'none' | 'header' | 'oauth';
+  headerName?: string;
+  secretRef?: string;
+  scopes?: string[];
+  clientId?: string;
+  allowInsecure?: boolean;
+}
+export interface ProviderEntry {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: 'stdio' | 'http';
+  // stdio
+  command?: string; args?: string[]; env?: Record<string, string>;
+  // http (remote, Streamable HTTP)
+  url?: string;
+  auth?: ProviderAuth;
+  // query mapping
+  mode?: 'tool' | 'resources';
+  toolName?: string; argMapping?: Record<string, string>; resultPath?: string;
+}
+export interface ProvidersConfig { version: 2; providers: ProviderEntry[]; }
+export interface ExternalResult { title: string; content: string; url?: string; score?: number; metadata?: Record<string, unknown>; }
+export interface ExternalSection { providerId: string; providerName: string; results: ExternalResult[]; error?: string; tookMs: number; }
+export interface KnowledgeSearchResult { entry: Record<string, unknown>; similarity: number; }
+export interface FederatedSearchResult { local: KnowledgeSearchResult[]; external: ExternalSection[]; }
+
+/** Store a provider credential in the OS keychain (Tauri only; no-op outside Tauri). */
+export async function setProviderSecret(id: string, value: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('set_provider_secret', { id, value });
 }
 
 /** UI-level token provider filter. Maps to the backend `token_usage.source` column. */

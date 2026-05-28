@@ -309,12 +309,12 @@ export class KnowledgeRepository {
 
   // ─── Plans (separate table) ──────────────────────────────────
 
-  createPlan(input: { title: string; content: string; tags: string[]; scope: string; source: string; status?: string; embedding: number[] }): any {
+  createPlan(input: { title: string; content: string; tags: string[]; scope: string; source: string; status?: string; planFilePath?: string | null; embedding: number[] }): any {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     this.sqlite.prepare(
-      'INSERT INTO plans (id, title, content, tags, scope, status, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(id, input.title, input.content, JSON.stringify(input.tags), input.scope, input.status ?? 'draft', input.source, now, now);
+      'INSERT INTO plans (id, title, content, tags, scope, status, source, plan_file_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(id, input.title, input.content, JSON.stringify(input.tags), input.scope, input.status ?? 'draft', input.source, input.planFilePath ?? null, now, now);
 
     // Insert embedding into plans_embeddings
     try {
@@ -395,6 +395,45 @@ export class KnowledgeRepository {
         })
         .filter(r => r.similarity >= threshold)
         .sort((a, b) => b.similarity - a.similarity)
+        .map(r => ({
+          plan: this.sqlite.prepare('SELECT * FROM plans WHERE id = ?').get(r.id),
+          similarity: r.similarity,
+        }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Find plans (ANY status) in the given scope or 'global' whose embedding is
+   * similar to `embedding`. Unlike findSimilarActivePlans this includes completed
+   * plans — they hold the richest output knowledge — and auto-includes global scope,
+   * matching knowledge search. Used for plan-augmented retrieval. JS-cosine over a
+   * pre-filtered candidate set (not the sqlite-vec KNN path).
+   */
+  findSimilarPlansAnyStatus(embedding: number[], scope: string, threshold = 0.6, limit = 3): { plan: any; similarity: number }[] {
+    try {
+      const candidates = this.sqlite.prepare(
+        "SELECT id FROM plans WHERE scope = ? OR scope = 'global'"
+      ).all(scope) as { id: string }[];
+      if (!candidates.length) return [];
+
+      const ids = candidates.map(c => c.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = this.sqlite.prepare(
+        `SELECT id, embedding FROM plans_embeddings WHERE id IN (${placeholders})`
+      ).all(...ids) as { id: string; embedding: Buffer }[];
+      if (!rows.length) return [];
+
+      const queryVec = new Float32Array(embedding);
+      return rows
+        .map(row => {
+          const vec = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+          return { id: row.id, similarity: cosineSimilarity(queryVec, vec) };
+        })
+        .filter(r => r.similarity >= threshold)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit)
         .map(r => ({
           plan: this.sqlite.prepare('SELECT * FROM plans WHERE id = ?').get(r.id),
           similarity: r.similarity,

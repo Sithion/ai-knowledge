@@ -5,6 +5,8 @@ import {
   copyFile,
   unlink,
   access,
+  chmod,
+  readdir,
 } from 'node:fs/promises';
 import {
   existsSync,
@@ -376,6 +378,15 @@ export class ConfigManager {
     'mcp__cognistore__addPlanRelation',
   ];
 
+  // Global enforcement hooks. Script files live under ~/.cognistore/hooks/ (removed
+  // on uninstall with the install dir); only JSON entries are injected into the
+  // agent settings files.
+  static readonly COGNISTORE_HOOKS_DIR = join(homedir(), '.cognistore', 'hooks');
+  static readonly CLAUDE_HOOKS_DIR = join(homedir(), '.cognistore', 'hooks', 'claude-code');
+  static readonly COPILOT_SCRIPTS_DIR = join(homedir(), '.cognistore', 'hooks', 'copilot');
+  // GitHub Copilot CLI reads hook config from ~/.copilot/hooks/.
+  static readonly COPILOT_HOOKS_CONFIG = join(homedir(), '.copilot', 'hooks', 'hooks.json');
+
   /**
    * Inject permission allow rules for CogniStore tools into a settings.json file.
    * Merge-only: never overwrites existing rules, never removes user entries.
@@ -449,6 +460,260 @@ export class ConfigManager {
     await copyFile(settingsPath, `${settingsPath}.bak.${Date.now()}`);
     await writeFile(settingsPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
     return { removed: true, path: settingsPath };
+  }
+
+  // ─── Global enforcement hooks ──────────────────────────────────────────
+
+  /**
+   * Copy a directory of *.sh hook scripts into a destination dir and make them
+   * executable. Returns the destination dir, or null if the source is missing.
+   */
+  private async copyHookScripts(srcDir: string, destDir: string): Promise<string | null> {
+    try {
+      await access(srcDir);
+    } catch {
+      return null;
+    }
+    await mkdir(destDir, { recursive: true });
+    const files = await readdir(srcDir);
+    for (const file of files) {
+      if (!file.endsWith('.sh')) continue;
+      const dest = join(destDir, file);
+      await copyFile(join(srcDir, file), dest);
+      await chmod(dest, 0o755);
+    }
+    return destDir;
+  }
+
+  /**
+   * Install Claude Code hook scripts into ~/.cognistore/hooks/claude-code/.
+   * Returns the absolute scripts dir (or null if templates are missing).
+   */
+  async setupHooks(templatesDir: string): Promise<string | null> {
+    return this.copyHookScripts(
+      join(templatesDir, 'hooks', 'claude-code'),
+      ConfigManager.CLAUDE_HOOKS_DIR
+    );
+  }
+
+  /**
+   * Build the Claude Code settings.json `hooks` object pointing at the scripts in
+   * `hooksDir`. Event → array of matcher-groups, each running one cognistore script.
+   */
+  static buildClaudeHookConfig(hooksDir: string): Record<string, unknown[]> {
+    const cmd = (name: string, timeout = 5) => ({
+      type: 'command',
+      command: join(hooksDir, name),
+      timeout,
+    });
+    const group = (matcher: string | undefined, name: string, timeout?: number) =>
+      matcher ? { matcher, hooks: [cmd(name, timeout)] } : { hooks: [cmd(name, timeout)] };
+
+    const EDIT = 'Edit|Write|MultiEdit|Bash|NotebookEdit';
+    return {
+      UserPromptSubmit: [group(undefined, 'user-prompt-check.sh')],
+      PreToolUse: [
+        group('Edit|Write|Bash|MultiEdit|Agent|NotebookEdit|EnterPlanMode', 'pre-tool-check.sh'),
+        group('Write|Edit|MultiEdit|NotebookEdit', 'pre-plan-file-check.sh'),
+        group('EnterPlanMode', 'pre-enter-plan-check.sh'),
+        group('mcp__cognistore__createPlan', 'pre-create-plan-check.sh'),
+        group('ExitPlanMode', 'pre-exit-plan-check.sh'),
+      ],
+      PostToolUse: [
+        group('mcp__cognistore__getKnowledge', 'post-query-marker.sh'),
+        group('mcp__cognistore__createPlan', 'post-create-plan-marker.sh'),
+        group('ExitPlanMode', 'post-plan-check.sh'),
+        group(EDIT, 'post-edit-task-sync.sh'),
+        group('mcp__cognistore__updatePlanTask|mcp__cognistore__updatePlanTasks', 'post-task-update-marker.sh'),
+        group('mcp__cognistore__updatePlan', 'post-update-plan-cleanup.sh'),
+        group(EDIT, 'post-capture-nudge.sh'),
+      ],
+      // Stop hook queries SQLite — 15s to survive cold-start / slow disk.
+      Stop: [group(undefined, 'stop-reminder.sh', 15)],
+    };
+  }
+
+  /** A settings.json hook matcher-group is "ours" if any of its commands live under our hooks dir. */
+  private isCognistoreHookGroup(group: unknown): boolean {
+    const hooks = (group as { hooks?: { command?: unknown }[] })?.hooks;
+    if (!Array.isArray(hooks)) return false;
+    return hooks.some(
+      (h) => typeof h?.command === 'string' && h.command.startsWith(ConfigManager.COGNISTORE_HOOKS_DIR)
+    );
+  }
+
+  /**
+   * Inject CogniStore hooks into a Claude settings.json `hooks` key. Merge-only and
+   * idempotent: strips any prior CogniStore matcher-groups (identified by command
+   * path) before appending the current set, so re-runs and upgrades stay clean and
+   * user-defined hooks are preserved.
+   */
+  async injectHooks(
+    settingsPath: string,
+    hookConfig: Record<string, unknown[]>
+  ): Promise<{ action: 'created' | 'updated' | 'skipped'; path: string }> {
+    await mkdir(dirname(settingsPath), { recursive: true });
+
+    if (!(await this.fileExists(settingsPath))) {
+      await writeFile(settingsPath, JSON.stringify({ hooks: hookConfig }, null, 2) + '\n', 'utf-8');
+      return { action: 'created', path: settingsPath };
+    }
+
+    const config = JSON.parse(await readFile(settingsPath, 'utf-8'));
+    const before = JSON.stringify(config.hooks ?? {});
+    const hooks: Record<string, unknown[]> = { ...(config.hooks ?? {}) };
+
+    for (const [event, groups] of Object.entries(hookConfig)) {
+      const existing = Array.isArray(hooks[event]) ? hooks[event] : [];
+      const userGroups = existing.filter((g) => !this.isCognistoreHookGroup(g));
+      hooks[event] = [...userGroups, ...groups];
+    }
+    // Strip CogniStore groups from events that existed in a prior install but are
+    // no longer emitted by buildClaudeHookConfig (e.g. a hook event was renamed or
+    // removed in an upgrade). Without this, stale groups accumulate across upgrades
+    // and reference scripts that no longer exist at their old paths.
+    for (const event of Object.keys(hooks)) {
+      if (event in hookConfig) continue;
+      const filtered = (hooks[event] as unknown[]).filter((g) => !this.isCognistoreHookGroup(g));
+      if (filtered.length === 0) {
+        delete hooks[event];
+      } else {
+        hooks[event] = filtered;
+      }
+    }
+
+    if (JSON.stringify(hooks) === before) {
+      return { action: 'skipped', path: settingsPath };
+    }
+
+    await copyFile(settingsPath, `${settingsPath}.bak.${Date.now()}`);
+    config.hooks = hooks;
+    await writeFile(settingsPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    return { action: 'updated', path: settingsPath };
+  }
+
+  /**
+   * Remove only CogniStore hook entries from a Claude settings.json. User-defined
+   * hooks (different command paths) are left untouched.
+   */
+  async removeHooks(settingsPath: string): Promise<{ removed: boolean; path: string }> {
+    if (!(await this.fileExists(settingsPath))) {
+      return { removed: false, path: settingsPath };
+    }
+    const config = JSON.parse(await readFile(settingsPath, 'utf-8'));
+    if (!config.hooks || typeof config.hooks !== 'object') {
+      return { removed: false, path: settingsPath };
+    }
+
+    const before = JSON.stringify(config.hooks);
+    for (const event of Object.keys(config.hooks)) {
+      if (!Array.isArray(config.hooks[event])) continue;
+      config.hooks[event] = config.hooks[event].filter(
+        (g: unknown) => !this.isCognistoreHookGroup(g)
+      );
+      if (config.hooks[event].length === 0) delete config.hooks[event];
+    }
+    if (Object.keys(config.hooks).length === 0) delete config.hooks;
+
+    if (JSON.stringify(config.hooks ?? {}) === before) {
+      return { removed: false, path: settingsPath };
+    }
+
+    await copyFile(settingsPath, `${settingsPath}.bak.${Date.now()}`);
+    await writeFile(settingsPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    return { removed: true, path: settingsPath };
+  }
+
+  /**
+   * Install GitHub Copilot CLI reminder hooks: copy scripts into
+   * ~/.cognistore/hooks/copilot/ and merge a hooks config into ~/.copilot/hooks/hooks.json.
+   * Reminder-only (Copilot cannot block). Idempotent and preserves user hooks.
+   */
+  async setupCopilotHooks(templatesDir: string): Promise<{ action: 'created' | 'updated' | 'skipped'; path: string } | null> {
+    const scriptsDir = await this.copyHookScripts(
+      join(templatesDir, 'hooks', 'copilot'),
+      ConfigManager.COPILOT_SCRIPTS_DIR
+    );
+    if (!scriptsDir) return null;
+
+    const entry = (name: string) => ({
+      type: 'command',
+      bash: join(scriptsDir, name),
+      timeoutSec: 5,
+    });
+    const cognistoreHooks: Record<string, unknown[]> = {
+      userPromptSubmitted: [entry('user-prompt-check.sh')],
+      preToolUse: [entry('pre-tool-check.sh')],
+      postToolUse: [entry('post-tool-marker.sh')],
+      sessionEnd: [entry('session-end-reminder.sh')],
+    };
+
+    const configPath = ConfigManager.COPILOT_HOOKS_CONFIG;
+    await mkdir(dirname(configPath), { recursive: true });
+
+    if (!(await this.fileExists(configPath))) {
+      await writeFile(configPath, JSON.stringify({ version: 1, hooks: cognistoreHooks }, null, 2) + '\n', 'utf-8');
+      return { action: 'created', path: configPath };
+    }
+
+    const config = JSON.parse(await readFile(configPath, 'utf-8'));
+    if (typeof config.version !== 'number') config.version = 1;
+    const before = JSON.stringify(config.hooks ?? {});
+    const hooks: Record<string, unknown[]> = { ...(config.hooks ?? {}) };
+    for (const [event, entries] of Object.entries(cognistoreHooks)) {
+      const existing = Array.isArray(hooks[event]) ? hooks[event] : [];
+      const userEntries = existing.filter((e) => !this.isCopilotCognistoreEntry(e));
+      hooks[event] = [...userEntries, ...entries];
+    }
+    if (JSON.stringify(hooks) === before) {
+      return { action: 'skipped', path: configPath };
+    }
+    await copyFile(configPath, `${configPath}.bak.${Date.now()}`);
+    config.hooks = hooks;
+    await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    return { action: 'updated', path: configPath };
+  }
+
+  /** A Copilot hook entry is "ours" if its bash path lives under our hooks dir. */
+  private isCopilotCognistoreEntry(entry: unknown): boolean {
+    const bash = (entry as { bash?: unknown })?.bash;
+    return typeof bash === 'string' && bash.startsWith(ConfigManager.COGNISTORE_HOOKS_DIR);
+  }
+
+  /**
+   * Remove CogniStore reminder hooks from ~/.copilot/hooks/hooks.json. Script files
+   * live under the install dir and are removed with it. User hooks are preserved.
+   */
+  async removeCopilotHooks(): Promise<{ removed: boolean; path: string }> {
+    const configPath = ConfigManager.COPILOT_HOOKS_CONFIG;
+    if (!(await this.fileExists(configPath))) {
+      return { removed: false, path: configPath };
+    }
+    const config = JSON.parse(await readFile(configPath, 'utf-8'));
+    if (!config.hooks || typeof config.hooks !== 'object') {
+      return { removed: false, path: configPath };
+    }
+    const before = JSON.stringify(config.hooks);
+    for (const event of Object.keys(config.hooks)) {
+      if (!Array.isArray(config.hooks[event])) continue;
+      config.hooks[event] = config.hooks[event].filter(
+        (e: unknown) => !this.isCopilotCognistoreEntry(e)
+      );
+      if (config.hooks[event].length === 0) delete config.hooks[event];
+    }
+    if (JSON.stringify(config.hooks) === before) {
+      return { removed: false, path: configPath };
+    }
+    // If only the version key remains and no hooks, remove the file entirely.
+    // Create a backup first — consistent with every other write path in this class.
+    if (Object.keys(config.hooks).length === 0) {
+      await copyFile(configPath, `${configPath}.bak.${Date.now()}`);
+      await unlink(configPath);
+      return { removed: true, path: configPath };
+    }
+    await copyFile(configPath, `${configPath}.bak.${Date.now()}`);
+    await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    return { removed: true, path: configPath };
   }
 
   /**
