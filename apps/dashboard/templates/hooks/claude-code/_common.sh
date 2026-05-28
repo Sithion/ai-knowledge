@@ -35,6 +35,10 @@ cog_field() {
 # Markers are keyed by session_id so concurrent sessions don't race on shared
 # /tmp files. Falls back to "default" when the id is unavailable.
 COG_SID="$(cog_field session_id)"
+# Sanitize: keep only alphanumeric and hyphens, max 64 chars. Prevents path-traversal
+# (a crafted session_id like "../../etc/cron.d/evil" would place marker files outside
+# /tmp) and shell word-splitting issues.
+COG_SID="$(printf '%s' "$COG_SID" | tr -cd 'a-zA-Z0-9-' | cut -c1-64)"
 [ -z "$COG_SID" ] && COG_SID="default"
 COG_MARK="/tmp/.cognistore-${COG_SID}"   # suffix with -queried, -plan-persisted, etc.
 

@@ -1561,11 +1561,12 @@ Pass an array to addKnowledge to create multiple entries at once.
     if (!query || typeof query !== 'string') {
       throw new Error('Query is required and must be a string');
     }
-    const wantExternal = includeExternal === true || Array.isArray(providers) || readSettings().alwaysSearchExternalProviders;
+    // `providers: []` means "no specific filter" not "enable external search" —
+    // only treat a non-empty array as an explicit external-search request.
+    const providerFilter = Array.isArray(providers) && providers.length > 0 ? providers : undefined;
+    const wantExternal = includeExternal === true || providerFilter != null || readSettings().alwaysSearchExternalProviders;
     return wantExternal
-      ? sdk.getKnowledgeFederated(query, options as Partial<SearchOptions>, {
-          providers: Array.isArray(providers) ? providers : undefined,
-        })
+      ? sdk.getKnowledgeFederated(query, options as Partial<SearchOptions>, { providers: providerFilter })
       : sdk.getKnowledge(query, options as Partial<SearchOptions>);
   });
 
@@ -1959,6 +1960,17 @@ Pass an array to addKnowledge to create multiple entries at once.
     }
     const redirectUri = request.body?.redirectUri;
     if (!redirectUri) { reply.code(400); return { ok: false, message: 'redirectUri is required' }; }
+    // Validate that the redirectUri is a loopback address (RFC 8252 §7.3).
+    // An arbitrary redirectUri would let the authorization server send the
+    // authorization code to a third-party host instead of our local listener.
+    try {
+      const rHost = new URL(redirectUri).hostname;
+      if (rHost !== '127.0.0.1' && rHost !== 'localhost' && rHost !== '::1') {
+        reply.code(400); return { ok: false, message: 'redirectUri must be a loopback address (127.0.0.1 or localhost)' };
+      }
+    } catch {
+      reply.code(400); return { ok: false, message: 'redirectUri is not a valid URL' };
+    }
     try {
       const flow = new InteractiveOAuthFlow({
         providerId: entry.id, url: entry.url, redirectUrl: redirectUri,

@@ -75,9 +75,21 @@ fn wait_for_callback(listener: TcpListener) -> Result<CallbackResult, String> {
                 stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
                 let mut buf = [0u8; 8192];
                 let n = stream.read(&mut buf).unwrap_or(0);
+                // Browsers often open a second TCP connection immediately after the
+                // redirect (favicon fetch, HTTP/1.1 pipelining probe) that carries 0
+                // bytes or an unrelated path (e.g. GET /favicon.ico). Skip these —
+                // they carry no authorization code — and keep waiting for the real
+                // redirect on the next accept() iteration.
+                if n == 0 {
+                    continue;
+                }
                 let req = String::from_utf8_lossy(&buf[..n]);
                 let path = req.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("");
                 let parsed = parse_callback(path);
+                if parsed.code.is_none() && parsed.error.is_none() {
+                    // Not the real callback (no code, no error) — keep waiting.
+                    continue;
+                }
                 let body = "<!doctype html><meta charset=utf-8><body style=\"font-family:-apple-system,sans-serif;background:#0d0d1a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh\"><div style=\"text-align:center\"><div style=\"font-size:42px\">🧠</div><h2>CogniStore connected</h2><p>You can close this tab and return to the app.</p></div></body>";
                 let _ = stream.write_all(
                     format!(

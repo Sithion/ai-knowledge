@@ -501,13 +501,13 @@ export class ConfigManager {
    * `hooksDir`. Event → array of matcher-groups, each running one cognistore script.
    */
   static buildClaudeHookConfig(hooksDir: string): Record<string, unknown[]> {
-    const cmd = (name: string) => ({
+    const cmd = (name: string, timeout = 5) => ({
       type: 'command',
       command: join(hooksDir, name),
-      timeout: 5,
+      timeout,
     });
-    const group = (matcher: string | undefined, name: string) =>
-      matcher ? { matcher, hooks: [cmd(name)] } : { hooks: [cmd(name)] };
+    const group = (matcher: string | undefined, name: string, timeout?: number) =>
+      matcher ? { matcher, hooks: [cmd(name, timeout)] } : { hooks: [cmd(name, timeout)] };
 
     const EDIT = 'Edit|Write|MultiEdit|Bash|NotebookEdit';
     return {
@@ -528,7 +528,8 @@ export class ConfigManager {
         group('mcp__cognistore__updatePlan', 'post-update-plan-cleanup.sh'),
         group(EDIT, 'post-capture-nudge.sh'),
       ],
-      Stop: [group(undefined, 'stop-reminder.sh')],
+      // Stop hook queries SQLite — 15s to survive cold-start / slow disk.
+      Stop: [group(undefined, 'stop-reminder.sh', 15)],
     };
   }
 
@@ -566,6 +567,19 @@ export class ConfigManager {
       const existing = Array.isArray(hooks[event]) ? hooks[event] : [];
       const userGroups = existing.filter((g) => !this.isCognistoreHookGroup(g));
       hooks[event] = [...userGroups, ...groups];
+    }
+    // Strip CogniStore groups from events that existed in a prior install but are
+    // no longer emitted by buildClaudeHookConfig (e.g. a hook event was renamed or
+    // removed in an upgrade). Without this, stale groups accumulate across upgrades
+    // and reference scripts that no longer exist at their old paths.
+    for (const event of Object.keys(hooks)) {
+      if (event in hookConfig) continue;
+      const filtered = (hooks[event] as unknown[]).filter((g) => !this.isCognistoreHookGroup(g));
+      if (filtered.length === 0) {
+        delete hooks[event];
+      } else {
+        hooks[event] = filtered;
+      }
     }
 
     if (JSON.stringify(hooks) === before) {
@@ -691,7 +705,9 @@ export class ConfigManager {
       return { removed: false, path: configPath };
     }
     // If only the version key remains and no hooks, remove the file entirely.
+    // Create a backup first — consistent with every other write path in this class.
     if (Object.keys(config.hooks).length === 0) {
+      await copyFile(configPath, `${configPath}.bak.${Date.now()}`);
       await unlink(configPath);
       return { removed: true, path: configPath };
     }

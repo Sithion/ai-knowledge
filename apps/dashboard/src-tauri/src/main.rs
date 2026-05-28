@@ -9,10 +9,17 @@ mod widget_config;
 mod widgets;
 
 use sidecar::SidecarState;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Manager;
 use widget_config::WidgetPositions;
 use widgets::{PortState, WidgetRegistry};
+
+/// Set to true by the tray Quit handler before calling app.exit(0). The
+/// ExitRequested listener checks this flag so it only calls prevent_exit()
+/// when the exit was NOT explicitly requested by the user — otherwise
+/// app.exit(0) is immediately cancelled by prevent_exit() and Quit never works.
+pub struct QuitFlag(pub AtomicBool);
 
 /// Generate a user-friendly error page HTML for the webview.
 fn error_page_html(title: &str, detail: &str) -> String {
@@ -123,6 +130,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(QuitFlag(AtomicBool::new(false)))
         .invoke_handler(tauri::generate_handler![
             widgets::open_widget,
             widgets::close_widget,
@@ -201,8 +209,15 @@ fn main() {
                 }
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                // Keep running in background when main window is hidden
-                api.prevent_exit();
+                // Only keep running in background when the exit was NOT explicitly
+                // requested via the tray Quit item. When QuitFlag is true the user
+                // chose to quit; let app.exit(0) go through unblocked.
+                let user_quit = app
+                    .try_state::<QuitFlag>()
+                    .map_or(false, |f| f.0.load(Ordering::Relaxed));
+                if !user_quit {
+                    api.prevent_exit();
+                }
             }
         });
 }

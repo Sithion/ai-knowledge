@@ -61,6 +61,13 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 x if x == WIDGET_ACTIVE_ID => open_widget_from_tray(app, "active-plans"),
                 x if x == WIDGET_TOKENS_ID => open_widget_from_tray(app, "tokens"),
                 x if x == QUIT_ID => {
+                    // Signal intentional quit BEFORE app.exit(0) so the
+                    // ExitRequested handler doesn't call prevent_exit() and
+                    // silently cancel the quit. Without this flag the app stays
+                    // running even after the user clicks Quit.
+                    if let Some(flag) = app.try_state::<crate::QuitFlag>() {
+                        flag.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     widgets::flush_widget_config(app);
                     app.exit(0);
                 }
