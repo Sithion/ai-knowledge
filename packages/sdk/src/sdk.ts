@@ -419,7 +419,7 @@ export class KnowledgeSDK {
     return results;
   }
 
-  deletePlanTask(id: string): boolean {
+  deletePlanTask(id: string): { deleted: boolean; planId: string; planStatus: string; progress: string; autoActions: string[] } {
     this.ensureInitialized();
     return this.service!.deletePlanTask(id);
   }

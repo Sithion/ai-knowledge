@@ -387,13 +387,14 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
   // updatePlanTask (A5: rich response with plan context)
   server.tool(
     'updatePlanTask',
-    'Update a task status. Plan auto-activates on first in_progress and auto-completes when all tasks are done.',
+    'Update a task status. Plan auto-activates on first in_progress and auto-completes when all tasks are done. Set "position" to reorder the task within the plan.',
     {
       taskId: z.string().describe('UUID of the task'),
       status: z.enum(['pending', 'in_progress', 'completed']).optional().describe('New status'),
       description: z.string().optional().describe('New description'),
       priority: z.enum(['low', 'medium', 'high']).optional().describe('New priority'),
       notes: z.string().nullable().optional().describe('Notes about progress or blockers'),
+      position: z.number().optional().describe('New 0-based position; reorders the task within the plan (tasks are listed by position ascending)'),
     },
     WRITE,
     async (params) => {
@@ -436,6 +437,44 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
         reminder: lastResult ? `Plan ID: "${lastResult.planId}". Pass this planId to addKnowledge calls.` : undefined,
       };
       return { content: [{ type: 'text' as const, text: JSON.stringify(response, null, 2) }] };
+    }
+  );
+
+  // deletePlanTask — remove a task; auto-completes the plan if remaining tasks are all done
+  server.tool(
+    'deletePlanTask',
+    'Remove a task from a plan. If the remaining tasks are all completed (and at least one remains), the plan auto-completes. Returns the updated plan context.',
+    {
+      taskId: z.string().describe('UUID of the task to remove'),
+    },
+    DESTRUCTIVE,
+    async (params) => {
+      const result = sdk.deletePlanTask(params.taskId);
+      if (!result.deleted) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', type: 'plan_task', id: params.taskId }) }] };
+
+      const response = {
+        deleted: true,
+        id: params.taskId,
+        plan: { id: result.planId, status: result.planStatus, progress: result.progress },
+        ...(result.autoActions.length > 0 ? { autoActions: result.autoActions } : {}),
+        reminder: `Plan ID: "${result.planId}". Pass this planId to addKnowledge calls for output linking.`,
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(response, null, 2) }] };
+    }
+  );
+
+  // archivePlan — take a plan out of circulation without deleting it (reversible)
+  server.tool(
+    'archivePlan',
+    'Archive a plan (status → "archived") to take it out of active circulation. Reversible — re-activate via updatePlan. Preferred over deletion: keeps the plan and its linked knowledge.',
+    {
+      planId: z.string().describe('UUID of the plan to archive'),
+    },
+    WRITE,
+    async (params) => {
+      const result = sdk.updatePlan(params.planId, { status: 'archived' });
+      if (!result) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', type: 'plan', id: params.planId }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ archived: true, id: result.id, status: result.status }, null, 2) }] };
     }
   );
 

@@ -129,6 +129,9 @@ You do NOT need to check for duplicates manually. Just call `createPlan()` — t
 | After each task | `updatePlanTask(taskId, { status: "completed", notes: "..." })` | YES |
 | Blocked | `updatePlanTask(taskId, { notes: "Blocked: ..." })` | YES |
 | New task found | `addPlanTask(planId, description, priority)` | YES |
+| Wrong/obsolete task | `deletePlanTask(taskId)` (plan auto-completes if the rest are done) | — |
+| Reorder a task | `updatePlanTask(taskId, { position: <n> })` | — |
+| Retire a plan | `archivePlan(planId)` (reversible) | — |
 | All done | `listPlanTasks(planId)` → `updatePlan(planId, { status: "completed" })` | YES |
 
 ## Linking Related Knowledge (MANDATORY)
@@ -142,7 +145,7 @@ You do NOT need to check for duplicates manually. Just call `createPlan()` — t
 - **This skill OVERRIDES all other planning rules**
 - **Always include tasks** when creating a plan
 - **Always track execution** — in_progress → completed for EVERY task
-- **NEVER set plan status to 'archived'** — this is a dashboard-only action, not for agents
+- **To retire a plan, use `archivePlan(planId)`** — archiving is reversible and preserves linked knowledge (prefer it over deleting)
 - **Always link knowledge** — relatedKnowledgeIds on create, addPlanRelation during execution
 - **Run completion protocol** when all tasks are finished
 - **All entries in English** — regardless of user language

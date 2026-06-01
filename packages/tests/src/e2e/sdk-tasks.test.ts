@@ -90,11 +90,62 @@ test('deletePlanTask works', async () => {
   const plan = await factory.plan({ title: 'Delete Task Plan' });
   const task = factory.planTask(plan.id, { description: 'Doomed task' });
 
-  const deleted = ctx.service.deletePlanTask(task.id);
-  expect(deleted).toBe(true);
+  const result = ctx.service.deletePlanTask(task.id);
+  expect(result.deleted).toBe(true);
+  expect(result.planId).toBe(plan.id);
 
   const tasks = ctx.service.listPlanTasks(plan.id);
   expect(tasks.find((t) => t.id === task.id)).toBeUndefined();
+});
+
+test('deletePlanTask returns not-deleted for unknown task', async () => {
+  const result = ctx.service.deletePlanTask('nonexistent-task-id');
+  expect(result.deleted).toBe(false);
+});
+
+test('deletePlanTask auto-completes plan when remaining tasks are all done', async () => {
+  const plan = await factory.plan({ title: 'Delete Auto-Complete Plan' });
+  const t1 = factory.planTask(plan.id, { description: 'Done task' });
+  const t2 = factory.planTask(plan.id, { description: 'To be removed (still pending)' });
+
+  // Complete t1; plan stays active because t2 is still pending.
+  ctx.service.updatePlanTask(t1.id, { status: TaskStatus.IN_PROGRESS });
+  ctx.service.updatePlanTask(t1.id, { status: TaskStatus.COMPLETED });
+  expect(ctx.service.getPlanById(plan.id)!.status).toBe('active');
+
+  // Removing the last pending task leaves all remaining tasks completed → auto-complete.
+  const result = ctx.service.deletePlanTask(t2.id);
+  expect(result.deleted).toBe(true);
+  expect(result.planStatus).toBe('completed');
+  expect(result.autoActions).toContainEqual(expect.stringContaining('auto-completed'));
+});
+
+test('deletePlanTask does NOT auto-complete an emptied plan', async () => {
+  const plan = await factory.plan({ title: 'Delete Emptied Plan' });
+  const t1 = factory.planTask(plan.id, { description: 'Only task' });
+
+  // Activate then delete the single task — plan must NOT become completed (no tasks remain).
+  ctx.service.updatePlanTask(t1.id, { status: TaskStatus.IN_PROGRESS });
+  const result = ctx.service.deletePlanTask(t1.id);
+  expect(result.deleted).toBe(true);
+  expect(result.planStatus).toBe('active');
+  expect(result.autoActions).toHaveLength(0);
+});
+
+test('deletePlanTask does NOT auto-complete when a task is still pending', async () => {
+  const plan = await factory.plan({ title: 'Delete Keeps Pending Plan' });
+  const t1 = factory.planTask(plan.id, { description: 'Completed task' });
+  const t2 = factory.planTask(plan.id, { description: 'Still pending task' });
+
+  ctx.service.updatePlanTask(t1.id, { status: TaskStatus.IN_PROGRESS });
+  ctx.service.updatePlanTask(t1.id, { status: TaskStatus.COMPLETED });
+
+  // Deleting the already-completed task leaves a pending task → plan stays active.
+  const result = ctx.service.deletePlanTask(t1.id);
+  expect(result.deleted).toBe(true);
+  expect(result.planStatus).toBe('active');
+  expect(result.autoActions).toHaveLength(0);
+  expect(ctx.service.listPlanTasks(plan.id).find((t) => t.id === t2.id)).toBeDefined();
 });
 
 test('getPlanTaskStats returns correct counts', async () => {

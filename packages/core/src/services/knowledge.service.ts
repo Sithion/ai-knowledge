@@ -571,8 +571,39 @@ export class KnowledgeService {
     };
   }
 
-  deletePlanTask(id: string): boolean {
-    return this.repository.deletePlanTask(id);
+  deletePlanTask(id: string): { deleted: boolean; planId: string; planStatus: string; progress: string; autoActions: string[] } {
+    // Capture the parent plan BEFORE deleting — afterwards the task row is gone.
+    const planId = this.repository.getTaskPlanId(id) ?? '';
+    const deleted = this.repository.deletePlanTask(id);
+    if (!deleted) {
+      return { deleted: false, planId: '', planStatus: 'unknown', progress: '0/0 completed', autoActions: [] };
+    }
+
+    const autoActions: string[] = [];
+    if (planId) {
+      // Auto-complete the plan when removing the task leaves all remaining tasks done.
+      // Guard: only when ≥1 task remains (do NOT complete an emptied plan) and the plan is active.
+      const remaining = this.repository.listPlanTasks(planId);
+      const incomplete = this.repository.countIncompleteTasks(planId);
+      const plan = this.repository.getPlanById(planId);
+      if (remaining.length > 0 && incomplete === 0 && plan?.status === 'active') {
+        this.repository.updatePlan(planId, { status: 'completed' });
+        autoActions.push('Plan auto-completed — all remaining tasks done');
+      }
+    }
+
+    const currentPlan = planId ? this.repository.getPlanById(planId) : null;
+    const allTasks = planId ? this.repository.listPlanTasks(planId) : [];
+    const completedCount = allTasks.filter((t: any) => t.status === 'completed').length;
+    const progress = `${completedCount}/${allTasks.length} completed`;
+
+    return {
+      deleted: true,
+      planId,
+      planStatus: currentPlan?.status ?? 'unknown',
+      progress,
+      autoActions,
+    };
   }
 
   listPlanTasks(planId: string): PlanTask[] {
