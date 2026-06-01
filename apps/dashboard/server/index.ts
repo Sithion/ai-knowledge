@@ -1796,7 +1796,7 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.delete<{ Params: { taskId: string } }>('/api/plans/tasks/:taskId', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    return { deleted: sdk.deletePlanTask(request.params.taskId) };
+    return { deleted: sdk.deletePlanTask(request.params.taskId).deleted };
   });
 
   // ─── Plan Metrics endpoint ──────────────────────────────────

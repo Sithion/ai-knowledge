@@ -163,6 +163,21 @@ test('deletePlan cascades to tasks', async () => {
   expect(tasksAfter).toHaveLength(0);
 });
 
+test('archivePlan sets status to archived without deleting (reversible)', async () => {
+  const plan = await factory.plan({ title: 'Archive Plan' });
+  ctx.service.updatePlan(plan.id, { status: KnowledgeStatus.ACTIVE });
+
+  // archivePlan is exposed at the MCP layer as updatePlan({ status: 'archived' }).
+  const archived = ctx.service.updatePlan(plan.id, { status: KnowledgeStatus.ARCHIVED });
+  expect(archived).not.toBeNull();
+  expect(archived!.status).toBe(KnowledgeStatus.ARCHIVED);
+
+  // The plan is preserved, not deleted, and is reversible.
+  expect(ctx.service.getPlanById(plan.id)).not.toBeNull();
+  const reactivated = ctx.service.updatePlan(plan.id, { status: KnowledgeStatus.ACTIVE });
+  expect(reactivated!.status).toBe(KnowledgeStatus.ACTIVE);
+});
+
 test('multiple plans can exist', async () => {
   const p1 = await factory.plan({ title: 'Multi Plan A' });
   const p2 = await factory.plan({ title: 'Multi Plan B' });

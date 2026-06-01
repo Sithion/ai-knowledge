@@ -139,8 +139,16 @@ Update an existing plan's title, content, tags, scope, status, or source. When s
 | `content` | string | No | New content |
 | `tags` | string[] | No | New tags |
 | `scope` | string | No | New scope |
-| `status` | enum | No | `draft`, `active`, or `completed` (agents cannot set `archived` — archiving is a user-only action via the dashboard) |
+| `status` | enum | No | `draft`, `active`, `completed`, or `archived`. Prefer the dedicated `archivePlan` tool for archiving |
 | `source` | string | No | New source |
+
+### archivePlan
+
+Archive a plan (`status` → `archived`) to take it out of active circulation without deleting it. Reversible — re-activate via `updatePlan({ status: "active" })`. Preferred over deletion: the plan and its linked knowledge are preserved.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `planId` | string | Yes | UUID of the plan to archive |
 
 ### addPlanRelation
 
@@ -174,6 +182,15 @@ Update a plan task's status, description, priority, or notes.
 | `description` | string | No | New description |
 | `priority` | enum | No | `low`, `medium`, or `high` |
 | `notes` | string/null | No | Notes about progress or blockers |
+| `position` | number | No | New 0-based position; reorders the task within the plan (tasks are listed by position ascending) |
+
+### deletePlanTask
+
+Remove a task from a plan. If the remaining tasks are all completed (and at least one remains), the plan auto-completes. Returns the updated plan context (`status`, `progress`). Positions of the remaining tasks are not renumbered, but ordering is unaffected since tasks are listed by `position` ascending.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `taskId` | string | Yes | UUID of the task to remove |
 
 ### listPlanTasks
 
@@ -200,7 +217,7 @@ Tools are annotated with hints for MCP clients:
 | Annotation | Tools | Purpose |
 |------------|-------|---------|
 | `readOnlyHint: true` | `getKnowledge`, `listTags`, `healthCheck`, `listPlanTasks` | Signals the tool does not modify state |
-| `destructiveHint: true` | `deleteKnowledge` | Signals the tool permanently removes data |
+| `destructiveHint: true` | `deleteKnowledge`, `deletePlanTask` | Signals the tool permanently removes data |
 
 ## MCP Resources
 

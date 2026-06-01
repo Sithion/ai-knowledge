@@ -1,5 +1,18 @@
 # Patch Notes
 
+## v2.0.2
+
+### Features
+- **Agents now have full control over their plan**: three MCP tools let an agent fix and retire its own plans instead of being stuck once a task is wrong or a plan goes stale.
+  - **`deletePlanTask(taskId)`** (destructive) — removes a task. If the remaining tasks are all completed (and at least one remains), the plan **auto-completes**; an emptied plan is **not** auto-completed. Returns the updated plan context (`status`, `progress`, `autoActions`).
+  - **`archivePlan(planId)`** — takes a plan out of active circulation (`status` → `archived`) **without deleting it**. Reversible via `updatePlan({ status: "active" })` and preserves the plan's linked knowledge. Preferred over deletion. (This reverses the previous "archiving is dashboard-only" guidance — agents may now archive.)
+  - **Reorder tasks** — `updatePlanTask` now accepts a `position` parameter to move a task within the plan (tasks are listed by `position` ascending).
+  - Agent instruction templates (`_base-instructions.md`) and the `cognistore-plan` skills (Claude Code / Copilot / opencode) document the new capabilities; the MCP server reference (`documentation/mcp-server.md`) adds the new tools and the `destructiveHint` for `deletePlanTask`.
+  - No DB migration: `archived` was already a valid `plans.status` value and task deletion already cascades. `@cognistore/mcp-server` is published at **2.0.2**.
+
+### Fixes
+- **Dependency vulnerability (`tar` crate)**: bumped the transitive `tar` crate from `0.4.45` → `0.4.46` in `apps/dashboard/src-tauri/Cargo.lock` to clear OSV advisory `GHSA-3pv8-6f4r-ffg2` flagged by the CI dependency scan.
+
 ## v2.0.1
 
 ### Fixes

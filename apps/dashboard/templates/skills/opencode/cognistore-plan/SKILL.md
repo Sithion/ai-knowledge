@@ -35,6 +35,12 @@ Track each task:
 
 Plan auto-activates on first task start. Auto-completes when all tasks done.
 
+Full plan control:
+- New task: `addPlanTask(planId, description, priority)`
+- Remove a task: `deletePlanTask(taskId)` (plan auto-completes if the rest are done)
+- Reorder: `updatePlanTask(taskId, { position: <n> })`
+- Retire a plan: `archivePlan(planId)` (reversible — preferred over deleting)
+
 ## After Delegation
 When subagent work completes:
 1. `listPlanTasks(planId)` — check statuses

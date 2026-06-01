@@ -146,6 +146,9 @@ You do NOT need to check for duplicates manually. Just call `createPlan()` — t
 4. **If blocked** → `updatePlanTask(taskId, { notes: "Blocked: ..." })`
 5. **When resuming** → find first `pending` or `in_progress` task
 6. **New tasks** → `addPlanTask(planId, description, priority)`
+7. **Remove a task** → `deletePlanTask(taskId)` (removes a wrong/obsolete task; plan auto-completes if the rest are done)
+8. **Reorder a task** → `updatePlanTask(taskId, { position: <n> })`
+9. **Retire a plan** → `archivePlan(planId)` (reversible — preferred over deleting)
 
 **Flow: `in_progress` → do work → `completed`. Never skip `in_progress`.**
 
@@ -173,7 +176,7 @@ You do NOT need to check for duplicates manually. Just call `createPlan()` — t
 - **Always include tasks** when creating a plan
 - **Always link knowledge** — relatedKnowledgeIds on create, addPlanRelation during execution
 - **Update task AND plan status in real-time** — in_progress → completed, draft → active → completed
-- **NEVER set plan status to 'archived'** — this is a dashboard-only action, not for agents
+- **To retire a plan, use `archivePlan(planId)`** — archiving is reversible and preserves linked knowledge (prefer it over deleting)
 - **Run completion protocol** when all tasks are finished
 - **All entries in English** — regardless of user language
 
