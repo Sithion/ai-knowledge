@@ -54,6 +54,10 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '20'
+          # This job only runs a small node script + curl; it never installs deps.
+          # Disable auto package-manager caching so setup-node doesn't try to invoke
+          # pnpm (not installed here) just because pnpm-lock.yaml exists.
+          package-manager-cache: false
       - name: Check release version sources are in sync
         run: node scripts/check-release-version.mjs
       - name: Ensure release tag is not already published
