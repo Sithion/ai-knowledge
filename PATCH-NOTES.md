@@ -1,5 +1,13 @@
 # Patch Notes
 
+## v2.0.3
+
+### Fixes
+- **Publish failure caught at PR time instead of post-merge** (`ReleaseAsset already_exists`): the desktop publish derives its release tag from `apps/dashboard/package.json` and builds the binary from `Cargo.toml`, but the existing CI `version-check` only compared the **root** `package.json`. A version could be bumped in root while `apps/dashboard/package.json` / `Cargo.toml` lagged behind — the publish would then rebuild an already-released version and fail uploading its (version-less updater) assets, discovered only **after** merge. This shipped in v2.0.2 (root/mcp-server at 2.0.2, dashboard/Cargo.toml left at 2.0.1).
+  - New `scripts/check-release-version.mjs` (`pnpm check:version`) asserts the four release-driving version sources agree: root + `apps/dashboard/package.json` + `apps/mcp-server/package.json` + `Cargo.toml`.
+  - New CI job **`release-version-guard`** (PR-only) runs that script **and** queries the GitHub Releases API to fail when the target tag already has a published release — failing closed on any non-200/404 response. Complements (does not replace) `version-check`.
+  - Re-synced all release-driving versions (and the `cognistore-dashboard` `Cargo.lock` entry) to **2.0.3**.
+
 ## v2.0.2
 
 ### Features
