@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v2.1.1
+
+### Fixes
+- **Desktop publish failed on `ReleaseAsset already_exists` (macOS).** The release matrix declared an Intel build on `macos-14`, but `macos-14`/`macos-latest` are Apple-Silicon runners — so the "x86_64" job actually built **aarch64** and uploaded the same `CogniStore_aarch64.app.tar.gz` updater asset as the arm64 job, colliding and failing the Publish workflow. (The npm `@cognistore/mcp-server@2.1.0` published fine; only the desktop GitHub-release assets were affected.) The Intel build now runs on the **`macos-13`** Intel runner, producing distinct `_x64` artifacts (and a genuinely Intel-native binary + native module). Re-released as **2.1.1**.
+
 ## v2.1.0
 
 ### Features
