@@ -4,6 +4,7 @@ import * as sqliteVec from 'sqlite-vec';
 import { DEFAULT_SQLITE_PATH, DEFAULT_EMBEDDING_DIMENSIONS } from '@cognistore/shared';
 import * as schema from './schema/index.js';
 import { createEmbeddingsTable } from './schema/sqlite-vec.js';
+import { createKnowledgeFtsTable, ftsCount, insertFts } from './schema/fts.js';
 import { runMigrations, runSeeds } from './migrate.js';
 import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
@@ -52,8 +53,36 @@ export function createDbClient(dbPath?: string): { db: Database; sqlite: SQLiteD
   createEmbeddingsTable(sqlite, dims);
   createPlansEmbeddingsTable(sqlite, dims);
 
+  // Ensure the FTS5 index exists (idempotent) and backfill it once if empty but
+  // entries already exist (e.g. existing DB upgrading to the FTS migration).
+  // Also ensure created_at indexes for fast ORDER BY created_at DESC LIMIT/OFFSET
+  // (browse/infinite-scroll). All idempotent + best-effort — never block launch.
+  try {
+    createKnowledgeFtsTable(sqlite);
+    backfillFtsIfEmpty(sqlite);
+    sqlite.exec('CREATE INDEX IF NOT EXISTS idx_knowledge_created_at ON knowledge_entries(created_at)');
+    sqlite.exec('CREATE INDEX IF NOT EXISTS idx_plans_created_at ON plans(created_at)');
+  } catch {
+    // FTS / indexes are optional optimizations — degrade gracefully if unavailable.
+  }
+
   const db = drizzle(sqlite, { schema });
   return { db, sqlite };
+}
+
+function backfillFtsIfEmpty(sqlite: BetterSqlite3.Database): void {
+  if (ftsCount(sqlite) > 0) return;
+  const rows = sqlite
+    .prepare("SELECT id, title, content, tags FROM knowledge_entries WHERE type != 'system'")
+    .all() as { id: string; title: string; content: string; tags: string }[];
+  for (const r of rows) {
+    let tags = '';
+    try {
+      const parsed = JSON.parse(r.tags ?? '[]');
+      tags = Array.isArray(parsed) ? parsed.filter(Boolean).join(' ') : '';
+    } catch { tags = ''; }
+    try { insertFts(sqlite, { id: r.id, title: r.title ?? '', content: r.content ?? '', tags }); } catch { /* best-effort */ }
+  }
 }
 
 function createPlansEmbeddingsTable(sqlite: BetterSqlite3.Database, dimensions = DEFAULT_EMBEDDING_DIMENSIONS): void {

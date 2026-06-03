@@ -8,10 +8,14 @@ const pkgPath = resolve(__dirname, '../../../../apps/mcp-server/package.json');
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
 
 test.describe('mcp-server package.json validation', () => {
-  test('bin paths must start with ./', () => {
+  // npm-canonical bin form is a relative path WITHOUT a leading "./". Newer npm
+  // (Node 22/24+) treats "./dist/index.js" as invalid and strips the "./" on
+  // publish (emitting a warning the CI dry-run flags). Enforce the canonical form.
+  test('bin paths are relative without a leading ./', () => {
     expect(pkg.bin).toBeTruthy();
     for (const [name, filepath] of Object.entries(pkg.bin as Record<string, string>)) {
-      expect(filepath, `bin["${name}"] must start with ./`).toMatch(/^\.\//);
+      expect(filepath, `bin["${name}"] must NOT start with ./ (newer npm strips it)`).not.toMatch(/^\.\//);
+      expect(filepath, `bin["${name}"] must be a relative dist path`).toMatch(/^dist\//);
     }
   });
 

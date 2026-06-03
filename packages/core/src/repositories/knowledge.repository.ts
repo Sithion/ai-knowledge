@@ -6,11 +6,20 @@ import {
   updateEmbedding,
   deleteEmbedding,
   searchKnn,
+  getEmbeddingById,
   insertPlanEmbedding,
   updatePlanEmbedding,
   deletePlanEmbedding,
   searchPlansKnn,
 } from '../db/schema/sqlite-vec.js';
+import {
+  insertFts,
+  updateFts,
+  deleteFts,
+  searchFts,
+  ftsCount,
+  type FtsResult,
+} from '../db/schema/fts.js';
 import type { CreateKnowledgeInput, UpdateKnowledgeInput, SearchOptions } from '@cognistore/shared';
 import { DEFAULT_SEARCH_LIMIT, DEFAULT_SIMILARITY_THRESHOLD } from '@cognistore/shared';
 
@@ -49,6 +58,8 @@ export class KnowledgeRepository {
 
     // Insert embedding into the sqlite-vec virtual table
     insertEmbedding(this.sqlite, id, input.embedding);
+    // Keep the FTS5 index in sync (best-effort — never fail the write on FTS issues)
+    try { insertFts(this.sqlite, { id, title: input.title, content: input.content, tags: ftsTags(input.tags) }); } catch { /* FTS optional */ }
 
     return entry;
   }
@@ -83,6 +94,19 @@ export class KnowledgeRepository {
       .where(eq(knowledgeEntries.id, id))
       .returning();
 
+    // Keep the FTS5 index in sync unconditionally — title/content/tags may change
+    // even when the embedding is recomputed separately. Best-effort.
+    if (entry) {
+      try {
+        updateFts(this.sqlite, {
+          id,
+          title: entry.title ?? '',
+          content: entry.content ?? '',
+          tags: ftsTags(entry.tags),
+        });
+      } catch { /* FTS optional */ }
+    }
+
     // Update embedding in virtual table if provided
     if (embedding) {
       updateEmbedding(this.sqlite, id, embedding);
@@ -99,6 +123,7 @@ export class KnowledgeRepository {
 
     if (entry) {
       deleteEmbedding(this.sqlite, id);
+      try { deleteFts(this.sqlite, id); } catch { /* FTS optional */ }
     }
 
     return entry ?? null;
@@ -117,14 +142,24 @@ export class KnowledgeRepository {
     const candidateLimit = limit * 5;
     const knnResults = searchKnn(this.sqlite, queryEmbedding, candidateLimit);
 
-    if (knnResults.length === 0) {
+    // Build a distance lookup map (cosine distance from sqlite-vec)
+    const distanceMap = new Map(knnResults.map((r) => [r.id, r.distance]));
+
+    // Hybrid: also pull keyword/BM25 candidates when the raw query text is present.
+    // FTS is best-effort — if the table is missing or the query throws, fall back to
+    // pure semantic so search never breaks.
+    let ftsResults: FtsResult[] = [];
+    if (options?.queryText) {
+      try { ftsResults = searchFts(this.sqlite, options.queryText, candidateLimit); } catch { ftsResults = []; }
+    }
+    const bm25Map = new Map(ftsResults.map((r) => [r.id, r.bm25]));
+
+    if (knnResults.length === 0 && ftsResults.length === 0) {
       return [];
     }
 
-    // Get the candidate IDs
-    const candidateIds = knnResults.map((r) => r.id);
-    // Build a distance lookup map (cosine distance from sqlite-vec)
-    const distanceMap = new Map(knnResults.map((r) => [r.id, r.distance]));
+    // Union candidate IDs from both retrieval paths (dedup preserves order).
+    const candidateIds = [...new Set([...knnResults.map((r) => r.id), ...ftsResults.map((r) => r.id)])];
 
     // Fetch full entries for candidates
     const conditions = [];
@@ -178,29 +213,49 @@ export class KnowledgeRepository {
       .from(knowledgeEntries)
       .where(whereClause);
 
-    // Convert cosine distance to similarity (similarity = 1 - distance)
-    // and filter by threshold, then sort and limit
+    // Hybrid re-rank. semantic = 1 - cosine distance (0 when not a KNN candidate);
+    // bm25Norm = sigmoid(-bm25) in (0,1) (0 when not an FTS hit). Combined score
+    // keeps semantic dominant (0.7) with a keyword boost (0.3). An entry is kept
+    // when it clears the semantic threshold OR it explicitly matched the keyword
+    // query (so keyword-only hits with weak semantics still surface).
     return entries
-      .map((entry) => ({
-        entry,
-        similarity: 1 - (distanceMap.get(entry.id) ?? 1),
-      }))
-      .filter((r) => r.similarity >= threshold)
+      .map((entry) => {
+        const semantic = 1 - (distanceMap.get(entry.id) ?? 1);
+        const hasFts = bm25Map.has(entry.id);
+        const bm25Norm = hasFts ? 1 / (1 + Math.exp(bm25Map.get(entry.id)!)) : 0;
+        const combined = 0.7 * semantic + 0.3 * bm25Norm;
+        return { entry, similarity: combined, semantic, hasFts };
+      })
+      .filter((r) => r.semantic >= threshold || r.hasFts)
       .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
+      .slice(0, limit)
+      .map(({ entry, similarity }) => ({ entry, similarity }));
   }
 
-  async listRecent(limit = 20, filters?: { type?: string; scope?: string }) {
+  async listRecent(
+    limit = 20,
+    filters?: { type?: string; scope?: string; tags?: string[] },
+    offset = 0,
+  ) {
     const conditions: any[] = [ne(knowledgeEntries.type, 'system')];
     if (filters?.type) conditions.push(sql`${knowledgeEntries.type} = ${filters.type}`);
     if (filters?.scope) conditions.push(sql`${knowledgeEntries.scope} = ${filters.scope}`);
+    // Tag filter: OR across the requested tags (matches searchBySimilarity + the
+    // previous client-side `.some()` semantics). Reuses the json_each EXISTS pattern.
+    if (filters?.tags && filters.tags.length > 0) {
+      const tagConditions = filters.tags.map(
+        (tag) => sql`EXISTS (SELECT 1 FROM json_each(${knowledgeEntries.tags}) WHERE value = ${tag})`,
+      );
+      conditions.push(or(...tagConditions));
+    }
 
     return this.db
       .select()
       .from(knowledgeEntries)
       .where(and(...conditions))
       .orderBy(sql`${knowledgeEntries.createdAt} DESC`)
-      .limit(limit);
+      .limit(limit)
+      .offset(offset);
   }
 
   async listTags(opts: { from?: string; to?: string } = {}) {
@@ -236,6 +291,117 @@ export class KnowledgeRepository {
       sql`SELECT value as tag, COUNT(*) as count FROM knowledge_entries, json_each(knowledge_entries.tags) WHERE knowledge_entries.type != 'system' GROUP BY value ORDER BY count DESC LIMIT ${limit}`
     );
     return result;
+  }
+
+  /**
+   * Rename/merge a tag across all entries. Per-row correlated rebuild of the JSON
+   * tags array: replace `from`→`to`, and `json_group_array(DISTINCT ...)` collapses
+   * a pre-existing `to`. The `WHERE EXISTS` guard limits both the updated_at bump
+   * and the affected-id list to rows that actually contain `from`. Returns the IDs
+   * of the rows that changed (callers re-embed + resync FTS for these).
+   */
+  renameTag(from: string, to: string): string[] {
+    const now = new Date().toISOString();
+    const affected = this.sqlite
+      .prepare(`SELECT id FROM knowledge_entries WHERE EXISTS (SELECT 1 FROM json_each(knowledge_entries.tags) WHERE value = ?)`)
+      .all(from) as { id: string }[];
+    if (affected.length === 0) return [];
+    this.sqlite.prepare(
+      `UPDATE knowledge_entries
+         SET tags = (
+           SELECT json_group_array(DISTINCT CASE WHEN value = @from THEN @to ELSE value END)
+           FROM json_each(knowledge_entries.tags)
+         ),
+         updated_at = @now
+       WHERE EXISTS (SELECT 1 FROM json_each(knowledge_entries.tags) WHERE value = @from)`
+    ).run({ from, to, now });
+    return affected.map((r) => r.id);
+  }
+
+  /**
+   * Flag stale knowledge: not updated since `cutoff` (days), OR already expired,
+   * OR confidence below `minConfidence`. Lightweight metadata-only query (no new
+   * column / no per-entry access tracking).
+   */
+  async findStaleEntries(opts: { days?: number; minConfidence?: number; limit?: number } = {}) {
+    const days = opts.days ?? 90;
+    const minConfidence = opts.minConfidence ?? 0.5;
+    const limit = opts.limit ?? 100;
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+    const rows = this.sqlite.prepare(
+      `SELECT id, title, type, scope, confidence_score AS confidenceScore, updated_at AS updatedAt, expires_at AS expiresAt
+         FROM knowledge_entries
+        WHERE type != 'system'
+          AND (updated_at < @cutoff OR (expires_at IS NOT NULL AND expires_at < @now) OR confidence_score < @minConfidence)
+        ORDER BY updated_at ASC
+        LIMIT @limit`
+    ).all({ cutoff, now, minConfidence, limit }) as {
+      id: string; title: string; type: string; scope: string;
+      confidenceScore: number; updatedAt: string; expiresAt: string | null;
+    }[];
+    return rows;
+  }
+
+  /**
+   * Find near-duplicate entry pairs via per-entry KNN (avoids an O(n²) full scan).
+   * The embedding MUST be read from the vec table (listAll() blanks it). Canonical
+   * `id < neighborId` filter dedups pairs and drops the self-match. Returns [] when
+   * there are no embeddings yet.
+   */
+  async findDuplicatePairs(opts: { threshold?: number; limit?: number } = {}) {
+    const threshold = opts.threshold ?? 0.9;
+    const limit = opts.limit ?? 100;
+    const entries = await this.listAll();
+    const meta = new Map(entries.map((e) => [e.id, e]));
+    const pairs: { a: { id: string; title: string }; b: { id: string; title: string }; similarity: number }[] = [];
+    for (const entry of entries) {
+      const emb = getEmbeddingById(this.sqlite, entry.id);
+      if (!emb) continue;
+      const neighbors = searchKnn(this.sqlite, emb, 5);
+      for (const n of neighbors) {
+        if (entry.id >= n.id) continue; // canonical order + drops self
+        if (!meta.has(n.id)) continue;  // skip system / missing
+        const similarity = 1 - n.distance;
+        if (similarity >= threshold) {
+          const other = meta.get(n.id)!;
+          pairs.push({
+            a: { id: entry.id, title: entry.title },
+            b: { id: other.id, title: other.title },
+            similarity,
+          });
+        }
+      }
+      if (pairs.length >= limit) break;
+    }
+    return pairs.sort((x, y) => y.similarity - x.similarity).slice(0, limit);
+  }
+
+  /**
+   * (Re)populate the FTS5 index from knowledge_entries. Used at startup when the
+   * index is empty but entries exist (e.g. after the FTS migration on an existing
+   * DB). Best-effort and idempotent (clears then re-inserts).
+   */
+  backfillFts(): number {
+    const rows = this.sqlite.prepare(
+      `SELECT id, title, content, tags FROM knowledge_entries WHERE type != 'system'`
+    ).all() as { id: string; title: string; content: string; tags: string }[];
+    let count = 0;
+    for (const r of rows) {
+      try {
+        insertFts(this.sqlite, { id: r.id, title: r.title ?? '', content: r.content ?? '', tags: ftsTags(r.tags) });
+        count++;
+      } catch { /* best-effort */ }
+    }
+    return count;
+  }
+
+  /** Backfill the FTS index only when it's empty but entries exist (startup path). */
+  backfillFtsIfNeeded(): number {
+    try {
+      if (ftsCount(this.sqlite) > 0) return 0;
+      return this.backfillFts();
+    } catch { return 0; }
   }
 
   async count() {
@@ -359,14 +525,15 @@ export class KnowledgeRepository {
     return this.sqlite.prepare('SELECT * FROM plans ORDER BY created_at DESC').all() as any[];
   }
 
-  listPlans(limit = 20, status?: string, scope?: string): any[] {
+  listPlans(limit = 20, status?: string, scope?: string, offset = 0): any[] {
     const conditions: string[] = [];
     const params: any[] = [];
     if (status) { conditions.push('status = ?'); params.push(status); }
     if (scope) { conditions.push('scope = ?'); params.push(scope); }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
-    params.push(limit);
-    return this.sqlite.prepare(`SELECT * FROM plans ${where} ORDER BY created_at DESC LIMIT ?`).all(...params) as any[];
+    // Param order must match `LIMIT ? OFFSET ?` exactly.
+    params.push(limit, offset);
+    return this.sqlite.prepare(`SELECT * FROM plans ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params) as any[];
   }
 
   findSimilarActivePlans(embedding: number[], scope: string, threshold = 0.5): { plan: any; similarity: number }[] {
@@ -664,6 +831,18 @@ export class KnowledgeRepository {
     }
     return removed;
   }
+}
+
+/**
+ * Coerce stored tags (a JSON string from raw sqlite, or an already-parsed array
+ * from drizzle's json mode) into a single space-joined string for the FTS column.
+ */
+function ftsTags(tags: unknown): string {
+  let arr: unknown = tags;
+  if (typeof tags === 'string') {
+    try { arr = JSON.parse(tags); } catch { return tags; }
+  }
+  return Array.isArray(arr) ? arr.filter(Boolean).join(' ') : '';
 }
 
 /** Cosine similarity between two Float32Arrays: dot(a,b) / (|a| * |b|) */

@@ -47,6 +47,7 @@ export const searchOptionsSchema = z.object({
   limit: z.number().int().min(1).max(100).optional().default(DEFAULT_SEARCH_LIMIT),
   threshold: z.number().min(0).max(1).optional().default(DEFAULT_SIMILARITY_THRESHOLD),
   includePlanContext: z.boolean().optional().default(false),
+  queryText: z.string().optional(),
 });
 
 // ─── Plans ────────────────────────────────────────────────────

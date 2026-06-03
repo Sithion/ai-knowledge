@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS scan_state (
 
 ALTER TABLE plans ADD COLUMN plan_file_path TEXT;
 `,
+  '2.1.0': `
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(id UNINDEXED, title, content, tags);
+`,
 };
 
 /**

@@ -3,7 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: ['server/index.ts'],
   format: ['esm'],
-  target: 'node20',
+  target: 'node24',
   platform: 'node',
   outDir: 'sidecar-bundle/dist-server',
   clean: true,

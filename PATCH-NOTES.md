@@ -1,5 +1,25 @@
 # Patch Notes
 
+## v2.1.0
+
+### Features
+- **Hybrid search (semantic + keyword/BM25)**: `getKnowledge` now blends the existing sqlite-vec semantic ranking with an FTS5 full-text index over title/content/tags. A new `knowledge_fts` virtual table (migration `2.1.0.sql`, created idempotently and backfilled at startup) powers BM25 retrieval; results from both paths are unioned and re-ranked as `0.7·semantic + 0.3·sigmoid(bm25)`, so exact-term matches that rank low semantically now surface. The `SearchResult` shape and the MCP `getKnowledge` signature are unchanged. FTS query text is sanitized into quoted phrase literals (no `fts5: syntax error` on punctuation like `c++`), and the whole keyword path is wrapped so search falls back to pure semantic if FTS5 is unavailable.
+- **Tag normalization + merge**: tags are normalized on write (trim + lowercase + dedup, order-preserving — no token rewriting). A new **Tag Suggestions** panel in Settings surfaces near-duplicate tags (e.g. `nest.js` ↔ `nestjs`, `redis` ↔ `Redis`) via Levenshtein + token-set similarity, and a confirmed **Merge** rewrites the tag across all entries (`json_group_array(DISTINCT …)`), then re-embeds and re-indexes the affected entries.
+- **Knowledge Health**: a new Settings panel lists **stale** entries (not updated in 90d, expired, or low-confidence) and **possible duplicates** (per-entry KNN over embeddings, ≥0.9 similarity). Entries link straight to their editor. Endpoints return summary fields only (no full content) with a result cap.
+
+### Fixes
+- **Sidecar Node bumped to v24 — fixes the `better-sqlite3` ABI crash on "Finishing setup"**: the app now pins **Node 24** (macOS + Linux) instead of Node 20 across the Rust sidecar (`find_node`), the setup wizard/`/api/setup/node`, the bundler, and CI. The bundled `better-sqlite3` is an ABI-specific native addon, so a Node-20 runtime loading a Node-24-built binary (or vice-versa) failed with `NODE_MODULE_VERSION` mismatch and the DB never opened. The app **reuses** an existing Node 24 if present and only installs via nvm when none is found. The sidecar bundler now resolves Node via `process.execPath` (so CI's `actions/setup-node`, which has no nvm, rebuilds correctly) and **fails the build loudly** if no Node 24 is available — preventing an ABI-mismatched bundle from ever shipping. The `@cognistore/mcp-server` npm package keeps its `node20` build target for broad `npx` compatibility (its `better-sqlite3` is rebuilt per-runtime by npx). Launch timeout raised to 120s to absorb a cold nvm Node install on upgrade.
+
+### Improvements
+- **Knowledge Base & Plans: server-side filtering + infinite scroll.** The KB list now browses the **entire** base (not just the recent 50) with **server-side** type/scope/tag filtering and lazy infinite scroll, so clicking a tag (e.g. from Stats `/?tag=…`) now shows **all** matching entries instead of an empty list when the tag wasn't in the recent window. Typing in the search box switches to semantic search (filters still apply); the external/providers section is unchanged. The Plans list gains a **scope filter** and the same infinite scroll. New `created_at` indexes are created idempotently at startup for fast paging.
+- **Plan file: inline preview + open in editor.** In a plan's detail, the file-path chip is now clickable to toggle a **collapsible Markdown preview** of the plan file, with an **"Open in editor"** button (opens it in the OS default text editor — macOS/Linux) and a copy-path action. Reads are confined to an allow-list (`~/.claude/plans`, `~/.cognistore`), size-capped, and the open action uses a no-shell spawn.
+- **Security:** CORS is now restricted to local origins (localhost/127.0.0.1/webview) instead of reflecting any origin — external websites can no longer reach local API endpoints.
+- **Stats page cleanup**: removed the broken Contributions heatmap (incorrect month labels) and the Tag Cloud. **Top Tags** is now full-width with a **median reference line** and a **distinct-tag count** badge, and each bar/row is **clickable** — it opens the knowledge listing filtered by that tag (`/?tag=…`). Removed the now-dead `/api/metrics/contributions` route, its client method, and the `heatmap` field from `/api/metrics`.
+
+### Notes
+- New endpoints: `GET /api/tags/suggestions`, `POST /api/tags/merge`, `GET /api/health/stale`, `GET /api/health/duplicates` (all behind the standard `ensureReady` guard).
+- DB migration `2.1.0.sql` (also in `EMBEDDED_MIGRATIONS` for the bundled MCP) adds `knowledge_fts`. It lives inside `knowledge.db`, so no uninstall change is needed. All release-driving versions bumped to **2.1.0**.
+
 ## v2.0.3
 
 ### Fixes

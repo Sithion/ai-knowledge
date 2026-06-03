@@ -86,7 +86,9 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
 
     let app_handle_for_restore = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        let ready = sidecar::wait_for_ready(port, &token, Duration::from_secs(30)).await;
+        // Allow up to 120s: a first launch / upgrade without Node 24 present triggers a
+        // cold `nvm install 24` before the sidecar can bind, which can exceed 30s.
+        let ready = sidecar::wait_for_ready(port, &token, Duration::from_secs(120)).await;
         if ready {
             let url = format!("http://localhost:{}", port);
             let _ = window.navigate(url.parse().unwrap());
@@ -109,7 +111,7 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
                 }
             }
         } else {
-            let detail = format!("The server did not respond within 30 seconds on port {}. Ensure Node.js v20 is installed.", port);
+            let detail = format!("The server did not respond within 120 seconds on port {}. Ensure Node.js v24 is installed.", port);
             let _ = window.eval(&error_page_html("Failed to start server", &detail));
         }
     });

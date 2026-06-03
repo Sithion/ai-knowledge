@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client.js';
 import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, useAutoUpdateSetting } from '../components/UpdateChecker.js';
@@ -250,6 +251,12 @@ export function SettingsPage() {
 
       {/* ── Data Management Section ── */}
       <DataManagementSection />
+
+      {/* ── Tag Suggestions Section ── */}
+      <TagSuggestionsSection />
+
+      {/* ── Knowledge Health Section ── */}
+      <KnowledgeHealthSection />
 
       {/* ── Log Viewer ── */}
       <LogSection />
@@ -715,6 +722,146 @@ function DataManagementSection() {
                 {t('settings.importBtn')}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const sectionHeaderStyle = { fontSize: 11, fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: 1, color: 'var(--text-secondary)', marginBottom: 16 };
+const ghostButtonStyle = {
+  padding: '6px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+  backgroundColor: 'var(--bg-card)', color: 'var(--text-secondary)',
+  border: '1px solid var(--border)', cursor: 'pointer',
+};
+
+function TagSuggestionsSection() {
+  const { t } = useTranslation();
+  const [suggestions, setSuggestions] = useState<{ a: string; b: string; similarity: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [pendingMerge, setPendingMerge] = useState<{ from: string; to: string } | null>(null);
+  const [merging, setMerging] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.getTagSuggestions()
+      .then((s) => setSuggestions(s))
+      .catch(() => setSuggestions([]))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const confirmMerge = async () => {
+    if (!pendingMerge) return;
+    setMerging(true);
+    try {
+      const res = await api.mergeTags(pendingMerge.from, pendingMerge.to);
+      setMessage(t('tagSuggestions.merged', { count: res.merged, from: pendingMerge.from, to: pendingMerge.to }));
+      setPendingMerge(null);
+      load();
+    } catch {
+      setMessage(t('tagSuggestions.mergeFailed'));
+    }
+    setMerging(false);
+    setTimeout(() => setMessage(null), 5000);
+  };
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', marginTop: 32, paddingTop: 24 }}>
+      <h2 style={sectionHeaderStyle}>{t('tagSuggestions.title')}</h2>
+      {loading ? (
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('tagSuggestions.loading')}</p>
+      ) : suggestions.length === 0 ? (
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('tagSuggestions.none')}</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {message && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{message}</span>}
+          {suggestions.map((s) => (
+            <div key={`${s.a}|${s.b}`} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13 }}>
+                <strong>{s.a}</strong> ↔ <strong>{s.b}</strong>
+                <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>{Math.round(s.similarity * 100)}%</span>
+              </span>
+              <button style={ghostButtonStyle} onClick={() => setPendingMerge({ from: s.b, to: s.a })}>
+                {t('tagSuggestions.keep', { tag: s.a })}
+              </button>
+              <button style={ghostButtonStyle} onClick={() => setPendingMerge({ from: s.a, to: s.b })}>
+                {t('tagSuggestions.keep', { tag: s.b })}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <ConfirmModal
+        isOpen={pendingMerge !== null && !merging}
+        onClose={() => setPendingMerge(null)}
+        onConfirm={confirmMerge}
+        title={t('tagSuggestions.title')}
+        message={pendingMerge ? t('tagSuggestions.confirm', { from: pendingMerge.from, to: pendingMerge.to }) : ''}
+        confirmLabel={t('tagSuggestions.mergeBtn')}
+      />
+    </div>
+  );
+}
+
+function KnowledgeHealthSection() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [stale, setStale] = useState<{ id: string; title: string; type: string; scope: string; confidenceScore: number; updatedAt: string; expiresAt: string | null }[]>([]);
+  const [duplicates, setDuplicates] = useState<{ a: { id: string; title: string }; b: { id: string; title: string }; similarity: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      api.getStaleEntries().catch(() => []),
+      api.getDuplicatePairs().catch(() => []),
+    ]).then(([s, d]) => { setStale(s); setDuplicates(d); }).finally(() => setLoading(false));
+  }, []);
+
+  const openEntry = (id: string) => navigate('/?edit=' + encodeURIComponent(id));
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', marginTop: 32, paddingTop: 24 }}>
+      <h2 style={sectionHeaderStyle}>{t('health.title')}</h2>
+      {loading ? (
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('health.loading')}</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div>
+            <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{t('health.stale')}</h3>
+            {stale.length === 0 ? (
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('health.staleEmpty')}</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {stale.map((e) => (
+                  <div key={e.id} onClick={() => openEntry(e.id)} style={{ cursor: 'pointer', fontSize: 13, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <span>{e.title || '(untitled)'}</span>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 11, whiteSpace: 'nowrap' }}>
+                      {e.scope} · {e.updatedAt.slice(0, 10)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div>
+            <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{t('health.duplicates')}</h3>
+            {duplicates.length === 0 ? (
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('health.dupEmpty')}</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {duplicates.map((p) => (
+                  <div key={`${p.a.id}|${p.b.id}`} style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => openEntry(p.a.id)}>{p.a.title || '(untitled)'}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>↔</span>
+                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => openEntry(p.b.id)}>{p.b.title || '(untitled)'}</span>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{Math.round(p.similarity * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

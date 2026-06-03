@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -262,7 +262,22 @@ Pass an array to addKnowledge to create multiple entries at once.
   }, 5 * 60 * 1000);
 
   const app = Fastify({ logger: true });
-  await app.register(cors, { origin: true });
+  // Restrict CORS to local origins only (the webview loads same-origin from
+  // http://localhost:PORT; Vite dev runs on :5173). Reject external websites so
+  // they can't reach local endpoints (esp. the plan-file read/open ones).
+  await app.register(cors, {
+    origin: (origin, cb) => {
+      // Same-origin / non-browser requests omit Origin → allow.
+      if (!origin) return cb(null, true);
+      try {
+        const { hostname, protocol } = new URL(origin);
+        const ok = protocol === 'tauri:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+        return cb(null, ok);
+      } catch {
+        return cb(null, false);
+      }
+    },
+  });
 
   const distPath = resolve(process.env.DASHBOARD_DIST_PATH || join(__dirname, '..', 'dist'));
   await app.register(fastifyStatic, {
@@ -294,18 +309,18 @@ Pass an array to addKnowledge to create multiple entries at once.
   }
 
   app.get('/api/setup/status', async () => {
-    // Check Node.js v20 availability
+    // Check Node.js (required major) availability
     const nodeReady = (() => {
       const nvmDir = resolve(homedir(), '.nvm', 'versions', 'node');
       if (existsSync(nvmDir)) {
-        const versions = readdirSync(nvmDir).filter(v => v.startsWith('v20.'));
+        const versions = readdirSync(nvmDir).filter(v => v.startsWith(`v${REQUIRED_NODE_MAJOR}.`));
         if (versions.length > 0) return true;
       }
       // Check system node
       try {
         const version = execSync('node --version', { stdio: 'pipe' }).toString().trim();
         const major = parseInt(version.replace('v', '').split('.')[0], 10);
-        return major === 20;
+        return major === REQUIRED_NODE_MAJOR;
       } catch { return false; }
     })();
 
@@ -361,15 +376,15 @@ Pass an array to addKnowledge to create multiple entries at once.
     };
   });
 
-  // Node.js v20 LTS — required for native module compatibility (better-sqlite3)
-  const REQUIRED_NODE_MAJOR = 20;
+  // Node.js LTS major — required for native module (better-sqlite3) ABI compatibility.
+  const REQUIRED_NODE_MAJOR = 24;
 
   /**
-   * Find the nvm-installed Node 20 bin directory, or return null if system node is v20.
-   * Returns the absolute path to the bin/ dir (e.g. ~/.nvm/versions/node/v20.x.x/bin)
-   * so that `npx` can be resolved from it, or null when system node is already v20.
+   * Find the nvm-installed Node {REQUIRED_NODE_MAJOR} bin directory, or return null
+   * if system node already matches. Returns the absolute path to the bin/ dir
+   * (e.g. ~/.nvm/versions/node/v24.x.x/bin) so `npx` can be resolved from it.
    */
-  function findNode20BinDir(): string | null {
+  function findNodeBinDir(): string | null {
     const nvmNodeDir = resolve(homedir(), '.nvm', 'versions', 'node');
     if (existsSync(nvmNodeDir)) {
       const versions = readdirSync(nvmNodeDir)
@@ -380,7 +395,7 @@ Pass an array to addKnowledge to create multiple entries at once.
         if (existsSync(resolve(binDir, 'node'))) return binDir;
       }
     }
-    // Check if system node is already v20
+    // Check if system node already matches the required major
     try {
       const version = execSync('node --version', { stdio: 'pipe' }).toString().trim();
       const major = parseInt(version.replace('v', '').split('.')[0], 10);
@@ -404,14 +419,16 @@ Pass an array to addKnowledge to create multiple entries at once.
     } catch { /* best effort */ }
   }
 
-  /** Build the MCP server entry with the correct Node 20 npx path.
-   *  When nvm Node 20 is found, we:
+  /** Build the MCP server entry pinned to the required Node major's npx path.
+   *  When that Node is found via nvm, we:
    *  1. Use its `npx` binary as the command
-   *  2. Prepend its bin dir to PATH so `node` also resolves to v20
+   *  2. Prepend its bin dir to PATH so `node` also resolves to that major
    *     (npx delegates to whatever `node` is in PATH, not its own binary)
+   *  better-sqlite3 is an external dep of @cognistore/mcp-server, so npx rebuilds
+   *  it against this Node — keeping the MCP child on the same major as the sidecar.
    */
   function buildMcpEntry() {
-    const binDir = findNode20BinDir();
+    const binDir = findNodeBinDir();
     const env: Record<string, string> = {
       SQLITE_PATH: resolve(INSTALL_DIR, 'knowledge.db'),
       OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://localhost:11434',
@@ -419,8 +436,8 @@ Pass an array to addKnowledge to create multiple entries at once.
       EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS || '256',
     };
     if (binDir) {
-      // Prepend Node 20 bin dir so `node` resolves to v20 at runtime.
-      // Use a broad fallback PATH to cover common executable locations.
+      // Prepend the resolved Node bin dir so `node` resolves to the required major.
+      // Use a broad fallback PATH to cover common executable locations (mac + linux).
       env.PATH = `${binDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
     }
     // Forward external-provider secrets (injected into the sidecar by the Tauri
@@ -462,7 +479,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       const nvmDir = resolve(homedir(), '.nvm');
       const nodeDir = resolve(nvmDir, 'versions', 'node');
 
-      // Check if Node 20 already exists in nvm
+      // Check if the required Node major already exists in nvm
       if (existsSync(nodeDir)) {
         const versions = readdirSync(nodeDir).filter(v => v.startsWith(`v${REQUIRED_NODE_MAJOR}.`));
         if (versions.length > 0) {
@@ -474,7 +491,7 @@ Pass an array to addKnowledge to create multiple entries at once.
         }
       }
 
-      // Check if system node is already v20
+      // Check if system node already matches the required major
       try {
         const version = execSync('node --version', { stdio: 'pipe' }).toString().trim();
         const major = parseInt(version.replace('v', '').split('.')[0], 10);
@@ -491,8 +508,9 @@ Pass an array to addKnowledge to create multiple entries at once.
         });
       }
 
-      // Install Node 20 via nvm
-      const nvmCmd = `export NVM_DIR="${nvmDir}" && . "$NVM_DIR/nvm.sh" && nvm install ${REQUIRED_NODE_MAJOR} --lts`;
+      // Install the required Node major via nvm (no --lts: explicit major already
+      // resolves the latest matching release; --lts with a number is ambiguous)
+      const nvmCmd = `export NVM_DIR="${nvmDir}" && . "$NVM_DIR/nvm.sh" && nvm install ${REQUIRED_NODE_MAJOR}`;
       execSync(nvmCmd, { stdio: 'pipe', timeout: 120000, shell: '/bin/bash' });
 
       // Verify installation
@@ -731,7 +749,7 @@ Pass an array to addKnowledge to create multiple entries at once.
         }
       } catch (e) { console.warn('[CogniStore] OpenCode inject error:', e); results.push('OpenCode config error'); }
 
-      // Clear stale npx caches + setup MCP configs (uses Node 20 npx path)
+      // Clear stale npx caches + setup MCP configs (uses the pinned Node npx path)
       clearNpxMcpCache();
       const mcpEntry = buildMcpEntry();
 
@@ -986,7 +1004,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       results.push({ step: 'instructions-opencode', status: 'error', message: e.message });
     }
 
-    // Step 3: Clear stale npx caches + re-setup MCP configs (uses Node 20 npx path)
+    // Step 3: Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
     try {
       clearNpxMcpCache();
       const mcpEntry = buildMcpEntry();
@@ -1104,7 +1122,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       results.push({ step: 'instructions-opencode', status: 'success' });
     } catch (e: any) { results.push({ step: 'instructions-opencode', status: 'error', message: e.message }); }
 
-    // 2. Clear stale npx caches + re-setup MCP configs (uses Node 20 npx path)
+    // 2. Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
     try {
       clearNpxMcpCache();
       const mcpEntry = buildMcpEntry();
@@ -1376,19 +1394,6 @@ Pass an array to addKnowledge to create multiple entries at once.
       activityByDay.push({ date: dateStr, count });
     }
 
-    // Heatmap data (last 90 days) for contribution graph
-    const heatmap: { date: string; count: number }[] = [];
-    for (let i = 89; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      const count = recent.filter((e: any) => {
-        const created = new Date(e.createdAt).toISOString().split('T')[0];
-        return created === dateStr;
-      }).length;
-      heatmap.push({ date: dateStr, count });
-    }
-
     // Type distribution for pie chart
     const typeDistribution = stats.byType.map((t: any) => ({
       name: t.type.charAt(0).toUpperCase() + t.type.slice(1),
@@ -1419,7 +1424,6 @@ Pass an array to addKnowledge to create multiple entries at once.
       },
       activityByDay,
       operationsByDay,
-      heatmap,
       typeDistribution,
       operations,
     };
@@ -1468,22 +1472,6 @@ Pass an array to addKnowledge to create multiple entries at once.
     return { operationsByDay };
   });
 
-  app.get<{ Querystring: { from?: string; to?: string } }>('/api/metrics/contributions', async (request, reply) => {
-    const err = ensureReady(reply);
-    if (err) return err;
-    const { from, to } = request.query;
-    if (!from || !to) { reply.code(400); return { error: 'from and to are required (ISO date)' }; }
-    // Same recent-entry strategy as /api/metrics — heatmap bucket counts.
-    const recent = await sdk.listRecent(5000);
-    const series = buildDateSeries(from, to);
-    const counts = new Map<string, number>(series.map((d) => [d, 0]));
-    for (const e of recent) {
-      const date = new Date((e as any).createdAt).toISOString().split('T')[0];
-      if (counts.has(date)) counts.set(date, (counts.get(date) ?? 0) + 1);
-    }
-    return { heatmap: series.map((date) => ({ date, count: counts.get(date) ?? 0 })) };
-  });
-
   // ─── Token usage ────────────────────────────────────────────────
 
   app.get<{ Querystring: { from?: string; to?: string; source?: string; model?: string; project?: string } }>(
@@ -1517,15 +1505,62 @@ Pass an array to addKnowledge to create multiple entries at once.
     return sdk.listTags(opts);
   });
 
+  // ─── Tag intelligence ────────────────────────────────────────────
+  app.get('/api/tags/suggestions', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const threshold = q.threshold ? Number(q.threshold) : 0.82;
+    return sdk.suggestTagMerges(threshold);
+  });
+
+  app.post<{ Body: { from?: string; to?: string } }>('/api/tags/merge', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const { from, to } = request.body ?? {};
+    if (!from || !to || !String(from).trim() || !String(to).trim()) {
+      reply.code(400);
+      return { error: 'from and to are required' };
+    }
+    return sdk.mergeTags(String(from), String(to));
+  });
+
+  // ─── Knowledge health (stale + duplicates) ───────────────────────
+  app.get('/api/health/stale', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts: { days?: number; minConfidence?: number; limit?: number } = {};
+    if (q.days) opts.days = Number(q.days);
+    if (q.minConfidence) opts.minConfidence = Number(q.minConfidence);
+    if (q.limit) opts.limit = Number(q.limit);
+    return sdk.findStaleEntries(opts);
+  });
+
+  app.get('/api/health/duplicates', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts: { threshold?: number; limit?: number } = {};
+    if (q.threshold) opts.threshold = Number(q.threshold);
+    if (q.limit) opts.limit = Number(q.limit);
+    return sdk.findDuplicatePairs(opts);
+  });
+
   app.get('/api/knowledge/recent', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
     const q = request.query as any;
-    const limit = Number(q.limit) || 20;
-    const filters: { type?: string; scope?: string } = {};
-    if (q.type) filters.type = q.type;
-    if (q.scope) filters.scope = q.scope;
-    return sdk.listRecent(limit, filters);
+    const limit = Math.min(Math.max(Number(q.limit) || 20, 1), 200);
+    const offset = Math.max(Number(q.offset) || 0, 0);
+    const filters: { type?: string; scope?: string; tags?: string[] } = {};
+    if (q.type) filters.type = String(q.type);
+    if (q.scope) filters.scope = String(q.scope);
+    if (q.tags) {
+      const tags = String(q.tags).split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20);
+      if (tags.length) filters.tags = tags;
+    }
+    return sdk.listRecent(limit, filters, offset);
   });
 
   app.get('/api/metrics/top-tags', async (request, reply) => {
@@ -1701,9 +1736,11 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
     const q = request.query as any;
-    const limit = Number(q.limit) || 20;
+    const limit = Math.min(Math.max(Number(q.limit) || 20, 1), 200);
+    const offset = Math.max(Number(q.offset) || 0, 0);
     const status = q.status || undefined;
-    const plans = sdk.listPlans(limit, status);
+    const scope = q.scope || undefined;
+    const plans = sdk.listPlans(limit, status, scope, offset);
     return plans.map((plan: any) => {
       const tasks = sdk.listPlanTasks(plan.id);
       return {
@@ -1735,6 +1772,92 @@ Pass an array to addKnowledge to create multiple entries at once.
     const result = sdk.getPlanById(request.params.id);
     if (!result) { reply.code(404); return { error: 'Not found' }; }
     return result;
+  });
+
+  // ── Plan file: preview + open in OS default editor ───────────────
+  // Both endpoints operate ONLY on the plan's DB-stored path (never a client path),
+  // confined to an allow-list root, and reject foreign origins (defense-in-depth on
+  // top of the localhost-only CORS — CORS gates response reads, not execution).
+  const PLAN_FILE_MAX_BYTES = 256 * 1024;
+  const ALLOWED_PLAN_FILE_ROOTS = [
+    resolve(homedir(), '.claude', 'plans'),
+    resolve(homedir(), '.cognistore'),
+  ];
+  const isUnderAllowedRoot = (abs: string) =>
+    ALLOWED_PLAN_FILE_ROOTS.some((root) => abs === root || abs.startsWith(root + sep));
+  /** Resolve the plan's stored path under an allow-list root. 'none' = no path stored. */
+  const resolvePlanFilePath = (raw: string | null | undefined): { path: string } | { error: 'none' | 'disallowed' } => {
+    if (!raw) return { error: 'none' };
+    const abs = resolve(raw);
+    if (!isUnderAllowedRoot(abs)) return { error: 'disallowed' };
+    // If it exists, also resolve symlinks and re-check (block symlink escape).
+    try { if (existsSync(abs) && !isUnderAllowedRoot(realpathSync(abs))) return { error: 'disallowed' }; } catch { /* ignore */ }
+    return { path: abs };
+  };
+  const rejectForeignOrigin = (request: any, reply: any): boolean => {
+    const origin = request.headers?.origin;
+    if (!origin) return false; // same-origin / non-browser
+    try {
+      const { hostname, protocol } = new URL(origin);
+      if (protocol === 'tauri:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return false;
+    } catch { /* fallthrough */ }
+    reply.code(403); return true;
+  };
+
+  app.get<{ Params: { id: string } }>('/api/plans/:id/file', async (request, reply) => {
+    const err = ensureReady(reply); if (err) return err;
+    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
+    const plan = sdk.getPlanById(request.params.id);
+    if (!plan) { reply.code(404); return { error: 'Not found' }; }
+    const r = resolvePlanFilePath(plan.planFilePath);
+    if ('error' in r) {
+      if (r.error === 'disallowed') { reply.code(403); return { error: 'Forbidden' }; }
+      return { exists: false };
+    }
+    if (!existsSync(r.path)) return { exists: false };
+    const st = statSync(r.path);
+    if (!st.isFile()) return { exists: false };
+    let content: string;
+    let truncated = false;
+    if (st.size > PLAN_FILE_MAX_BYTES) {
+      // Bounded read: only the first PLAN_FILE_MAX_BYTES, never load the whole file.
+      const fd = openSync(r.path, 'r');
+      try {
+        const buf = Buffer.alloc(PLAN_FILE_MAX_BYTES);
+        const read = readSync(fd, buf, 0, PLAN_FILE_MAX_BYTES, 0);
+        content = buf.subarray(0, read).toString('utf-8');
+      } finally { closeSync(fd); }
+      truncated = true;
+    } else {
+      content = readFileSync(r.path, 'utf-8');
+    }
+    return { exists: true, path: r.path, content, truncated };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/plans/:id/open', async (request, reply) => {
+    const err = ensureReady(reply); if (err) return err;
+    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
+    const plan = sdk.getPlanById(request.params.id);
+    if (!plan) { reply.code(404); return { error: 'Not found' }; }
+    const r = resolvePlanFilePath(plan.planFilePath);
+    if ('error' in r) { reply.code(r.error === 'disallowed' ? 403 : 404); return { ok: false }; }
+    if (!existsSync(r.path)) { reply.code(404); return { ok: false }; }
+    // Open in the OS default TEXT editor. No shell, arg-array only → no injection.
+    let cmd: string; let args: string[];
+    if (process.platform === 'darwin') { cmd = 'open'; args = ['-t', r.path]; }
+    else if (process.platform === 'linux') { cmd = 'xdg-open'; args = [r.path]; }
+    else { return { ok: false, unsupported: true }; } // app ships mac + linux only
+    return await new Promise((resolve_) => {
+      try {
+        const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+        child.on('error', () => resolve_({ ok: false }));
+        // Give spawn a tick to surface ENOENT before resolving success.
+        child.unref();
+        setTimeout(() => resolve_({ ok: true }), 50);
+      } catch {
+        resolve_({ ok: false });
+      }
+    });
   });
 
   app.get<{ Params: { id: string } }>('/api/plans/:id/relations', async (request, reply) => {

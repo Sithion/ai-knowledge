@@ -59,10 +59,12 @@ export const api = {
   search: (query: string, options?: Record<string, unknown>) =>
     request('/api/knowledge/search', { method: 'POST', body: JSON.stringify({ query, ...options }) }),
 
-  listRecent: (limit = 20, filters?: { type?: string; scope?: string }) => {
+  listRecent: (limit = 20, filters?: { type?: string; scope?: string; tags?: string[] }, offset = 0) => {
     const params = new URLSearchParams({ limit: String(limit) });
+    if (offset) params.set('offset', String(offset));
     if (filters?.type) params.set('type', filters.type);
     if (filters?.scope) params.set('scope', filters.scope);
+    if (filters?.tags && filters.tags.length) params.set('tags', filters.tags.join(','));
     return request<any[]>(`/api/knowledge/recent?${params}`);
   },
 
@@ -92,6 +94,21 @@ export const api = {
     return request<string[]>(`/api/tags?${sp}`);
   },
 
+  // Tag intelligence
+  getTagSuggestions: () =>
+    request<{ a: string; b: string; similarity: number }[]>('/api/tags/suggestions'),
+  mergeTags: (from: string, to: string) =>
+    request<{ merged: number }>('/api/tags/merge', {
+      method: 'POST',
+      body: JSON.stringify({ from, to }),
+    }),
+
+  // Knowledge health
+  getStaleEntries: () =>
+    request<{ id: string; title: string; type: string; scope: string; confidenceScore: number; updatedAt: string; expiresAt: string | null }[]>('/api/health/stale'),
+  getDuplicatePairs: () =>
+    request<{ a: { id: string; title: string }; b: { id: string; title: string }; similarity: number }[]>('/api/health/duplicates'),
+
   getByType: (range?: { from: string; to: string }) => {
     const path = range ? `/api/metrics/by-type?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-type';
     return request<{ type: string; count: number }[]>(path);
@@ -109,7 +126,6 @@ export const api = {
     activity: { last24h: number; last7d: number; last30d: number; total: number };
     activityByDay: { date: string; count: number }[];
     operationsByDay: { date: string; reads: number; writes: number }[];
-    heatmap: { date: string; count: number }[];
     typeDistribution: { name: string; value: number }[];
     operations: { readsLastHour: number; readsLastDay: number; writesLastHour: number; writesLastDay: number };
   }>('/api/metrics'),
@@ -171,14 +187,22 @@ export const api = {
   createPlan: (data: { title: string; content: string; tags?: string[]; scope?: string; source?: string; tasks?: { description: string; priority?: string }[] }) =>
     request('/api/plans', { method: 'POST', body: JSON.stringify(data) }),
 
-  listPlans: (limit = 20, status?: string) => {
+  listPlans: (limit = 20, status?: string, offset = 0, scope?: string) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (status) params.set('status', status);
+    if (offset) params.set('offset', String(offset));
+    if (scope) params.set('scope', scope);
     return request<any[]>(`/api/plans?${params}`);
   },
 
   getPlan: (id: string) =>
     request<any>(`/api/plans/${id}`),
+
+  // Plan file preview + open in OS editor
+  getPlanFile: (id: string) =>
+    request<{ exists: boolean; path?: string; content?: string; truncated?: boolean }>(`/api/plans/${id}/file`),
+  openPlanFile: (id: string) =>
+    request<{ ok: boolean; unsupported?: boolean }>(`/api/plans/${id}/open`, { method: 'POST' }),
 
   getPlanRelations: (id: string) =>
     request<{ entry: any; relationType: string }[]>(`/api/plans/${id}/relations`),
@@ -268,11 +292,6 @@ export const api = {
   getActivity: (from: string, to: string) =>
     request<{ operationsByDay: { date: string; reads: number; writes: number }[] }>(
       `/api/metrics/activity?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-    ),
-
-  getContributions: (from: string, to: string) =>
-    request<{ heatmap: { date: string; count: number }[] }>(
-      `/api/metrics/contributions?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
     ),
 
   // Token usage

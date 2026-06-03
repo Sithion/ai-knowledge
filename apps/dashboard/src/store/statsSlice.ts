@@ -13,7 +13,6 @@ interface Metrics {
   database: { sizeBytes: number; sizeFormatted: string; path: string };
   activity: { last24h: number; last7d: number; last30d: number; total: number };
   activityByDay: { date: string; count: number }[];
-  heatmap: { date: string; count: number }[];
   typeDistribution: { name: string; value: number }[];
   operations: { readsLastHour: number; readsLastDay: number; writesLastHour: number; writesLastDay: number };
 }
@@ -36,8 +35,6 @@ interface StatsState {
   statsState: LoadState;
   metrics: Metrics | null;
   metricsState: LoadState;
-  tags: string[];
-  tagsState: LoadState;
   lastFetchedAt: number | null;
   /** Whether any fetch is currently in-flight (for the header indicator) */
   isRefreshing: boolean;
@@ -50,8 +47,6 @@ const initialState: StatsState = {
   statsState: 'idle',
   metrics: null,
   metricsState: 'idle',
-  tags: [],
-  tagsState: 'idle',
   lastFetchedAt: null,
   isRefreshing: false,
   refreshInterval: 30,
@@ -89,17 +84,6 @@ export const fetchMetrics = createAsyncThunk(
         if (attempt >= 3) return rejectWithValue('Failed after 3 attempts');
         await new Promise((r) => setTimeout(r, 2000));
       }
-    }
-  },
-);
-
-export const fetchTags = createAsyncThunk(
-  'stats/fetchTags',
-  async (_, { rejectWithValue }) => {
-    try {
-      return (await api.listTags()) as string[];
-    } catch {
-      return rejectWithValue('Failed to load tags');
     }
   },
 );
@@ -149,19 +133,6 @@ const statsSlice = createSlice({
       .addCase(fetchMetrics.rejected, (state) => {
         if (!state.metrics) state.metricsState = 'error';
         state.isRefreshing = false;
-      });
-
-    // Tags
-    builder
-      .addCase(fetchTags.pending, (state) => {
-        if (state.tags.length === 0) state.tagsState = 'loading';
-      })
-      .addCase(fetchTags.fulfilled, (state, action) => {
-        state.tags = action.payload ?? [];
-        state.tagsState = state.tags.length > 0 ? 'loaded' : 'empty';
-      })
-      .addCase(fetchTags.rejected, (state) => {
-        if (state.tags.length === 0) state.tagsState = 'error';
       });
   },
 });

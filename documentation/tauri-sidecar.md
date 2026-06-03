@@ -27,12 +27,12 @@ The desktop application uses a **sidecar model**: Tauri v2 (Rust) manages the wi
 ```
 1. Register Tauri plugins (updater, process)
 2. setup() callback:
-   a. find_node()          → resolve Node.js v20 binary path
+   a. find_node()          → resolve Node.js v24 binary path
    b. Resolve resource paths (dist-server, dist, node_modules, templates)
    c. Compute SQLite path  → ~/.cognistore/knowledge.db
    d. find_available_port(3210) → scan for free port
    e. spawn_node()         → launch Fastify as child process
-   f. wait_for_ready()     → poll GET /api/health for 15 seconds
+   f. wait_for_ready()     → poll GET /api/health for up to 120 seconds (allows a cold nvm Node install)
    g. window.navigate()    → point WebView to http://localhost:PORT
 3. on_window_event(Destroyed) → kill sidecar process
 ```
@@ -41,13 +41,13 @@ The desktop application uses a **sidecar model**: Tauri v2 (Rust) manages the wi
 
 **File:** `apps/dashboard/src-tauri/src/sidecar.rs`
 
-The app requires Node.js v20. Discovery follows a priority chain:
+The app requires Node.js v24 (exact major — the bundled `better-sqlite3` is ABI-pinned). It **reuses** an existing v24 if present and only installs when none is found. Discovery follows a priority chain (works on macOS + Linux):
 
 | Priority | Source | Path Pattern |
 |----------|--------|-------------|
-| 1 | nvm v20 (exact) | `~/.nvm/versions/node/v20.*/bin/node` |
-| 2 | System node v20 | `which node` (verified via `--version`) |
-| 3 | Fallback paths v20 | `/opt/homebrew/bin/node`, `/usr/local/bin/node`, `/usr/bin/node` |
+| 1 | nvm v24 (exact) | `~/.nvm/versions/node/v24.*/bin/node` |
+| 2 | System node v24 | `which node` (verified via `--version`) |
+| 3 | Fallback paths v24 | `/opt/homebrew/bin/node` (mac), `/usr/local/bin/node`, `/usr/bin/node` (linux) |
 | 4 | Any nvm version | Latest available in `~/.nvm/versions/node/` |
 | 5 | Any system node | `which node` (any version) |
 

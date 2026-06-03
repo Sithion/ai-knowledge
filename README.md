@@ -64,7 +64,7 @@ Open the downloaded file and drag the app to your Applications folder (macOS) or
 
 On first launch, the setup wizard will automatically:
 
-1. Check and install [Node.js](https://nodejs.org/) v20
+1. Check and install [Node.js](https://nodejs.org/) v24
 2. Install [Ollama](https://ollama.com) (via Homebrew on macOS, curl on Linux)
 3. Start the Ollama service
 4. Create the local SQLite database at `~/.cognistore/knowledge.db`
@@ -310,7 +310,7 @@ cognistore/
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 20
+- [Node.js](https://nodejs.org/) >= 24
 - [pnpm](https://pnpm.io/) 9.x
 - [Rust](https://rustup.rs/) (for Tauri builds)
 - [Ollama](https://ollama.com) (for embedding generation)

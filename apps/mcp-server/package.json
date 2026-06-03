@@ -1,6 +1,6 @@
 {
   "name": "@cognistore/mcp-server",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "private": false,
   "type": "module",
   "description": "MCP server for CogniStore — integrates with Claude Code and GitHub Copilot",
@@ -12,7 +12,7 @@
   },
   "main": "./dist/index.js",
   "bin": {
-    "cognistore-mcp": "./dist/index.js"
+    "cognistore-mcp": "dist/index.js"
   },
   "files": [
     "dist"

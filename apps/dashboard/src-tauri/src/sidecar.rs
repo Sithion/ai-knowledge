@@ -27,7 +27,9 @@ impl SidecarState {
 }
 
 /// The Node.js major version that native modules (better-sqlite3) are compiled against.
-const REQUIRED_NODE_MAJOR: u32 = 20;
+/// Pinned exactly: better-sqlite3 is a V8-ABI addon (not N-API), so the runtime major
+/// must match the bundled binary's NODE_MODULE_VERSION (Node 24 = 137).
+const REQUIRED_NODE_MAJOR: u32 = 24;
 
 /// Find the Node.js binary on the system, preferring the version that matches
 /// the native modules compiled in the sidecar bundle.
@@ -69,7 +71,7 @@ pub fn find_node() -> Result<PathBuf, String> {
         }
     }
 
-    // 4. Auto-install: nvm + Node.js v20
+    // 4. Auto-install: nvm + Node.js (required major)
     eprintln!("Node.js v{} not found — installing via nvm...", REQUIRED_NODE_MAJOR);
     install_node_via_nvm(REQUIRED_NODE_MAJOR)
 }
@@ -127,7 +129,7 @@ fn install_node_via_nvm(major: u32) -> Result<PathBuf, String> {
     // Install Node.js via nvm
     eprintln!("Installing Node.js v{} via nvm...", major);
     let install_cmd = format!(
-        "export NVM_DIR=\"{}\" && . \"$NVM_DIR/nvm.sh\" && nvm install {} --lts",
+        "export NVM_DIR=\"{}\" && . \"$NVM_DIR/nvm.sh\" && nvm install {}",
         nvm_dir.display(),
         major
     );

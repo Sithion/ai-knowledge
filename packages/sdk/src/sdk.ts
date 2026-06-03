@@ -231,10 +231,10 @@ export class KnowledgeSDK {
     }
   }
 
-  async listRecent(limit = 20, filters?: { type?: string; scope?: string }) {
+  async listRecent(limit = 20, filters?: { type?: string; scope?: string; tags?: string[] }, offset = 0) {
     this.ensureInitialized();
     try {
-      return await this.service!.listRecent(limit, filters);
+      return await this.service!.listRecent(limit, filters, offset);
     } catch (error) {
       throw this.wrapError(error, 'Failed to list recent knowledge');
     }
@@ -255,6 +255,42 @@ export class KnowledgeSDK {
       return await this.service!.listTags(opts);
     } catch (error) {
       throw this.wrapError(error, 'Failed to list tags');
+    }
+  }
+
+  async suggestTagMerges(threshold = 0.82) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.suggestTagMerges(threshold);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to suggest tag merges');
+    }
+  }
+
+  async mergeTags(from: string, to: string) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.mergeTag(from, to);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to merge tags');
+    }
+  }
+
+  async findStaleEntries(opts: { days?: number; minConfidence?: number; limit?: number } = {}) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.findStaleEntries(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to find stale entries');
+    }
+  }
+
+  async findDuplicatePairs(opts: { threshold?: number; limit?: number } = {}) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.findDuplicatePairs(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to find duplicate pairs');
     }
   }
 
@@ -372,9 +408,9 @@ export class KnowledgeSDK {
     return this.service!.deletePlan(id);
   }
 
-  listPlans(limit = 20, status?: string, scope?: string): Plan[] {
+  listPlans(limit = 20, status?: string, scope?: string, offset = 0): Plan[] {
     this.ensureInitialized();
-    return this.service!.listPlans(limit, status, scope);
+    return this.service!.listPlans(limit, status, scope, offset);
   }
 
   async addPlanRelation(planId: string, knowledgeId: string, relationType: 'input' | 'output'): Promise<void> {

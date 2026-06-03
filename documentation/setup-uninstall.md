@@ -13,7 +13,7 @@ The setup wizard runs on first launch and installs all dependencies automaticall
 
 | # | Step | API Endpoint | What It Does |
 |---|------|-------------|-------------|
-| 1 | Node.js | `POST /api/setup/node` | Detect or install Node.js v20 via nvm |
+| 1 | Node.js | `POST /api/setup/node` | Detect or install Node.js v24 via nvm |
 | 2 | Ollama | `POST /api/setup/ollama` | Install Ollama via brew (macOS) or curl (Linux) |
 | 3 | Start Ollama | `POST /api/setup/ollama-start` | Spawn `ollama serve` as background daemon, wait 15s |
 | 4 | Database | `POST /api/setup/database` | Create `~/.cognistore/knowledge.db` with schema + indices |

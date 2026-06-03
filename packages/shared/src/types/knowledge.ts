@@ -168,6 +168,12 @@ export interface SearchOptions {
    * output = produced). Off by default; the MCP getKnowledge handler enables it.
    */
   includePlanContext?: boolean;
+  /**
+   * Raw query text for the keyword/BM25 half of hybrid search. Injected by
+   * KnowledgeService.search (it holds the original query). When absent, the
+   * repository falls back to pure semantic ranking (e.g. plan-context path).
+   */
+  queryText?: string;
 }
 
 export interface SearchResult {

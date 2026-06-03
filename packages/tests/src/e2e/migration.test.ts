@@ -79,6 +79,7 @@ test.describe('Migration system', () => {
       const versions = getSchemaVersions(sqlite);
       expect(versions).toContain('0.8.0');
       expect(versions).toContain('0.9.0');
+      expect(versions).toContain('2.1.0');
 
       sqlite.close();
     } finally {
@@ -97,6 +98,23 @@ test.describe('Migration system', () => {
       expect(tableExists(sqlite, 'plan_relations')).toBe(true);
       expect(tableExists(sqlite, 'operations_log')).toBe(true);
       expect(tableExists(sqlite, 'schema_version')).toBe(true);
+      expect(tableExists(sqlite, 'knowledge_fts')).toBe(true);
+
+      sqlite.close();
+    } finally {
+      cleanupDb(dbPath);
+    }
+  });
+
+  test('existing v0.8.0 DB gains the knowledge_fts table after upgrade', () => {
+    const dbPath = tmpDbPath();
+    try {
+      createV080Database(dbPath);
+      expect(tableExists(new BetterSqlite3(dbPath), 'knowledge_fts')).toBe(false);
+
+      const { sqlite } = createDbClient(dbPath);
+      expect(getSchemaVersions(sqlite)).toContain('2.1.0');
+      expect(tableExists(sqlite, 'knowledge_fts')).toBe(true);
 
       sqlite.close();
     } finally {
