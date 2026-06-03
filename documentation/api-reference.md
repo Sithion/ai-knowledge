@@ -240,7 +240,7 @@ Instantiate the provider and run its `testConnection` (8 s timeout), then dispos
 
 ### POST /api/setup/node
 
-Install or detect Node.js v20.
+Install or detect Node.js v24.
 
 ### POST /api/setup/ollama
 

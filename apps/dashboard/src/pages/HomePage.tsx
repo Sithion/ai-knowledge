@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useLocation } from 'react-router-dom';
 import { api, type ExternalSection } from '../api/client.js';
+import { useInfiniteList, PAGE_SIZE } from '../hooks/useInfiniteScroll.js';
 import { KnowledgeCard } from '../components/KnowledgeCard.js';
 import { TagBar } from '../components/TagBar.js';
 import { KnowledgeModal } from '../components/KnowledgeModal.js';
@@ -31,7 +32,6 @@ export function HomePage() {
 
   // Search state
   const [query, setQuery] = useState('');
-  const [recentEntries, setRecentEntries] = useState<Record<string, unknown>[]>([]);
   const [typeFilter, setTypeFilter] = useState('');
   const [scopeFilter, setScopeFilter] = useState('');
 
@@ -59,14 +59,55 @@ export function HomePage() {
 
   const hasActiveFilters = typeFilter !== '' || scopeFilter !== '' || selectedTags.length > 0 || query.trim() !== '';
 
-  // Load recent entries with server-side type/scope filters
-  const loadRecent = useCallback((typeF?: string, scopeF?: string) => {
-    const filters: { type?: string; scope?: string } = {};
-    if (typeF) filters.type = typeF;
-    if (scopeF) filters.scope = scopeF;
-    return api.listRecent(50, Object.keys(filters).length > 0 ? filters : undefined)
-      .then(setRecentEntries).catch(() => {});
-  }, []);
+  const tagsKey = selectedTags.join(',');
+  const searchMode = query.trim().length > 0;
+
+  // BROWSE mode (empty search box): infinite-scroll over the WHOLE base, filtered
+  // server-side by type/scope/tags. In SEARCH mode the fetcher no-ops so the list
+  // is empty (search results render from `searchResults` below).
+  const browse = useInfiniteList<Record<string, unknown>>(
+    (offset) => {
+      if (searchMode) return Promise.resolve([]);
+      const filters: { type?: string; scope?: string; tags?: string[] } = {};
+      if (typeFilter) filters.type = typeFilter;
+      if (scopeFilter) filters.scope = scopeFilter;
+      if (selectedTags.length) filters.tags = selectedTags;
+      return api.listRecent(PAGE_SIZE, filters, offset) as Promise<Record<string, unknown>[]>;
+    },
+    [typeFilter, scopeFilter, tagsKey, searchMode],
+  );
+
+  // SEARCH mode (non-empty box): semantic search, filters applied server-side.
+  // api.search returns SearchResult[] ({entry,similarity}) — normalize to entries.
+  const [searchResults, setSearchResults] = useState<Record<string, unknown>[]>([]);
+  const [searchingLocal, setSearchingLocal] = useState(false);
+  useEffect(() => {
+    const term = query.trim();
+    if (!term) { setSearchResults([]); setSearchingLocal(false); return; }
+    let cancelled = false;
+    setSearchingLocal(true);
+    const handle = setTimeout(() => {
+      const opts: Record<string, unknown> = { limit: 50 };
+      if (typeFilter) opts.type = typeFilter;
+      if (scopeFilter) opts.scope = scopeFilter;
+      if (selectedTags.length) opts.tags = selectedTags;
+      opts.threshold = 0;
+      api.search(term, opts)
+        .then((res: any) => {
+          if (cancelled) return;
+          const list = Array.isArray(res) ? res : (res?.local ?? []);
+          setSearchResults(list.map((r: any) => (r && r.entry ? r.entry : r)));
+        })
+        .catch(() => { if (!cancelled) setSearchResults([]); })
+        .finally(() => { if (!cancelled) setSearchingLocal(false); });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(handle); };
+  }, [query, typeFilter, scopeFilter, tagsKey]);
+
+  // Entries to render: search results in search mode, else the infinite browse list.
+  // Keep the defensive `type !== 'plan'` exclusion (plans have their own page).
+  const displayedEntries = (searchMode ? searchResults : browse.items)
+    .filter((e) => (e as any).type !== 'plan');
 
   // Load tags (silent)
   const loadTags = useCallback(() => {
@@ -80,17 +121,11 @@ export function HomePage() {
       .catch(() => {});
   }, []);
 
-  // Initial load on mount
+  // Initial load on mount (tags + scopes; the browse list loads itself)
   useEffect(() => {
-    loadRecent(typeFilter, scopeFilter);
     loadTags();
     loadScopes();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Reload recent entries when type/scope filters change
-  useEffect(() => {
-    loadRecent(typeFilter, scopeFilter);
-  }, [typeFilter, scopeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll for new/updated entries — detects changes from any process (OpenCode, Claude, etc.)
   useEffect(() => {
@@ -100,14 +135,15 @@ export function HomePage() {
         const snapshot = `${stats.total}:${stats.lastUpdatedAt || ''}`;
         if (lastSnapshotRef.current !== null && snapshot !== lastSnapshotRef.current) {
           setRefreshing(true);
-          await Promise.all([loadRecent(typeFilter, scopeFilter), loadTags()]);
+          if (!searchMode) browse.reset();
+          await loadTags();
           setRefreshing(false);
         }
         lastSnapshotRef.current = snapshot;
       } catch { /* ignore polling errors */ }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [loadRecent, loadTags, typeFilter, scopeFilter]);
+  }, [loadTags, searchMode, browse.reset]);
 
   // Detect whether federating to external providers is worthwhile (any enabled provider or always-on)
   useEffect(() => {
@@ -180,7 +216,7 @@ export function HomePage() {
       setRelatedPlans([]);
       setSearchParams({}, { replace: true });
       window.history.replaceState({}, '');
-      loadRecent();
+      browse.reset();
     }
   }, [(location.state as any)?.reset]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -236,7 +272,8 @@ export function HomePage() {
     setDeleting(true);
     try {
       await api.deleteEntry(deleteTargetId);
-      setRecentEntries(prev => prev.filter(e => e.id !== deleteTargetId));
+      browse.setItems(prev => prev.filter(e => e.id !== deleteTargetId));
+      setSearchResults(prev => prev.filter(e => e.id !== deleteTargetId));
       setDeleteTargetId(null);
     } catch (error) {
       console.error('Delete failed:', error);
@@ -259,7 +296,7 @@ export function HomePage() {
   };
 
   const handleSuccess = () => {
-    loadRecent(typeFilter, scopeFilter);
+    browse.reset();
     loadTags();
     loadScopes();
     // Reset snapshot so polling doesn't double-refresh
@@ -279,34 +316,6 @@ export function HomePage() {
     newParams.delete('edit');
     setSearchParams(newParams, { replace: true });
   };
-
-  // Filter recent entries by tags (client-side) and text query
-  const q = query.trim().toLowerCase();
-  const filteredRecent = recentEntries.filter(entry => {
-    // Exclude plans — they have their own page
-    if ((entry.type as string) === 'plan') return false;
-    // Tag filter
-    if (selectedTags.length > 0) {
-      const entryTags = (entry.tags as string[]) ?? [];
-      if (!selectedTags.some(tag => entryTags.includes(tag))) return false;
-    }
-    // Text filter (substring match on content, tags, source, scope)
-    if (q) {
-      const content = ((entry.content as string) ?? '').toLowerCase();
-      const tags = ((entry.tags as string[]) ?? []).join(' ').toLowerCase();
-      const source = ((entry.source as string) ?? '').toLowerCase();
-      const scope = ((entry.scope as string) ?? '').toLowerCase();
-      const type = ((entry.type as string) ?? '').toLowerCase();
-      if (
-        !content.includes(q) &&
-        !tags.includes(q) &&
-        !source.includes(q) &&
-        !scope.includes(q) &&
-        !type.includes(q)
-      ) return false;
-    }
-    return true;
-  });
 
   return (
     <div>
@@ -483,11 +492,11 @@ export function HomePage() {
       />
 
       {/* Knowledge Entries */}
-      {filteredRecent.length > 0 && (
+      {displayedEntries.length > 0 && (
         <div>
           <h3 style={{ color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-            {t('search.recent')}
-            {refreshing && (
+            {searchMode ? t('search.results') : t('search.recent')}
+            {(refreshing || searchingLocal) && (
               <span style={{
                 display: 'inline-block', width: 12, height: 12,
                 border: '2px solid var(--border)', borderTopColor: 'var(--accent)',
@@ -495,7 +504,7 @@ export function HomePage() {
               }} />
             )}
           </h3>
-          {filteredRecent.map((entry) => (
+          {displayedEntries.map((entry) => (
             <KnowledgeCard
               key={entry.id as string}
               entry={entry}
@@ -506,10 +515,24 @@ export function HomePage() {
               onToggleSelect={bulkMode ? toggleSelect : undefined}
             />
           ))}
+          {/* Infinite-scroll sentinel + footer (browse mode only) */}
+          {!searchMode && (
+            <div ref={browse.sentinelRef} style={{ height: 1 }} />
+          )}
+          {!searchMode && browse.loadingMore && (
+            <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 16, fontSize: 12 }}>
+              {t('list.loadingMore')}
+            </p>
+          )}
+          {!searchMode && !browse.hasMore && displayedEntries.length > PAGE_SIZE && (
+            <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 16, fontSize: 12 }}>
+              {t('list.noMore')}
+            </p>
+          )}
         </div>
       )}
 
-      {filteredRecent.length === 0 && (
+      {displayedEntries.length === 0 && !browse.loadingMore && !searchingLocal && (
         <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 40 }}>
           {hasActiveFilters ? t('search.noResults') : t('search.empty')}
         </p>
@@ -566,7 +589,7 @@ export function HomePage() {
             {selectedIds.size} {t('actions.selected')}
           </span>
           <button
-            onClick={() => setSelectedIds(new Set(filteredRecent.map(e => e.id as string)))}
+            onClick={() => setSelectedIds(new Set(displayedEntries.map(e => e.id as string)))}
             style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12 }}
           >
             {t('actions.selectAll')}

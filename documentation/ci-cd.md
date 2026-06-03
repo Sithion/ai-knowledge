@@ -15,7 +15,7 @@ The project uses **GitHub Actions** with two workflows:
 ```
 Steps:
 1. Setup pnpm (version from packageManager field)
-2. Setup Node.js 20
+2. Setup Node.js 24
 3. pnpm install --frozen-lockfile
 4. pnpm build (all workspace packages via Turborepo)
 5. pnpm test
@@ -71,7 +71,7 @@ Builds desktop binaries for 3 platform targets:
 Steps per platform:
 1. Install system deps (Linux: webkit2gtk, appindicator, etc.)
 2. Install Rust stable toolchain
-3. Setup pnpm + Node.js 20
+3. Setup pnpm + Node.js 24
 4. pnpm install --frozen-lockfile
 5. pnpm turbo build --filter=@cognistore/dashboard
 6. Bundle sidecar (node scripts/bundle-sidecar.mjs) — includes instruction compilation and plugin bundling
@@ -147,7 +147,7 @@ An end-to-end test script that validates MCP tool behavior across all supported 
 ### Requirements
 
 - Docker (for Ollama container)
-- pnpm and Node.js 20
+- pnpm and Node.js 24
 - Claude Code, Copilot, or OpenCode CLI installed (tests only the clients found on the system)
 
 ### Cleanup

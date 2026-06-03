@@ -50,6 +50,11 @@ Save the returned **planId** — you need it for addKnowledge.
 
 Use `updatePlanTasks` (plural) to update multiple tasks at once.
 
+**You have full control over the plan:**
+- Remove a wrong/obsolete task: `deletePlanTask(taskId)` — the plan auto-completes if the remaining tasks are all done
+- Reorder a task: `updatePlanTask(taskId, { position: <n> })`
+- Retire a plan: `archivePlan(planId)` — reversible and preserves linked knowledge (prefer it over deleting)
+
 **Plan mode**: write the local plan file AND call `createPlan()` before ExitPlanMode.
 **Subagents**: NEVER call createPlan() from subagents — only the main agent.
 

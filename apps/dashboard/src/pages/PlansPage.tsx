@@ -4,6 +4,7 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api/client.js';
+import { useInfiniteList, PAGE_SIZE } from '../hooks/useInfiniteScroll.js';
 import { FloatingAddButton } from '../components/FloatingAddButton.js';
 import { ScopeAutocomplete } from '../components/ScopeAutocomplete.js';
 import { PLAN_TEMPLATES, type PlanTemplate } from '../data/planTemplates.js';
@@ -510,16 +511,15 @@ export function PlansPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
-  const [plans, setPlans] = useState<PlanEntry[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [scopeFilter, setScopeFilter] = useState<string>('');
+  const [allScopes, setAllScopes] = useState<string[]>([]);
   const [selectedPlan, setSelectedPlan] = useState<PlanEntry | null>(null);
   const [tasks, setTasks] = useState<PlanTask[]>([]);
   const [relations, setRelations] = useState<PlanRelation[]>([]);
   const [activePlans, setActivePlans] = useState<PlanEntry[]>([]);
   const [activeTasksMap, setActiveTasksMap] = useState<Record<string, PlanTask[]>>({});
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deletingPlan, setDeletingPlan] = useState(false);
@@ -527,17 +527,25 @@ export function PlansPage() {
   const [archiving, setArchiving] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
 
-  // Load all plans
-  const loadPlans = useCallback(async () => {
-    try {
-      setError(null);
-      const data = await api.listPlans(50, statusFilter || undefined);
-      setPlans(data as PlanEntry[]);
-    } catch (e: any) {
-      setError(e?.message || 'Failed to load plans');
-    }
-    setLoading(false);
-  }, [statusFilter]);
+  // Plan-file preview (collapsible) + open-in-editor. Cached per plan id so the 5s
+  // detail poll (which replaces the selectedPlan object) doesn't reset it.
+  const [filePreviewOpen, setFilePreviewOpen] = useState(false);
+  const [filePreview, setFilePreview] = useState<{ exists: boolean; content?: string; truncated?: boolean } | null>(null);
+  const [filePreviewLoading, setFilePreviewLoading] = useState(false);
+  const filePreviewPlanIdRef = useRef<string | null>(null);
+
+  // Main plans list — infinite scroll, server-side status + scope filters.
+  const list = useInfiniteList<PlanEntry>(
+    (offset) => api.listPlans(PAGE_SIZE, statusFilter || undefined, offset, scopeFilter || undefined) as Promise<PlanEntry[]>,
+    [statusFilter, scopeFilter],
+  );
+
+  // Load available scopes for the scope filter dropdown.
+  const loadScopes = useCallback(() => {
+    return (api.getStats() as Promise<{ byScope: { scope: string }[] }>)
+      .then((stats) => setAllScopes(stats.byScope.map((s) => s.scope)))
+      .catch(() => {});
+  }, []);
 
   // Load active plans with tasks (for top section)
   const loadActivePlans = useCallback(async () => {
@@ -554,13 +562,14 @@ export function PlansPage() {
     } catch { /* silent */ }
   }, []);
 
-  useEffect(() => { loadPlans(); loadActivePlans(); }, [loadPlans, loadActivePlans]);
+  useEffect(() => { loadActivePlans(); loadScopes(); }, [loadActivePlans, loadScopes]);
 
-  // Poll plans list and active plans every 10s
+  // Poll active plans every 5s (the main list isn't polled to avoid resetting scroll;
+  // it refreshes on filter change, create/delete/archive, or selecting a plan).
   useEffect(() => {
-    pollRef.current = setInterval(() => { loadPlans(); loadActivePlans(); }, 5000);
+    pollRef.current = setInterval(() => { loadActivePlans(); }, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [loadPlans, loadActivePlans]);
+  }, [loadActivePlans]);
 
   // Deep-link: open plan from ?select=planId
   useEffect(() => {
@@ -572,14 +581,51 @@ export function PlansPage() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Collapse + clear the file preview when a DIFFERENT plan is selected (keyed on
+  // id, so the 5s poll replacing the object identity does NOT reset it).
+  useEffect(() => {
+    setFilePreviewOpen(false);
+    setFilePreview(null);
+    filePreviewPlanIdRef.current = null;
+  }, [selectedPlan?.id]);
+
+  const togglePreview = async () => {
+    if (!selectedPlan) return;
+    const next = !filePreviewOpen;
+    setFilePreviewOpen(next);
+    if (next && filePreviewPlanIdRef.current !== selectedPlan.id) {
+      setFilePreviewLoading(true);
+      try {
+        const res = await api.getPlanFile(selectedPlan.id);
+        setFilePreview(res);
+        filePreviewPlanIdRef.current = selectedPlan.id;
+      } catch {
+        setFilePreview({ exists: false });
+      }
+      setFilePreviewLoading(false);
+    }
+  };
+
+  const openPlanInEditor = async () => {
+    if (!selectedPlan) return;
+    try {
+      const r = await api.openPlanFile(selectedPlan.id);
+      if (!r.ok) alert(r.unsupported ? t('planFile.unsupported') : t('planFile.notFound'));
+    } catch {
+      alert(t('planFile.notFound'));
+    }
+  };
+
   // Reset state when nav link clicked for same route
   useEffect(() => {
     if ((location.state as any)?.reset) {
       setSelectedPlan(null);
       setShowCreateForm(false);
       setStatusFilter('');
+      setScopeFilter('');
       setSearchParams({}, { replace: true });
       window.history.replaceState({}, '');
+      list.reset();
     }
   }, [(location.state as any)?.reset]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -688,20 +734,63 @@ export function PlansPage() {
         </div>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>{selectedPlan.title}</h1>
 
-        {/* Local plan file path (if this plan was authored from a plan-mode file) */}
+        {/* Local plan file path (if this plan was authored from a plan-mode file).
+            Click to toggle an inline preview; buttons to open in the OS editor / copy. */}
         {selectedPlan.planFilePath && (
-          <div
-            title={selectedPlan.planFilePath}
-            onClick={() => navigator.clipboard?.writeText(selectedPlan.planFilePath!)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, padding: '6px 10px',
-              backgroundColor: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 8,
-              fontFamily: 'monospace', fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}
-          >
-            <span aria-hidden>📄</span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedPlan.planFilePath}</span>
+          <div style={{ marginBottom: 12 }}>
+            <div
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+                backgroundColor: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 8,
+                fontFamily: 'monospace', fontSize: 12, color: 'var(--text-secondary)',
+              }}
+            >
+              <span
+                onClick={togglePreview}
+                title={selectedPlan.planFilePath}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, cursor: 'pointer' }}
+              >
+                <span aria-hidden>{filePreviewOpen ? '▼' : '▶'}</span>
+                <span aria-hidden>📄</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedPlan.planFilePath}</span>
+              </span>
+              <button
+                onClick={openPlanInEditor}
+                title={t('planFile.openInEditor')}
+                style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 11, padding: '2px 8px', whiteSpace: 'nowrap' }}
+              >
+                {t('planFile.openInEditor')}
+              </button>
+              <button
+                onClick={() => navigator.clipboard?.writeText(selectedPlan.planFilePath!)}
+                title={t('planFile.copyPath')}
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 13 }}
+              >
+                ⧉
+              </button>
+            </div>
+            {filePreviewOpen && (
+              <div
+                style={{
+                  marginTop: 8, padding: 12, backgroundColor: 'var(--bg-card)',
+                  border: '1px solid var(--border)', borderRadius: 8, maxHeight: 360, overflow: 'auto',
+                  fontSize: 13,
+                }}
+              >
+                {filePreviewLoading ? (
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('planFile.preview')}…</p>
+                ) : !filePreview?.exists ? (
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('planFile.notFound')}</p>
+                ) : (
+                  <>
+                    <Markdown remarkPlugins={[remarkGfm]}>{filePreview.content || ''}</Markdown>
+                    {filePreview.truncated && (
+                      <p style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 8, fontStyle: 'italic' }}>{t('planFile.truncated')}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -777,7 +866,7 @@ export function PlansPage() {
               setSelectedPlan(null);
               setConfirmDelete(false);
               setSearchParams({}, { replace: true });
-              loadPlans();
+              list.reset();
               loadActivePlans();
             } catch { /* silent */ }
             setDeletingPlan(false);
@@ -798,7 +887,7 @@ export function PlansPage() {
               setSelectedPlan(null);
               setConfirmArchive(false);
               setSearchParams({}, { replace: true });
-              loadPlans();
+              list.reset();
               loadActivePlans();
             } catch { /* silent */ }
             setArchiving(false);
@@ -827,7 +916,7 @@ export function PlansPage() {
             ← {t('plans.title')}
           </button>
           <CreatePlanForm
-            onCreated={() => { setShowCreateForm(false); loadPlans(); loadActivePlans(); }}
+            onCreated={() => { setShowCreateForm(false); list.reset(); loadActivePlans(); }}
             onCancel={() => setShowCreateForm(false)}
           />
         </>
@@ -890,8 +979,8 @@ export function PlansPage() {
         </div>
       )}
 
-      {/* ── Status Filter ── */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
+      {/* ── Status + Scope Filters ── */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap' }}>
         {statusFilters.map((s) => (
           <button
             key={s || 'all'}
@@ -907,20 +996,32 @@ export function PlansPage() {
             {s ? t(`plans.${s}`) : t('plans.all')}
           </button>
         ))}
+        <select
+          value={scopeFilter}
+          onChange={(e) => { setScopeFilter(e.target.value); setSelectedPlan(null); }}
+          style={{
+            marginLeft: 'auto', padding: '6px 10px', borderRadius: 6,
+            backgroundColor: 'var(--bg-input)', border: '1px solid var(--border)',
+            color: scopeFilter ? 'var(--text-primary)' : 'var(--text-secondary)', fontSize: 12,
+          }}
+        >
+          <option value="">{t('plans.allScopes')}</option>
+          {allScopes.map((sc) => (
+            <option key={sc} value={sc}>{sc}</option>
+          ))}
+        </select>
       </div>
 
       <div>
         {/* ── Plans List ── */}
         <div>
-          {error ? (
-            <p style={{ color: 'var(--error)', fontSize: 13 }}>{error}</p>
-          ) : loading ? (
+          {list.items.length === 0 && list.loadingMore ? (
             <p style={{ color: 'var(--text-secondary)' }}>{t('plans.loading')}</p>
-          ) : plans.length === 0 ? (
+          ) : list.items.length === 0 ? (
             <p style={{ color: 'var(--text-secondary)' }}>{t('plans.empty')}</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {plans.map((plan) => {
+              {list.items.map((plan) => {
                 const planTasks = plan.id === selectedPlan?.id ? tasks : [];
                 const done = planTasks.filter((t) => t.status === 'completed').length;
                 return (
@@ -960,6 +1061,14 @@ export function PlansPage() {
                   </div>
                 );
               })}
+              {/* Infinite-scroll sentinel + footer */}
+              <div ref={list.sentinelRef} style={{ height: 1 }} />
+              {list.loadingMore && (
+                <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 12, fontSize: 12 }}>{t('list.loadingMore')}</p>
+              )}
+              {!list.hasMore && list.items.length > PAGE_SIZE && (
+                <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 12, fontSize: 12 }}>{t('list.noMore')}</p>
+              )}
             </div>
           )}
         </div>

@@ -31,6 +31,21 @@ export function deleteEmbedding(sqlite: Database.Database, id: string) {
   stmt.run(id);
 }
 
+/**
+ * Read a stored embedding back as a plain number[]. vec0 returns the vector as a
+ * raw float32 blob, so decode the buffer rather than assuming JSON. Returns null
+ * when the id has no embedding (e.g. fresh row before insert).
+ */
+export function getEmbeddingById(sqlite: Database.Database, id: string): number[] | null {
+  const row = sqlite
+    .prepare(`SELECT embedding FROM ${VIRTUAL_TABLE_NAME} WHERE id = ?`)
+    .get(id) as { embedding?: Buffer | Uint8Array } | undefined;
+  if (!row || row.embedding == null) return null;
+  const buf = row.embedding as Buffer;
+  const f32 = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+  return Array.from(f32);
+}
+
 export interface KnnResult {
   id: string;
   distance: number;

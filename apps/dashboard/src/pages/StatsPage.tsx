@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode, type CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useTranslation } from 'react-i18next';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, Label,
-  AreaChart, Area, ResponsiveContainer, Legend, Line, LineChart,
+  AreaChart, Area, ResponsiveContainer, Legend, Line, LineChart, ReferenceLine,
 } from 'recharts';
 import { useAppDispatch, useAppSelector } from '../store/index.js';
-import { fetchStats, fetchMetrics, fetchTags } from '../store/statsSlice.js';
+import { fetchStats, fetchMetrics } from '../store/statsSlice.js';
 import { DateRangePicker } from '../components/DateRangePicker.js';
 
 /* ── Constants ── */
@@ -55,6 +56,7 @@ function WidgetCard({
   errorText = '',
   style,
   maxBodyHeight,
+  badge,
 }: {
   title: string;
   state: WidgetState;
@@ -68,6 +70,8 @@ function WidgetCard({
    * don't push the rest of the page down.
    */
   maxBodyHeight?: number | string;
+  /** Optional content rendered on the right of the header (e.g. a count badge). */
+  badge?: ReactNode;
 }) {
   const bodyStyle: CSSProperties | undefined = maxBodyHeight
     ? { maxHeight: maxBodyHeight, overflowY: 'auto', overflowX: 'hidden', paddingRight: 4 }
@@ -86,6 +90,7 @@ function WidgetCard({
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h3 style={{ fontSize: 14, fontWeight: 600 }}>{title}</h3>
+        {badge != null && badge}
       </div>
       {state === 'loading' && !children && <Spinner />}
       {state === 'error' && (
@@ -157,140 +162,6 @@ function MetricCard({
           )}
         </>
       )}
-    </div>
-  );
-}
-
-/* ── Heatmap ── */
-
-function getHeatmapColor(count: number, maxCount: number): string {
-  if (count === 0) return 'var(--bg-input)';
-  const intensity = Math.min(count / Math.max(maxCount, 1), 1);
-  if (intensity <= 0.25) return '#0e4429';
-  if (intensity <= 0.5) return '#006d32';
-  if (intensity <= 0.75) return '#26a641';
-  return '#39d353';
-}
-
-function ContributionHeatmap({ data }: { data: { date: string; count: number }[] }) {
-  const { t } = useTranslation();
-  const maxCount = Math.max(...data.map((d) => d.count), 1);
-
-  const weeks: { date: string; count: number; day: number }[][] = [];
-  let currentWeek: { date: string; count: number; day: number }[] = [];
-
-  for (const item of data) {
-    const d = new Date(item.date);
-    const day = d.getDay();
-    if (day === 0 && currentWeek.length > 0) {
-      weeks.push(currentWeek);
-      currentWeek = [];
-    }
-    currentWeek.push({ ...item, day });
-  }
-  if (currentWeek.length > 0) weeks.push(currentWeek);
-
-  if (weeks.length > 0) {
-    const firstDay = weeks[0][0]?.day ?? 0;
-    for (let i = 0; i < firstDay; i++) {
-      weeks[0].unshift({ date: '', count: -1, day: i });
-    }
-  }
-
-  const cellSize = 12;
-  const gap = 3;
-  const dayLabels = ['Sun', '', 'Tue', '', 'Thu', '', 'Sat'];
-
-  const monthLabels: { label: string; col: number }[] = [];
-  let lastMonth = '';
-  for (let w = 0; w < weeks.length; w++) {
-    for (const cell of weeks[w]) {
-      if (cell.date) {
-        const month = cell.date.slice(0, 7);
-        if (month !== lastMonth) {
-          const d = new Date(cell.date);
-          monthLabels.push({ label: d.toLocaleString('en', { month: 'short' }), col: w });
-          lastMonth = month;
-        }
-        break;
-      }
-    }
-  }
-
-  return (
-    <div>
-      <div style={{ display: 'flex', marginLeft: 28, marginBottom: 4, gap: 0 }}>
-        {monthLabels.map((m, i) => (
-          <span
-            key={i}
-            style={{
-              fontSize: 10,
-              color: 'var(--text-secondary)',
-              position: 'relative',
-              left: m.col * (cellSize + gap),
-            }}
-          >
-            {m.label}
-          </span>
-        ))}
-      </div>
-
-      <div style={{ display: 'flex', gap: 0 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap, marginRight: 4, width: 24 }}>
-          {dayLabels.map((label, i) => (
-            <div
-              key={i}
-              style={{
-                height: cellSize,
-                fontSize: 9,
-                color: 'var(--text-secondary)',
-                display: 'flex',
-                alignItems: 'center',
-              }}
-            >
-              {label}
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: 'flex', gap }}>
-          {weeks.map((week, wi) => (
-            <div key={wi} style={{ display: 'flex', flexDirection: 'column', gap }}>
-              {week.map((cell, di) => (
-                <div
-                  key={di}
-                  title={cell.count >= 0 ? `${cell.date}: ${cell.count} entries` : ''}
-                  style={{
-                    width: cellSize,
-                    height: cellSize,
-                    borderRadius: 2,
-                    backgroundColor:
-                      cell.count < 0 ? 'transparent' : getHeatmapColor(cell.count, maxCount),
-                    cursor: cell.count >= 0 ? 'pointer' : 'default',
-                  }}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 8, marginLeft: 28 }}>
-        <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginRight: 4 }}>{t('stats.less')}</span>
-        {[0, 0.25, 0.5, 0.75, 1].map((level, i) => (
-          <div
-            key={i}
-            style={{
-              width: cellSize,
-              height: cellSize,
-              borderRadius: 2,
-              backgroundColor:
-                level === 0 ? 'var(--bg-input)' : getHeatmapColor(level * maxCount, maxCount),
-            }}
-          />
-        ))}
-        <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginLeft: 4 }}>{t('stats.more')}</span>
-      </div>
     </div>
   );
 }
@@ -413,9 +284,24 @@ function ScopeDistribution({ data }: { data: { scope: string; count: number }[] 
   );
 }
 
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 function TopTagsChart({ data }: { data: { tag: string; count: number }[] }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
   const { ref, width } = useContainerWidth();
   const maxVal = Math.max(...data.map(d => d.count));
+  const med = median(data.map(d => d.count));
+
+  // Open the knowledge listing filtered by the clicked tag (HomePage reads ?tag=).
+  const goToTag = (tag?: string) => {
+    if (tag) navigate('/?tag=' + encodeURIComponent(tag));
+  };
 
   return (
     <div ref={ref}>
@@ -425,13 +311,28 @@ function TopTagsChart({ data }: { data: { tag: string; count: number }[] }) {
             <XAxis type="number" hide />
             <YAxis type="category" dataKey="tag" tick={{ fill: 'var(--text-secondary)', fontSize: 11 }} width={80} />
             <Tooltip contentStyle={{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} itemStyle={{ color: 'var(--text-primary)' }} labelStyle={{ color: 'var(--text-secondary)' }} />
-            <Bar dataKey="count" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={16} />
+            {data.length >= 2 && (
+              <ReferenceLine
+                x={med}
+                stroke="var(--text-secondary)"
+                strokeDasharray="4 3"
+                label={{ value: `${t('stats.median')} ${med}`, position: 'top', fontSize: 10, fill: 'var(--text-secondary)' }}
+              />
+            )}
+            <Bar
+              dataKey="count"
+              fill="#8b5cf6"
+              radius={[0, 4, 4, 0]}
+              barSize={16}
+              cursor="pointer"
+              onClick={(d: any) => goToTag(d?.tag ?? d?.payload?.tag)}
+            />
           </BarChart>
         </ResponsiveContainer>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {data.map((entry) => (
-            <div key={entry.tag}>
+            <div key={entry.tag} style={{ cursor: 'pointer' }} onClick={() => goToTag(entry.tag)}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                 <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{entry.tag}</span>
                 <span style={{ fontSize: 12, fontWeight: 600 }}>{entry.count}</span>
@@ -457,17 +358,15 @@ export function StatsPage() {
   const {
     stats, statsState,
     metrics, metricsState,
-    tags, tagsState,
     lastFetchedAt,
     isRefreshing,
   } = useAppSelector((s) => s.stats);
 
   const { range } = useAppSelector((s) => s.dateRange);
   const [rangedActivity, setRangedActivity] = useState<{ date: string; reads: number; writes: number }[]>([]);
-  const [rangedHeatmap, setRangedHeatmap] = useState<{ date: string; count: number }[]>([]);
   // The four "distribution" cards below also follow the global date range as of v1.4.0.
   const [rangedTopTags, setRangedTopTags] = useState<{ tag: string; count: number }[]>([]);
-  const [rangedTags, setRangedTags] = useState<string[]>([]);
+  const [distinctTagCount, setDistinctTagCount] = useState(0);
   const [rangedByType, setRangedByType] = useState<{ type: string; count: number }[]>([]);
   const [rangedByScope, setRangedByScope] = useState<{ scope: string; count: number }[]>([]);
   // cleanup moved to Settings page
@@ -476,25 +375,21 @@ export function StatsPage() {
   const refreshAll = useCallback(() => {
     dispatch(fetchStats());
     dispatch(fetchMetrics());
-    dispatch(fetchTags());
   }, [dispatch]);
 
-  // Range-driven cards: activity, contributions, top-tags, tag-cloud, by-type, by-scope
+  // Range-driven cards: activity, top-tags, distinct-tag count, by-type, by-scope
   useEffect(() => {
     let cancelled = false;
     const r = { from: range.from, to: range.to };
     api.getActivity(range.from, range.to)
       .then((res) => { if (!cancelled) setRangedActivity(res.operationsByDay); })
       .catch(() => { if (!cancelled) setRangedActivity([]); });
-    api.getContributions(range.from, range.to)
-      .then((res) => { if (!cancelled) setRangedHeatmap(res.heatmap); })
-      .catch(() => { if (!cancelled) setRangedHeatmap([]); });
     api.getTopTags(10, r)
       .then((res) => { if (!cancelled) setRangedTopTags(res); })
       .catch(() => { if (!cancelled) setRangedTopTags([]); });
     api.listTags(r)
-      .then((res) => { if (!cancelled) setRangedTags(res); })
-      .catch(() => { if (!cancelled) setRangedTags([]); });
+      .then((res) => { if (!cancelled) setDistinctTagCount(res.length); })
+      .catch(() => { if (!cancelled) setDistinctTagCount(0); });
     api.getByType(r)
       .then((res) => { if (!cancelled) setRangedByType(res); })
       .catch(() => { if (!cancelled) setRangedByType([]); });
@@ -537,12 +432,10 @@ export function StatsPage() {
   const hasTypeData = rangedTypeData.length > 0;
   const hasScopeData = rangedByScope.length > 0;
   const hasActivityData = rangedActivity.some((d) => d.reads + d.writes > 0);
-  const hasHeatmap = rangedHeatmap.length > 0;
-  const hasTags = rangedTags.length > 0;
   const hasTopTags = rangedTopTags.length > 0;
-  // Silence unused warnings — `metrics`, `stats.byScope`, and `tags` are still
+  // Silence unused warnings — `metrics` and `stats.byScope` are still
   // populated by polling for the Total Entries card and future consumers.
-  void metrics; void stats?.byScope; void tags;
+  void metrics; void stats?.byScope;
 
   return (
     <div>
@@ -656,51 +549,31 @@ export function StatsPage() {
         })()}
       </WidgetCard>
 
-      {/* ── Contribution Heatmap + Top Tags (both range-driven) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 24 }}>
-        <WidgetCard
-          title={`${t('stats.contributions')} ${t('stats.thisPeriod')}`}
-          state={hasHeatmap ? 'loaded' : 'empty'}
-        >
-          {hasHeatmap && <ContributionHeatmap data={rangedHeatmap} />}
-        </WidgetCard>
-
-        <WidgetCard
-          title={`${t('stats.topTags')} ${t('stats.thisPeriod')}`}
-          state={hasTopTags ? 'loaded' : 'empty'}
-          emptyText={t('stats.noTags')}
-          maxBodyHeight={380}
-        >
-          {hasTopTags && <TopTagsChart data={rangedTopTags} />}
-        </WidgetCard>
-      </div>
-
-      {/* ── Tag Cloud (range-driven) ── */}
+      {/* ── Top Tags (range-driven, full width) ── */}
       <WidgetCard
-        title={`${t('stats.tagCloud')} ${t('stats.thisPeriod')}`}
-        state={hasTags ? 'loaded' : 'empty'}
+        title={`${t('stats.topTags')} ${t('stats.thisPeriod')}`}
+        state={hasTopTags ? 'loaded' : 'empty'}
         emptyText={t('stats.noTags')}
         maxBodyHeight={380}
+        style={{ marginBottom: 24 }}
+        badge={
+          distinctTagCount > 0 ? (
+            <span
+              style={{
+                backgroundColor: 'var(--bg-input)',
+                color: 'var(--text-secondary)',
+                padding: '2px 10px',
+                borderRadius: 12,
+                fontSize: 11,
+                fontWeight: 600,
+              }}
+            >
+              {`${distinctTagCount} ${t('stats.distinctTags')}`}
+            </span>
+          ) : undefined
+        }
       >
-        {hasTags && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {rangedTags.slice(0, 30).map((tag, i) => (
-              <span
-                key={tag}
-                style={{
-                  backgroundColor: 'var(--bg-input)',
-                  color: 'var(--accent)',
-                  padding: '4px 12px',
-                  borderRadius: 14,
-                  fontSize: 11 + (i % 3) * 3,
-                  fontWeight: i % 2 === 0 ? 600 : 400,
-                }}
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
+        {hasTopTags && <TopTagsChart data={rangedTopTags} />}
       </WidgetCard>
 
     </div>

@@ -26,6 +26,24 @@ export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
 }
 
+/** Levenshtein edit distance (two-row DP). No external dependency. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length];
+}
+
 export class KnowledgeService {
   private lastArchiveRunMs = 0;
 
@@ -45,8 +63,24 @@ export class KnowledgeService {
     return `${title} ${content} ${tags.join(' ')}`;
   }
 
+  /**
+   * Conservative tag normalization: trim + lowercase + dedup (order-preserving).
+   * Deliberately does NOT rewrite tokens (e.g. nest.js→nestjs) — that's left to
+   * the explicit merge flow so meaning is never silently changed.
+   */
+  private normalizeTags(tags: string[] = []): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of tags) {
+      const t = (raw ?? '').trim().toLowerCase();
+      if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+    }
+    return out;
+  }
+
   async add(input: CreateKnowledgeInput): Promise<KnowledgeEntry & { deduplicated?: boolean }> {
     const { skipDedup, ...rest } = input;
+    rest.tags = this.normalizeTags(rest.tags);
     const embeddingText = this.buildEmbeddingText(rest.title, rest.content, rest.tags);
     const embedding = await this.embeddingProvider.embed(embeddingText);
 
@@ -75,7 +109,11 @@ export class KnowledgeService {
 
   async search(query: string, options?: SearchOptions): Promise<SearchResult[]> {
     const queryEmbedding = await this.embeddingProvider.embed(query);
-    const results = await this.repository.searchBySimilarity(queryEmbedding, options);
+    // Inject the raw query text for the keyword/BM25 half of hybrid search. We do
+    // this here (not via the schema-validated options) because the validation
+    // schema would otherwise be the only place to thread it; the original query
+    // string lives in this method, so pass it straight through to the repository.
+    const results = await this.repository.searchBySimilarity(queryEmbedding, { ...options, queryText: query });
     this.logOp('read', results.length);
     const direct: SearchResult[] = results.map((r) => ({
       entry: this.toKnowledgeEntry(r.entry),
@@ -161,6 +199,7 @@ export class KnowledgeService {
   }
 
   async update(id: string, updates: UpdateKnowledgeInput): Promise<KnowledgeEntry | null> {
+    if (updates.tags) updates.tags = this.normalizeTags(updates.tags);
     let embedding: number[] | undefined;
     if (updates.content || updates.title || updates.tags) {
       const current = await this.repository.findById(id);
@@ -293,8 +332,8 @@ export class KnowledgeService {
     return hash.toString(36);
   }
 
-  async listRecent(limit = 20, filters?: { type?: string; scope?: string }) {
-    const entries = await this.repository.listRecent(limit, filters);
+  async listRecent(limit = 20, filters?: { type?: string; scope?: string; tags?: string[] }, offset = 0) {
+    const entries = await this.repository.listRecent(limit, filters, offset);
     return entries.map((e) => this.toKnowledgeEntry(e));
   }
 
@@ -304,6 +343,74 @@ export class KnowledgeService {
 
   async listTags(opts: { from?: string; to?: string } = {}): Promise<string[]> {
     return this.repository.listTags(opts);
+  }
+
+  /**
+   * Suggest near-duplicate tag pairs to merge (e.g. nest.js ↔ nestjs, redis ↔ Redis).
+   * Compares lowercased forms via max(normalized Levenshtein, token-set Jaccard).
+   * O(n²) over the small DISTINCT tag set.
+   */
+  async suggestTagMerges(threshold = 0.82): Promise<{ a: string; b: string; similarity: number }[]> {
+    const tags = await this.repository.listTags();
+    const out: { a: string; b: string; similarity: number }[] = [];
+    for (let i = 0; i < tags.length; i++) {
+      for (let j = i + 1; j < tags.length; j++) {
+        const sim = this.tagSimilarity(tags[i], tags[j]);
+        if (sim >= threshold) out.push({ a: tags[i], b: tags[j], similarity: Math.round(sim * 100) / 100 });
+      }
+    }
+    return out.sort((x, y) => y.similarity - x.similarity);
+  }
+
+  private tagSimilarity(a: string, b: string): number {
+    const la = a.trim().toLowerCase();
+    const lb = b.trim().toLowerCase();
+    if (!la || !lb) return 0;
+    if (la === lb) return 1;
+    // Normalized Levenshtein
+    const lev = 1 - levenshtein(la, lb) / Math.max(la.length, lb.length);
+    // Token-set Jaccard (split on non-alphanumerics) — catches nest.js vs nestjs
+    const ta = new Set(la.split(/[^a-z0-9]+/).filter(Boolean));
+    const tb = new Set(lb.split(/[^a-z0-9]+/).filter(Boolean));
+    let inter = 0;
+    for (const t of ta) if (tb.has(t)) inter++;
+    const union = new Set([...ta, ...tb]).size;
+    const jaccard = union ? inter / union : 0;
+    return Math.max(lev, jaccard);
+  }
+
+  /**
+   * Merge tag `from` into `to` across all entries, then re-embed + resync FTS for
+   * affected rows. Re-embeds via repository.update (the UPDATE path), NOT the
+   * insert path — and update() also resyncs the FTS row.
+   */
+  async mergeTag(from: string, to: string): Promise<{ merged: number }> {
+    const f = (from ?? '').trim();
+    const t = (to ?? '').trim();
+    if (!f || !t || f === t) return { merged: 0 };
+    const affected = this.repository.renameTag(f, t);
+    for (const id of affected) {
+      const entry = await this.repository.findById(id);
+      if (!entry) continue;
+      const tags = Array.isArray(entry.tags) ? entry.tags : JSON.parse((entry.tags as unknown as string) ?? '[]');
+      const embedding = await this.embeddingProvider.embed(this.buildEmbeddingText(entry.title, entry.content, tags));
+      await this.repository.update(id, { embedding });
+    }
+    if (affected.length) this.logOp('write', affected.length);
+    return { merged: affected.length };
+  }
+
+  async findStaleEntries(opts: { days?: number; minConfidence?: number; limit?: number } = {}) {
+    return this.repository.findStaleEntries(opts);
+  }
+
+  async findDuplicatePairs(opts: { threshold?: number; limit?: number } = {}) {
+    return this.repository.findDuplicatePairs(opts);
+  }
+
+  /** (Re)populate the FTS5 index if it's empty but entries exist. Returns rows indexed. */
+  backfillFtsIfNeeded(): number {
+    return this.repository.backfillFtsIfNeeded();
   }
 
   async getStats() {
@@ -449,8 +556,8 @@ export class KnowledgeService {
     return rows.map((r) => this.toPlan(r));
   }
 
-  listPlans(limit = 20, status?: string, scope?: string): Plan[] {
-    const rows = this.repository.listPlans(limit, status, scope);
+  listPlans(limit = 20, status?: string, scope?: string, offset = 0): Plan[] {
+    const rows = this.repository.listPlans(limit, status, scope, offset);
     return rows.map((r) => this.toPlan(r));
   }
 
