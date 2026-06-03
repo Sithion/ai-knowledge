@@ -148,7 +148,7 @@ jobs:
           ### What's included
 
           - Setup wizard (auto-installs Ollama, creates SQLite database)
-          - Dashboard with semantic search, stats, and contribution heatmap
+          - Dashboard with hybrid (semantic + keyword) search, stats, and knowledge health
           - MCP server configuration for Claude Code and GitHub Copilot
           - One-click uninstall (removes all data and configurations)" \
               -F draft=false \
@@ -195,7 +195,11 @@ jobs:
         include:
           - platform: macos-latest
             target: aarch64-apple-darwin
-          - platform: macos-14
+          # Intel build MUST run on an Intel host (macos-13). macos-14/latest are
+          # Apple Silicon — building "x86_64" there still emitted aarch64-named
+          # artifacts, colliding with the arm64 job's updater asset (ReleaseAsset
+          # already_exists) and never producing a real Intel build / native module.
+          - platform: macos-13
             target: x86_64-apple-darwin
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
