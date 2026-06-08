@@ -3,7 +3,7 @@
 ## v2.1.2
 
 ### Fixes
-- **CI `osv-scan` gate failed on 10 fixable npm advisories.** The scheduled security scan flagged two transitive packages in `pnpm-lock.yaml`: **hono** 4.12.18 (4 advisories, fixed in 4.12.21) and **react-router** 7.13.1 (6 advisories, the highest fix being 7.15.0 — incl. the 8.1/8.0 highs `GHSA-49rj-9fvp-4h2h` and `GHSA-8646-j5j9-6r62`). Added root `pnpm.overrides` (`hono >=4.12.21`, `react-router >=7.15.0`) and bumped the direct `react-router-dom` dependency to `^7.15.0`; the lockfile now resolves **hono 4.12.24** and **react-router / react-router-dom 7.17.0**, clearing all 10 advisories. No application code changed.
+- **CI `osv-scan` gate failed on 10 fixable npm advisories.** The scheduled security scan flagged two packages in `pnpm-lock.yaml`: **hono** 4.12.18 (4 advisories, fixed in 4.12.21) and **react-router** 7.13.1 (6 advisories, the highest fix being 7.15.0 — incl. the 8.1/8.0 highs `GHSA-49rj-9fvp-4h2h` and `GHSA-8646-j5j9-6r62`). The `hono` version was being held back by an explicit `4.12.18` pin in the `pnpm-workspace.yaml` `overrides` block — bumped that pin to **4.12.24**. `react-router` was transitive via `react-router-dom`, whose direct dependency in `apps/dashboard` was bumped `^7.13.1 → ^7.15.0`, resolving **react-router / react-router-dom 7.17.0**. All 10 advisories cleared; no application code changed.
 
 ## v2.1.1
 
