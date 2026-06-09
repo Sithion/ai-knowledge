@@ -1,5 +1,11 @@
 # Patch Notes
 
+## v2.1.2
+
+### Fixes
+- **CI `osv-scan` gate failed on 10 fixable npm advisories.** The scheduled security scan flagged two packages in `pnpm-lock.yaml`: **hono** 4.12.18 (4 advisories, fixed in 4.12.21) and **react-router** 7.13.1 (6 advisories, the highest fix being 7.15.0 — incl. the 8.1/8.0 highs `GHSA-49rj-9fvp-4h2h` and `GHSA-8646-j5j9-6r62`). The `hono` version was being held back by an explicit `4.12.18` pin in the `pnpm-workspace.yaml` `overrides` block — bumped that pin to **4.12.24**. `react-router` was transitive via `react-router-dom`, whose direct dependency in `apps/dashboard` was bumped `^7.13.1 → ^7.15.0`, resolving **react-router / react-router-dom 7.17.0**. All 10 advisories cleared (dependency manifests + lockfile only).
+- **Plans list didn't refresh on out-of-band changes.** The dashboard Plans screen left its list stale whenever plans were created/updated/completed by another process (the MCP server, OpenCode, a second window) — it only refreshed when you navigated away and back, re-clicked the nav link, or changed a filter (the main infinite-scroll list was deliberately not polled, to avoid resetting scroll). It now runs the same 5s **snapshot poll** the Knowledge Base list uses: it watches the cheap `/api/metrics/plans` aggregate (plan status counts + task stats) and refreshes the list **only when something actually changed**, so external changes appear within ~5s without thrashing your scroll position.
+
 ## v2.1.1
 
 ### Fixes

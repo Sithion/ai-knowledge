@@ -526,6 +526,9 @@ export function PlansPage() {
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
+  // Snapshot of the whole plan set (status + task aggregates) for the 5s poll below.
+  // Seeded on the first tick; the list only resets when this string changes.
+  const planSnapshotRef = useRef<string | null>(null);
 
   // Plan-file preview (collapsible) + open-in-editor. Cached per plan id so the 5s
   // detail poll (which replaces the selectedPlan object) doesn't reset it.
@@ -564,12 +567,29 @@ export function PlansPage() {
 
   useEffect(() => { loadActivePlans(); loadScopes(); }, [loadActivePlans, loadScopes]);
 
-  // Poll active plans every 5s (the main list isn't polled to avoid resetting scroll;
-  // it refreshes on filter change, create/delete/archive, or selecting a plan).
+  // Poll every 5s: refresh the active-plans section AND snapshot-detect out-of-band
+  // changes to the whole plan set (create/delete/status/task changes from the MCP
+  // server, OpenCode, another window, etc.). The main list is otherwise never polled
+  // (to avoid thrashing scroll) and only refreshed on filter change / UI mutation — so
+  // without this, externally-made changes never appeared until a manual nav reset.
+  // Mirrors the Knowledge Base list's snapshot-poll (HomePage.tsx:130-146): the ref is
+  // seeded on the first tick (no reset), then list.reset() fires only when the snapshot
+  // actually changes. `list.reset` is a stable useCallback (useInfiniteScroll.ts:57).
   useEffect(() => {
-    pollRef.current = setInterval(() => { loadActivePlans(); }, 5000);
+    pollRef.current = setInterval(async () => {
+      loadActivePlans();
+      try {
+        const m = await api.getPlanMetrics();
+        const p = m.plans, tk = m.tasks;
+        const snapshot = `${p.total}:${p.draft}:${p.active}:${p.completed}:${p.archived}:${tk.total}:${tk.pending}:${tk.inProgress}:${tk.completed}`;
+        if (planSnapshotRef.current !== null && snapshot !== planSnapshotRef.current) {
+          list.reset();
+        }
+        planSnapshotRef.current = snapshot;
+      } catch { /* ignore polling errors */ }
+    }, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [loadActivePlans]);
+  }, [loadActivePlans]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Deep-link: open plan from ?select=planId
   useEffect(() => {
