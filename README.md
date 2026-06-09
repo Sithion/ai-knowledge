@@ -115,13 +115,17 @@ If you prefer to configure the MCP server manually:
 | `deleteKnowledge` | Remove an entry by ID (rejects system entries) | `id` |
 | `listTags` | List all unique tags in the knowledge base | — |
 | `healthCheck` | Verify database and Ollama connectivity | — |
+| `getTokenUsage` | Aggregated AI token-usage analytics (input/output/cache) for a date range | `from`, `to`, `source`, `model`, `project` |
 | `createPlan` | Create a plan with optional tasks and knowledge relations | `title`, `content`, `tags`, `scope`, `source` |
 | `updatePlan` | Update plan title, content, tags, scope, or status | `planId`, `status`, `title`, `content` |
 | `addPlanRelation` | Link a knowledge entry to a plan (silently skips system entries) | `planId`, `knowledgeId`, `relationType` |
 | `addPlanTask` | Add a task to a plan's todo list | `planId`, `description`, `priority` |
 | `updatePlanTask` | Mark task in_progress/completed, add notes | `taskId`, `status`, `notes` |
-| `listPlanTasks` | List tasks for a plan ordered by position | `planId` |
 | `updatePlanTasks` | Update multiple plan tasks at once | `updates[]` (each with taskId, status?) |
+| `deletePlanTask` | Remove a task from a plan (auto-completes the plan when the rest are done) | `taskId` |
+| `listPlanTasks` | List tasks for a plan ordered by position | `planId` |
+| `listPlans` | List plans with optional status/scope filters | `limit`, `status`, `scope` |
+| `archivePlan` | Archive a plan (status → `archived`); reversible via `updatePlan` | `planId` |
 
 ### Knowledge Types
 
@@ -231,35 +235,46 @@ Full documentation: [Plug in MCP](documentation/providers/plug-mcp.md) · [Confi
 
 ## Dashboard
 
-The desktop app includes a full dashboard with four main pages:
+The desktop app includes a full dashboard with seven pages:
 
 ### Knowledge (Home)
 
 - Semantic search with natural language queries
-- Filter by type, scope, and tags
+- Server-side filtering by type, scope, and tags with infinite scroll over the whole base
 - Knowledge cards with title, tag chips, type badges, related plans, and similarity scores
 - Inline icon buttons for edit (pencil) and delete (trash) on each card
 - Bulk select mode for multi-delete with floating action bar
-- Add new knowledge entries via modal form
-- Edit entries with full modal form and related plans display
+- Add and edit entries via modal form, with related plans display
 - Auto-refresh polling every 5 seconds for cross-process change detection
 
 ### Plans
 
 - Active plans section showing live task lists with progress bars
+- Browse all plans with status/scope filters and infinite scroll; full-page detail view with tasks, relations, and a collapsible plan-file preview
 - Task status icons: pending (circle), in_progress (spinner), completed (checkmark)
 - Priority left-border colors: red (high), yellow (medium), gray (low)
-- Mini progress counters and plan relations (input/output sections)
+- Auto-refreshes when plans change out-of-band (e.g. an agent updating them via MCP)
+
+### Token Consumption
+
+- Aggregated AI token usage (input / output / cache reads / cache writes) over a selectable date range
+- Breakdowns by source, model, and project
+
+### Providers
+
+- Manage [External Knowledge Providers](#external-knowledge-providers): list, add, edit, enable/disable, and test MCP knowledge connectors
+- **Connect** button for the OAuth browser flow; **Always search external providers** global toggle
 
 ### Stats
 
-- Type and scope distribution charts (pie + bar)
-- Plans analytics section with donut charts, area chart, and metric cards
-- 15-day activity trend (area chart)
-- 90-day contribution heatmap
-- Metric cards: total entries, 24h/7d activity, database size
-- Tag cloud visualization
+- Knowledge stats: type and scope distribution (pie), 15-day activity trend, and a full-width **Top Tags** bar chart with a median reference line — each tag is clickable and filters the knowledge list
+- Plans stats sub-page: plan-status and task-status donut charts plus a 15-day plans activity chart
+- Metric cards: total entries, recent activity, database size
 - Configurable auto-refresh interval (Off / 1s / 10s / 30s / 1m / 5m)
+
+### Widgets
+
+- Standalone, always-on-top desktop widget windows (stats, tokens, plans, active plans) for at-a-glance monitoring
 
 ### Settings
 
@@ -268,7 +283,6 @@ The desktop app includes a full dashboard with four main pages:
 - Language selection (English, Spanish, Portuguese)
 - Unified data export/import — single JSON file with selectable knowledge and plans via modal
 - Maintenance: re-deploy configurations, remove unused embeddings
-- **External Knowledge Providers** — list, add, edit, enable/disable, and test MCP knowledge connectors; **Connect** button for the OAuth browser flow; **Always search external providers** global toggle
 - Uninstall wizard with confirmation (removes all data, configs, and dependencies)
 
 ## Architecture
@@ -285,10 +299,11 @@ cognistore/
 │   ├── providers/          # External provider federation (MCP client, fan-out, auth)
 │   ├── sdk/                # Public SDK (main entry point for consumers)
 │   ├── config/             # Config injection (Claude, Copilot, OpenCode)
-│   └── tests/              # Playwright end-to-end tests
+│   └── tests/              # Playwright test-runner suite (integration, performance, load)
 └── scripts/
-    ├── bump-version.sh     # Version bump script for all packages
-    └── test-agents.sh      # Agent test battery (builds, spins up Docker Ollama, tests all clients)
+    ├── bump-version.sh           # Bump the version across all packages
+    ├── check-release-version.mjs # Assert all release-driving versions agree
+    └── security-check.sh         # Local secret/security scan
 ```
 
 ### Tech Stack
@@ -335,24 +350,18 @@ pnpm dev --filter @cognistore/dashboard
 pnpm tauri:dev --filter @cognistore/dashboard
 ```
 
-### Agent Test Battery
+### Tests
 
-The project includes an end-to-end test script that validates MCP tool behavior across all supported AI clients:
+The `packages/tests` suite (Playwright test runner, headless) covers the SDK and data layer end to
+end — knowledge CRUD, semantic + hybrid search, plans/tasks, migrations, plus performance and load
+benchmarks:
 
 ```bash
-scripts/test-agents.sh
+pnpm test
 ```
 
-The test battery:
-1. Builds all packages locally
-2. Spins up a Docker-based Ollama instance for isolated embedding generation
-3. Creates a temporary local database
-4. Swaps MCP configs to point at the local build
-5. Runs tool-level tests across Claude Code, GitHub Copilot, and OpenCode
-6. Validates similarity scores and response correctness
-7. Restores all original configurations on completion (even on failure)
-
-This ensures that MCP tool changes do not regress across any supported client.
+The suite runs on CI for every pull request and feature-branch push, so changes to the SDK,
+repositories, or MCP tools are validated before merge.
 
 ### Version Bump
 
