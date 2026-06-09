@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v2.2.1
+
+### Fixes
+- **Tag Suggestions "Select all" no longer dead-ends on conflicts.** In v2.2.0, selecting all suggestions could hit *"Conflicting selections — '«tag»' cannot be merged in two directions"* with no practical way out: one tag appearing in several pairs received contradictory default keepers, and fixing dozens of rows by hand was unrealistic (field report with 49 suggestions). Overlapping pairs are now **clustered into groups** (`ui-pattern ↔ ui-patterns ↔ uipattern` renders as one row): one **Keep:** selector per group (default = most-used tag, usage counts shown), and every merge targets that group's keeper — conflicting directions are impossible by construction, so "select all → Apply" always works. Batches larger than the endpoint's 50-merge cap are sent in chunks automatically. The server-side CONFLICT guard remains as a backstop.
+
 ## v2.2.0
 
 ### Features
