@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v2.1.3
+
+### Docs
+- **New dashboard screenshot + README accuracy pass.** Replaced the hero screenshot with the current Knowledge Base view and corrected drift between the README and the shipping app: the MCP **Available Tools** table now lists all **17** tools (added `getTokenUsage`, `listPlans`, `deletePlanTask`, `archivePlan`); the **Dashboard** section reflects the real **seven** pages (added Token Consumption, Providers, Widgets, and the Plans stats sub-page); the **Stats** section drops the removed contribution heatmap and tag cloud and documents the current Top Tags chart; and the stale `scripts/test-agents.sh` / Docker references were replaced with the actual `pnpm test` (Playwright test runner, `packages/tests`) testing story for this Docker-free project.
+
 ## v2.1.2
 
 ### Fixes
