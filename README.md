@@ -9,7 +9,7 @@ Store, search, and retrieve knowledge using local vector embeddings — directly
 [![CI](https://github.com/Sithion/cognistore/actions/workflows/ci.yml/badge.svg)](https://github.com/Sithion/cognistore/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@cognistore/mcp-server)](https://www.npmjs.com/package/@cognistore/mcp-server)
 [![GitHub Release](https://img.shields.io/github/v/release/Sithion/cognistore)](https://github.com/Sithion/cognistore/releases)
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [Download](#quick-start) · [Features](#features) · [MCP Integration](#mcp-integration) · [External Providers](#external-knowledge-providers) · [Dashboard](#dashboard) · [Development](#development) · [Patch Notes](PATCH-NOTES.md)
 
@@ -281,6 +281,8 @@ The desktop app includes a full dashboard with seven pages:
 - Service health monitoring (Database, Ollama) with real-time status polling
 - Check for updates (auto-updates in desktop, GitHub release link in dev mode)
 - Language selection (English, Spanish, Portuguese)
+- **Tag Suggestions with batch merge** — select multiple near-duplicate tag pairs, pick which tag to keep per pair (usage counts shown), and apply all merges in one shot
+- **Knowledge Health** — stale-entry report plus **duplicate groups**: near-identical entries are clustered into cards where you keep one and delete the rest in one click
 - Unified data export/import — single JSON file with selectable knowledge and plans via modal
 - Maintenance: re-deploy configurations, remove unused embeddings
 - Uninstall wizard with confirmation (removes all data, configs, and dependencies)
@@ -392,4 +394,4 @@ Contributions are welcome. Please open an issue first to discuss what you'd like
 
 ## License
 
-[BSL 1.1](LICENSE) — Free for non-commercial use. Converts to Apache 2.0 on 2030-03-18.
+[MIT](LICENSE) — free to use, modify, and distribute.

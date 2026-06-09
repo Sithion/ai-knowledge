@@ -21,6 +21,11 @@ test('suggestTagMerges flags near-duplicate tags', async () => {
   );
   expect(pair).toBeTruthy();
   expect(pair!.similarity).toBeGreaterThanOrEqual(0.8);
+  // v2.2.0: suggestions carry usage counts to drive the batch-merge keeper default.
+  expect(typeof pair!.countA).toBe('number');
+  expect(typeof pair!.countB).toBe('number');
+  expect(pair!.countA).toBeGreaterThanOrEqual(1);
+  expect(pair!.countB).toBeGreaterThanOrEqual(1);
 });
 
 test('mergeTag rewrites the tag across all entries, dedups, and reports the count', async () => {

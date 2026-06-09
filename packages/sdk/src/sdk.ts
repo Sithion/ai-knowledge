@@ -276,6 +276,18 @@ export class KnowledgeSDK {
     }
   }
 
+  async mergeTagsBatch(merges: { from: string; to: string }[]) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.mergeTagsBatch(merges);
+    } catch (error) {
+      // CONFLICT errors carry a user-actionable message — pass them through
+      // unwrapped so the server can map them to a 400.
+      if (error instanceof Error && error.message.startsWith('CONFLICT:')) throw error;
+      throw this.wrapError(error, 'Failed to merge tags');
+    }
+  }
+
   async findStaleEntries(opts: { days?: number; minConfidence?: number; limit?: number } = {}) {
     this.ensureInitialized();
     try {
@@ -291,6 +303,15 @@ export class KnowledgeSDK {
       return await this.service!.findDuplicatePairs(opts);
     } catch (error) {
       throw this.wrapError(error, 'Failed to find duplicate pairs');
+    }
+  }
+
+  async findDuplicateGroups(opts: { threshold?: number; limit?: number } = {}) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.findDuplicateGroups(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to find duplicate groups');
     }
   }
 

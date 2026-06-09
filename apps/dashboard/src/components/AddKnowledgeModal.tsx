@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client.js';
 import { ScopeAutocomplete } from './ScopeAutocomplete.js';
+import { useFocusTrap } from '../hooks/useFocusTrap.js';
+import { useTransientMessage } from '../hooks/useTransientMessage.js';
 
 interface AddKnowledgeModalProps {
   isOpen: boolean;
@@ -22,6 +24,9 @@ export function AddKnowledgeModal({ isOpen, onClose, onSuccess }: AddKnowledgeMo
     agentId: '',
   });
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useTransientMessage(5000);
+  const titleId = useId();
+  const trapRef = useFocusTrap<HTMLDivElement>(isOpen);
 
   // Reset form when modal opens
   useEffect(() => {
@@ -70,8 +75,9 @@ export function AddKnowledgeModal({ isOpen, onClose, onSuccess }: AddKnowledgeMo
       });
       onSuccess();
       onClose();
-    } catch (error) {
-      console.error('Failed to create:', error);
+    } catch {
+      // User-initiated mutation: surface the failure (modal stays open).
+      setSaveError(t('errors.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -121,6 +127,10 @@ export function AddKnowledgeModal({ isOpen, onClose, onSuccess }: AddKnowledgeMo
       onClick={handleBackdropClick}
     >
       <div
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         style={{
           backgroundColor: 'var(--bg-card)',
           border: '1px solid var(--border)',
@@ -141,7 +151,7 @@ export function AddKnowledgeModal({ isOpen, onClose, onSuccess }: AddKnowledgeMo
             marginBottom: 20,
           }}
         >
-          <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
+          <h2 id={titleId} style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
             {t('add.title')}
           </h2>
           <button
@@ -265,6 +275,9 @@ export function AddKnowledgeModal({ isOpen, onClose, onSuccess }: AddKnowledgeMo
             </div>
           </div>
 
+          {saveError && (
+            <p style={{ fontSize: 13, color: 'var(--error, #ef4444)', marginBottom: 12 }}>{saveError}</p>
+          )}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button
               type="button"

@@ -350,13 +350,19 @@ export class KnowledgeService {
    * Compares lowercased forms via max(normalized Levenshtein, token-set Jaccard).
    * O(n²) over the small DISTINCT tag set.
    */
-  async suggestTagMerges(threshold = 0.82): Promise<{ a: string; b: string; similarity: number }[]> {
-    const tags = await this.repository.listTags();
-    const out: { a: string; b: string; similarity: number }[] = [];
+  async suggestTagMerges(threshold = 0.82): Promise<{ a: string; b: string; similarity: number; countA: number; countB: number }[]> {
+    const counts = new Map((await this.repository.tagCounts()).map((r) => [r.tag, r.count]));
+    const tags = Array.from(counts.keys());
+    const out: { a: string; b: string; similarity: number; countA: number; countB: number }[] = [];
     for (let i = 0; i < tags.length; i++) {
       for (let j = i + 1; j < tags.length; j++) {
         const sim = this.tagSimilarity(tags[i], tags[j]);
-        if (sim >= threshold) out.push({ a: tags[i], b: tags[j], similarity: Math.round(sim * 100) / 100 });
+        if (sim >= threshold) {
+          out.push({
+            a: tags[i], b: tags[j], similarity: Math.round(sim * 100) / 100,
+            countA: counts.get(tags[i]) ?? 0, countB: counts.get(tags[j]) ?? 0,
+          });
+        }
       }
     }
     return out.sort((x, y) => y.similarity - x.similarity);
@@ -400,12 +406,102 @@ export class KnowledgeService {
     return { merged: affected.length };
   }
 
+  /**
+   * Apply several tag merges in ONE pass. All conflict detection happens BEFORE
+   * the first renameTag SQL executes, so a CONFLICT never leaves a partially
+   * merged DB:
+   *  - duplicate `from` mapped to different targets → CONFLICT error
+   *  - cycles (a→b, b→a) → CONFLICT error
+   *  - chains collapse to their terminal target (a→b, b→c ⇒ a→c, b→c), which is
+   *    equivalent to sequential application: renameTag is idempotent per terminal
+   *    target and json_group_array(DISTINCT …) collapses a pre-existing target.
+   * Affected entry ids are UNIONED so an entry touched by two merges is re-embedded
+   * exactly once, AFTER all renames (buildEmbeddingText reads the final tags).
+   * Re-embeds run through repository.update (UPDATE path: FTS resync + version
+   * bump — never the embedding-insert path) with bounded concurrency; one failed
+   * re-embed does not abort the rest.
+   */
+  async mergeTagsBatch(merges: { from: string; to: string }[]): Promise<{
+    applied: { from: string; to: string; count: number }[];
+    entriesReembedded: number;
+  }> {
+    // Normalize + drop no-ops.
+    const cleaned = merges
+      .map((m) => ({ from: (m.from ?? '').trim(), to: (m.to ?? '').trim() }))
+      .filter((m) => m.from && m.to && m.from !== m.to);
+    if (cleaned.length === 0) return { applied: [], entriesReembedded: 0 };
+
+    // Conflict detection — before ANY write.
+    const target = new Map<string, string>();
+    for (const m of cleaned) {
+      const existing = target.get(m.from);
+      if (existing !== undefined && existing !== m.to) {
+        throw new Error(`CONFLICT: tag "${m.from}" is merged into multiple targets ("${existing}" and "${m.to}")`);
+      }
+      target.set(m.from, m.to);
+    }
+    // Resolve each `from` to its terminal target; a revisit of `from` ⇒ cycle.
+    const terminal = new Map<string, string>();
+    for (const from of target.keys()) {
+      const visited = new Set<string>([from]);
+      let to = target.get(from)!;
+      while (target.has(to)) {
+        if (visited.has(to)) {
+          throw new Error(`CONFLICT: circular merge chain involving tag "${to}"`);
+        }
+        visited.add(to);
+        to = target.get(to)!;
+      }
+      terminal.set(from, to);
+    }
+
+    // Apply renames (sync SQL), unioning affected ids.
+    const applied: { from: string; to: string; count: number }[] = [];
+    const affectedIds = new Set<string>();
+    for (const [from, to] of terminal) {
+      const ids = this.repository.renameTag(from, to);
+      for (const id of ids) affectedIds.add(id);
+      applied.push({ from, to, count: ids.length });
+    }
+
+    // Re-embed each affected entry once, bounded concurrency, failures collected.
+    const ids = Array.from(affectedIds);
+    await this.mapWithConcurrency(ids, 4, async (id) => {
+      try {
+        const entry = await this.repository.findById(id);
+        if (!entry) return;
+        const tags = Array.isArray(entry.tags) ? entry.tags : JSON.parse((entry.tags as unknown as string) ?? '[]');
+        const embedding = await this.embeddingProvider.embed(this.buildEmbeddingText(entry.title, entry.content, tags));
+        await this.repository.update(id, { embedding });
+      } catch { /* tags already renamed in SQL; a stale embedding heals on next update */ }
+    });
+
+    if (affectedIds.size) this.logOp('write', affectedIds.size);
+    return { applied, entriesReembedded: affectedIds.size };
+  }
+
+  /** Minimal worker-pool: run `fn` over `items` with at most `limit` in flight. */
+  private async mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+    let next = 0;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        await fn(items[i]);
+      }
+    });
+    await Promise.all(workers);
+  }
+
   async findStaleEntries(opts: { days?: number; minConfidence?: number; limit?: number } = {}) {
     return this.repository.findStaleEntries(opts);
   }
 
   async findDuplicatePairs(opts: { threshold?: number; limit?: number } = {}) {
     return this.repository.findDuplicatePairs(opts);
+  }
+
+  async findDuplicateGroups(opts: { threshold?: number; limit?: number } = {}) {
+    return this.repository.findDuplicateGroups(opts);
   }
 
   /** (Re)populate the FTS5 index if it's empty but entries exist. Returns rows indexed. */

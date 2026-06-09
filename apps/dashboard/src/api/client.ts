@@ -96,18 +96,23 @@ export const api = {
 
   // Tag intelligence
   getTagSuggestions: () =>
-    request<{ a: string; b: string; similarity: number }[]>('/api/tags/suggestions'),
+    request<{ a: string; b: string; similarity: number; countA: number; countB: number }[]>('/api/tags/suggestions'),
   mergeTags: (from: string, to: string) =>
     request<{ merged: number }>('/api/tags/merge', {
       method: 'POST',
       body: JSON.stringify({ from, to }),
     }),
+  mergeTagsBatch: (merges: { from: string; to: string }[]) =>
+    request<{ applied: { from: string; to: string; count: number }[]; entriesReembedded: number }>('/api/tags/merge-batch', {
+      method: 'POST',
+      body: JSON.stringify({ merges }),
+    }),
 
   // Knowledge health
   getStaleEntries: () =>
     request<{ id: string; title: string; type: string; scope: string; confidenceScore: number; updatedAt: string; expiresAt: string | null }[]>('/api/health/stale'),
-  getDuplicatePairs: () =>
-    request<{ a: { id: string; title: string }; b: { id: string; title: string }; similarity: number }[]>('/api/health/duplicates'),
+  getDuplicateGroups: () =>
+    request<{ groupId: string; maxSimilarity: number; members: { id: string; title: string; scope: string; type: string; version: number; updatedAt: string }[] }[]>('/api/health/duplicates'),
 
   getByType: (range?: { from: string; to: string }) => {
     const path = range ? `/api/metrics/by-type?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-type';

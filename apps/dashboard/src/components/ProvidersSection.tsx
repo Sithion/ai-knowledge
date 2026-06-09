@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, setProviderSecret, type ProviderEntry } from '../api/client.js';
 
@@ -26,6 +26,9 @@ export function ProvidersSection() {
   const [secret, setSecret] = useState('');
   const [testResult, setTestResult] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
+  // Per-provider in-flight guard (disables that provider's buttons; no double-submit).
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const snapshotRef = useRef<string | null>(null);
 
   const load = useCallback(() => {
     api.listProviders().then((c) => setProviders(c.providers)).catch(() => setProviders([]));
@@ -33,12 +36,40 @@ export function ProvidersSection() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // 5s snapshot-poll for out-of-band provider changes (another window, config
+  // edits, MCP). Only updates the LIST + alwaysOn — never touches `draft`,
+  // `secret`, or `testResult`, so an open edit form is never clobbered.
+  // SECURITY: the /api/providers response may contain stdio `env` secret
+  // literals — never log or persist it; only the in-memory ref string is kept.
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const [cfg, settings] = await Promise.all([api.listProviders(), api.getSettings()]);
+        const snapshot = cfg.providers.map((p) => `${p.id}:${p.enabled}:${p.name}:${p.transport}`).join('|')
+          + `|always:${!!settings.alwaysSearchExternalProviders}`;
+        if (snapshotRef.current !== null && snapshot !== snapshotRef.current) {
+          setProviders(cfg.providers);
+          setAlwaysOn(!!settings.alwaysSearchExternalProviders);
+        }
+        snapshotRef.current = snapshot;
+      } catch { /* ignore polling errors */ }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const withBusy = async (id: string, fn: () => Promise<void>) => {
+    setBusy((prev) => new Set(prev).add(id));
+    try { await fn(); } finally {
+      setBusy((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    }
+  };
+
   const toggleAlways = async (v: boolean) => { setAlwaysOn(v); await api.updateSettings({ alwaysSearchExternalProviders: v }).catch(() => {}); };
 
-  const toggleEnabled = async (p: ProviderEntry) => {
+  const toggleEnabled = (p: ProviderEntry) => withBusy(p.id, async () => {
     try { await api.updateProvider(p.id, { ...p, enabled: !p.enabled }); load(); } catch (e: any) { setError(e?.message ?? 'update failed'); }
-  };
-  const remove = async (id: string) => {
+  });
+  const remove = (id: string) => withBusy(id, async () => {
     try {
       // Keychain first: if providers.json still lists the id, cleanup_provider_secrets
       // will catch it on uninstall even if the keychain delete failed here.
@@ -50,7 +81,7 @@ export function ProvidersSection() {
       await api.deleteProvider(id);
       load();
     } catch (e: any) { setError(e?.message ?? 'delete failed'); }
-  };
+  });
   const test = async (id: string) => {
     setTestResult((r) => ({ ...r, [id]: t('providers.testing') }));
     try {
@@ -126,14 +157,14 @@ export function ProvidersSection() {
               </span>
               {!p.enabled && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}> · {t('providers.disabled')}</span>}
             </span>
-            <span style={{ display: 'flex', gap: 6 }}>
+            <span style={{ display: 'flex', gap: 6, opacity: busy.has(p.id) ? 0.5 : 1 }}>
               {p.transport === 'http' && p.auth?.type === 'oauth' && (
-                <button style={btn} onClick={() => connect(p.id)}>{t('providers.connect')}</button>
+                <button style={btn} disabled={busy.has(p.id)} onClick={() => connect(p.id)}>{t('providers.connect')}</button>
               )}
-              <button style={btn} onClick={() => test(p.id)}>{t('providers.test')}</button>
-              <button style={btn} onClick={() => toggleEnabled(p)}>{p.enabled ? t('providers.disable') : t('providers.enable')}</button>
-              <button style={btn} onClick={() => { setDraft(JSON.parse(JSON.stringify(p))); setSecret(''); }}>{t('actions.edit')}</button>
-              <button style={{ ...btn, color: 'var(--error)' }} onClick={() => remove(p.id)}>{t('actions.delete')}</button>
+              <button style={btn} disabled={busy.has(p.id)} onClick={() => test(p.id)}>{t('providers.test')}</button>
+              <button style={btn} disabled={busy.has(p.id)} onClick={() => toggleEnabled(p)}>{p.enabled ? t('providers.disable') : t('providers.enable')}</button>
+              <button style={btn} disabled={busy.has(p.id)} onClick={() => { setDraft(JSON.parse(JSON.stringify(p))); setSecret(''); }}>{t('actions.edit')}</button>
+              <button style={{ ...btn, color: 'var(--error)' }} disabled={busy.has(p.id)} onClick={() => remove(p.id)}>{t('actions.delete')}</button>
             </span>
           </div>
           {testResult[p.id] && <div style={{ fontSize: 11, marginTop: 6, color: 'var(--text-secondary)' }}>{testResult[p.id]}</div>}
@@ -155,10 +186,10 @@ export function ProvidersSection() {
           </div>
 
           {!isRemote ? (
-            <input style={input} placeholder="command (e.g. npx)" value={draft.command ?? ''} onChange={(e) => setDraft({ ...draft, command: (e.target as HTMLInputElement).value })} />
+            <input style={input} placeholder={t('providers.commandPlaceholder')} value={draft.command ?? ''} onChange={(e) => setDraft({ ...draft, command: (e.target as HTMLInputElement).value })} />
           ) : (
             <>
-              <input style={input} placeholder="https://mcp.example/mcp" value={draft.url ?? ''} onChange={(e) => setDraft({ ...draft, url: (e.target as HTMLInputElement).value })} />
+              <input style={input} placeholder={t('providers.urlPlaceholder')} value={draft.url ?? ''} onChange={(e) => setDraft({ ...draft, url: (e.target as HTMLInputElement).value })} />
               <div style={{ display: 'flex', gap: 8 }}>
                 <select
                   style={input}
@@ -179,7 +210,7 @@ export function ProvidersSection() {
             </>
           )}
 
-          <input style={input} placeholder="tool name (e.g. search)" value={draft.toolName ?? ''} onChange={(e) => setDraft({ ...draft, toolName: (e.target as HTMLInputElement).value })} />
+          <input style={input} placeholder={t('providers.toolNamePlaceholder')} value={draft.toolName ?? ''} onChange={(e) => setDraft({ ...draft, toolName: (e.target as HTMLInputElement).value })} />
 
           {error && <div style={{ fontSize: 11, color: 'var(--error)' }}>{error}</div>}
           <div style={{ display: 'flex', gap: 6 }}>

@@ -322,7 +322,7 @@ export function SettingsPage() {
             // Server shuts down during uninstall — expected
           }
           setTimeout(() => {
-            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px;background:#0a0a1a;color:#22c55e;font-family:sans-serif"><h2>Uninstall complete</h2><p style="color:#6b7280">You can close this window.</p></div>';
+            setUninstallStep(4);
             try { window.close(); } catch { /* ignore */ }
           }, 2000);
         }}
@@ -330,6 +330,18 @@ export function SettingsPage() {
         message={t('settings.uninstallConfirm2')}
         confirmLabel={t('settings.yesUninstallAll')}
       />
+
+      {/* Uninstall Step 4 — done (React state, not an innerHTML body swap) */}
+      {uninstallStep === 4 && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 2000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flexDirection: 'column', gap: 16, backgroundColor: '#0a0a1a',
+        }}>
+          <h2 style={{ color: '#22c55e', fontSize: 20, fontWeight: 700 }}>{t('settings.uninstallCompleteTitle')}</h2>
+          <p style={{ color: '#6b7280', fontSize: 14 }}>{t('settings.uninstallCompleteHint')}</p>
+        </div>
+      )}
       </div>
     </div>
   );
@@ -736,35 +748,86 @@ const ghostButtonStyle = {
   border: '1px solid var(--border)', cursor: 'pointer',
 };
 
+type TagSuggestion = { a: string; b: string; similarity: number; countA: number; countB: number };
+
 function TagSuggestionsSection() {
   const { t } = useTranslation();
-  const [suggestions, setSuggestions] = useState<{ a: string; b: string; similarity: number }[]>([]);
+  const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
-  const [pendingMerge, setPendingMerge] = useState<{ from: string; to: string } | null>(null);
-  const [merging, setMerging] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [keeper, setKeeper] = useState<Record<string, string>>({});
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  const rowKey = (s: TagSuggestion) => `${s.a}|${s.b}`;
+  // Default keeper = the more-used tag of the pair (tiebreak: a).
+  const defaultKeeper = (s: TagSuggestion) => (s.countB > s.countA ? s.b : s.a);
+  const keeperOf = (s: TagSuggestion) => keeper[rowKey(s)] ?? defaultKeeper(s);
 
   const load = useCallback(() => {
     setLoading(true);
     api.getTagSuggestions()
-      .then((s) => setSuggestions(s))
+      .then((s) => { setSuggestions(s); setSelected(new Set()); setKeeper({}); })
       .catch(() => setSuggestions([]))
       .finally(() => setLoading(false));
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const confirmMerge = async () => {
-    if (!pendingMerge) return;
-    setMerging(true);
+  const toggleRow = (key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
+  const allSelected = suggestions.length > 0 && selected.size === suggestions.length;
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(suggestions.map(rowKey)));
+  };
+
+  // Selected rows as {from,to} merges (from = the non-keeper side).
+  const selectedMerges = suggestions
+    .filter((s) => selected.has(rowKey(s)))
+    .map((s) => {
+      const keep = keeperOf(s);
+      return { from: keep === s.a ? s.b : s.a, to: keep };
+    });
+
+  // Client-side mirror of the server's conflict rules: duplicate `from` with
+  // different targets, or a circular chain, blocks Apply. Plain chains
+  // (a→b, b→c) are allowed — the server collapses them to terminal targets.
+  const conflictTag = (() => {
+    const target = new Map<string, string>();
+    for (const m of selectedMerges) {
+      const existing = target.get(m.from);
+      if (existing !== undefined && existing !== m.to) return m.from;
+      target.set(m.from, m.to);
+    }
+    for (const from of target.keys()) {
+      const seen = new Set<string>([from]);
+      let to = target.get(from)!;
+      while (target.has(to)) {
+        if (seen.has(to)) return to;
+        seen.add(to);
+        to = target.get(to)!;
+      }
+    }
+    return null;
+  })();
+
+  const applyBatch = async () => {
+    setApplying(true);
     try {
-      const res = await api.mergeTags(pendingMerge.from, pendingMerge.to);
-      setMessage(t('tagSuggestions.merged', { count: res.merged, from: pendingMerge.from, to: pendingMerge.to }));
-      setPendingMerge(null);
+      const res = await api.mergeTagsBatch(selectedMerges);
+      setMessage(t('tagSuggestions.batchDone', { entries: res.entriesReembedded, merges: res.applied.length }));
+      setConfirmOpen(false);
       load();
     } catch {
       setMessage(t('tagSuggestions.mergeFailed'));
+      setConfirmOpen(false);
     }
-    setMerging(false);
+    setApplying(false);
     setTimeout(() => setMessage(null), 5000);
   };
 
@@ -778,49 +841,127 @@ function TagSuggestionsSection() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {message && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{message}</span>}
-          {suggestions.map((s) => (
-            <div key={`${s.a}|${s.b}`} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13 }}>
-                <strong>{s.a}</strong> ↔ <strong>{s.b}</strong>
-                <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>{Math.round(s.similarity * 100)}%</span>
-              </span>
-              <button style={ghostButtonStyle} onClick={() => setPendingMerge({ from: s.b, to: s.a })}>
-                {t('tagSuggestions.keep', { tag: s.a })}
-              </button>
-              <button style={ghostButtonStyle} onClick={() => setPendingMerge({ from: s.a, to: s.b })}>
-                {t('tagSuggestions.keep', { tag: s.b })}
-              </button>
-            </div>
-          ))}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={applying} />
+            {t('tagSuggestions.selectAll')}
+          </label>
+          {suggestions.map((s) => {
+            const key = rowKey(s);
+            const isSelected = selected.has(key);
+            const keep = keeperOf(s);
+            return (
+              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', opacity: applying ? 0.6 : 1 }}>
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleRow(key)}
+                  disabled={applying}
+                  style={{ cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: 13 }}>
+                  <strong>{s.a}</strong> ↔ <strong>{s.b}</strong>
+                  <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>{Math.round(s.similarity * 100)}%</span>
+                </span>
+                {isSelected && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {[s.a, s.b].map((tag) => (
+                      <button
+                        key={tag}
+                        style={{
+                          ...ghostButtonStyle,
+                          ...(keep === tag ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}),
+                        }}
+                        disabled={applying}
+                        onClick={() => setKeeper((prev) => ({ ...prev, [key]: tag }))}
+                        title={t('tagSuggestions.uses', { count: tag === s.a ? s.countA : s.countB })}
+                      >
+                        {tag} · {t('tagSuggestions.uses', { count: tag === s.a ? s.countA : s.countB })}
+                      </button>
+                    ))}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              {conflictTag
+                ? t('tagSuggestions.conflict', { tag: conflictTag })
+                : t('tagSuggestions.selectedCount', { count: selected.size })}
+            </span>
+            <button
+              style={{ ...ghostButtonStyle, ...(selected.size > 0 && !conflictTag ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
+              disabled={selected.size === 0 || conflictTag !== null || applying}
+              onClick={() => setConfirmOpen(true)}
+            >
+              {applying ? t('tagSuggestions.applying') : t('tagSuggestions.applyN', { count: selected.size })}
+            </button>
+          </div>
         </div>
       )}
       <ConfirmModal
-        isOpen={pendingMerge !== null && !merging}
-        onClose={() => setPendingMerge(null)}
-        onConfirm={confirmMerge}
+        isOpen={confirmOpen}
+        onClose={() => { if (!applying) setConfirmOpen(false); }}
+        onConfirm={applyBatch}
         title={t('tagSuggestions.title')}
-        message={pendingMerge ? t('tagSuggestions.confirm', { from: pendingMerge.from, to: pendingMerge.to }) : ''}
+        message={t('tagSuggestions.confirmBatch', { count: selected.size })}
         confirmLabel={t('tagSuggestions.mergeBtn')}
+        loading={applying}
       />
     </div>
   );
 }
 
+type DuplicateGroup = { groupId: string; maxSimilarity: number; members: { id: string; title: string; scope: string; type: string; version: number; updatedAt: string }[] };
+
 function KnowledgeHealthSection() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [stale, setStale] = useState<{ id: string; title: string; type: string; scope: string; confidenceScore: number; updatedAt: string; expiresAt: string | null }[]>([]);
-  const [duplicates, setDuplicates] = useState<{ a: { id: string; title: string }; b: { id: string; title: string }; similarity: number }[]>([]);
+  const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [loading, setLoading] = useState(true);
+  // Per-group "keep" choice (groupId → member id). Default = first member
+  // (server pre-sorts: version DESC, then updatedAt DESC).
+  const [keepChoice, setKeepChoice] = useState<Record<string, string>>({});
+  const [resolveGroup, setResolveGroup] = useState<DuplicateGroup | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [dupMessage, setDupMessage] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
       api.getStaleEntries().catch(() => []),
-      api.getDuplicatePairs().catch(() => []),
+      api.getDuplicateGroups().catch(() => []),
     ]).then(([s, d]) => { setStale(s); setDuplicates(d); }).finally(() => setLoading(false));
   }, []);
 
   const openEntry = (id: string) => navigate('/?edit=' + encodeURIComponent(id));
+
+  const reloadDuplicates = () =>
+    api.getDuplicateGroups().then(setDuplicates).catch(() => {});
+
+  const keeperFor = (g: DuplicateGroup) => keepChoice[g.groupId] ?? g.members[0]?.id;
+
+  const confirmResolve = async () => {
+    if (!resolveGroup) return;
+    const keeperId = keeperFor(resolveGroup);
+    const toDelete = resolveGroup.members.filter((m) => m.id !== keeperId).map((m) => m.id);
+    setResolving(true);
+    try {
+      const res = await api.bulkDeleteKnowledge(toDelete);
+      setDupMessage(
+        res.errors?.length
+          ? t('health.deleteFailed', { error: res.errors[0] })
+          : t('health.deleted', { count: res.deleted }),
+      );
+      setResolveGroup(null);
+      await reloadDuplicates();
+    } catch {
+      setDupMessage(t('health.deleteFailed', { error: '' }));
+      setResolveGroup(null);
+    }
+    setResolving(false);
+    setTimeout(() => setDupMessage(null), 5000);
+  };
 
   return (
     <div style={{ borderTop: '1px solid var(--border)', marginTop: 32, paddingTop: 24 }}>
@@ -848,23 +989,62 @@ function KnowledgeHealthSection() {
           </div>
           <div>
             <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{t('health.duplicates')}</h3>
+            {dupMessage && <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>{dupMessage}</p>}
             {duplicates.length === 0 ? (
               <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('health.dupEmpty')}</p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {duplicates.map((p) => (
-                  <div key={`${p.a.id}|${p.b.id}`} style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => openEntry(p.a.id)}>{p.a.title || '(untitled)'}</span>
-                    <span style={{ color: 'var(--text-secondary)' }}>↔</span>
-                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => openEntry(p.b.id)}>{p.b.title || '(untitled)'}</span>
-                    <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{Math.round(p.similarity * 100)}%</span>
-                  </div>
-                ))}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {duplicates.map((g) => {
+                  const keeperId = keeperFor(g);
+                  const deleteCount = g.members.length - 1;
+                  return (
+                    <div key={g.groupId} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                        {t('health.groupTitle', { count: g.members.length })} · {Math.round(g.maxSimilarity * 100)}%
+                      </div>
+                      {g.members.map((m) => (
+                        <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                          <input
+                            type="radio"
+                            name={`dup-${g.groupId}`}
+                            checked={keeperId === m.id}
+                            onChange={() => setKeepChoice((prev) => ({ ...prev, [g.groupId]: m.id }))}
+                            disabled={resolving}
+                          />
+                          <span style={{ cursor: 'pointer', textDecoration: 'underline', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} onClick={(e) => { e.preventDefault(); openEntry(m.id); }}>
+                            {m.title || '(untitled)'}
+                          </span>
+                          <span style={{ color: 'var(--text-secondary)', fontSize: 11, whiteSpace: 'nowrap' }}>
+                            {m.scope} · {m.type} · v{m.version} · {m.updatedAt.slice(0, 10)}
+                          </span>
+                        </label>
+                      ))}
+                      <div>
+                        <button
+                          style={ghostButtonStyle}
+                          disabled={resolving || deleteCount === 0}
+                          onClick={() => setResolveGroup(g)}
+                        >
+                          {t('health.deleteOthers', { count: deleteCount })}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
         </div>
       )}
+      <ConfirmModal
+        isOpen={resolveGroup !== null}
+        onClose={() => { if (!resolving) setResolveGroup(null); }}
+        onConfirm={confirmResolve}
+        title={t('health.duplicates')}
+        message={resolveGroup ? t('health.confirmGroupDelete', { count: resolveGroup.members.length - 1 }) : ''}
+        confirmLabel={resolveGroup ? t('health.deleteOthers', { count: resolveGroup.members.length - 1 }) : ''}
+        loading={resolving}
+      />
     </div>
   );
 }

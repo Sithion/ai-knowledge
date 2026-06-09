@@ -5,6 +5,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api/client.js';
 import { useInfiniteList, PAGE_SIZE } from '../hooks/useInfiniteScroll.js';
+import { useTransientMessage } from '../hooks/useTransientMessage.js';
 import { FloatingAddButton } from '../components/FloatingAddButton.js';
 import { ScopeAutocomplete } from '../components/ScopeAutocomplete.js';
 import { PLAN_TEMPLATES, type PlanTemplate } from '../data/planTemplates.js';
@@ -296,6 +297,7 @@ interface NewTask {
 }
 
 function CreatePlanForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+  const [submitError, setSubmitError] = useTransientMessage(5000);
   const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -346,7 +348,8 @@ function CreatePlanForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
       await api.createPlan({ title: title.trim(), content: content.trim(), tags, scope, source: 'dashboard', tasks });
       onCreated();
     } catch {
-      /* silent */
+      // User-initiated mutation: surface failure under the submit button.
+      setSubmitError(t('errors.saveFailed'));
     }
     setSaving(false);
   };
@@ -503,6 +506,9 @@ function CreatePlanForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
           {saving ? '...' : t('plans.createDraft')}
         </button>
       </div>
+      {submitError && (
+        <p style={{ fontSize: 12, color: 'var(--error, #ef4444)', marginTop: 8, textAlign: 'right' }}>{submitError}</p>
+      )}
     </div>
   );
 }
@@ -525,6 +531,10 @@ export function PlansPage() {
   const [deletingPlan, setDeletingPlan] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // Error shown inside the delete/archive ConfirmModal (modal stays open on failure).
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  // Transient inline error for task updates in the detail view.
+  const [taskError, setTaskError] = useTransientMessage(5000);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
   // Snapshot of the whole plan set (status + task aggregates) for the 5s poll below.
   // Seeded on the first tick; the list only resets when this string changes.
@@ -698,7 +708,10 @@ export function PlansPage() {
     try {
       await api.updatePlanTask(taskId, updates);
       if (selectedPlan) refreshSelectedPlan(selectedPlan.id);
-    } catch { /* silent */ }
+    } catch {
+      // User-initiated mutation: surface failure inline near the task list.
+      setTaskError(t('errors.saveFailed'));
+    }
   };
 
   const completedTasks = tasks.filter((t) => t.status === 'completed').length;
@@ -820,6 +833,9 @@ export function PlansPage() {
             <h3 style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-secondary)', marginBottom: 10 }}>
               {t('plans.tasks')}
             </h3>
+            {taskError && (
+              <p style={{ fontSize: 12, color: 'var(--error, #ef4444)', marginBottom: 8 }}>{taskError}</p>
+            )}
             <ProgressBar completed={completedTasks} total={tasks.length} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 400, overflowY: 'auto' }}>
               {tasks.map((task) => (
@@ -878,43 +894,54 @@ export function PlansPage() {
         {/* Delete Confirm Modal */}
         <ConfirmModal
           isOpen={confirmDelete}
-          onClose={() => setConfirmDelete(false)}
+          onClose={() => { setConfirmDelete(false); setMutationError(null); }}
           onConfirm={async () => {
             setDeletingPlan(true);
             try {
               await api.deletePlan(selectedPlan.id);
+              setMutationError(null);
               setSelectedPlan(null);
               setConfirmDelete(false);
               setSearchParams({}, { replace: true });
               list.reset();
               loadActivePlans();
-            } catch { /* silent */ }
+            } catch {
+              // User-initiated mutation: keep the modal open and surface failure
+              // (state is NOT cleared — the plan still exists server-side).
+              setMutationError(t('errors.deleteFailed'));
+            }
             setDeletingPlan(false);
           }}
           title={t('plans.delete')}
           message={t('plans.confirmDelete')}
           loading={deletingPlan}
+          errorText={mutationError}
         />
 
         {/* Archive Confirm Modal */}
         <ConfirmModal
           isOpen={confirmArchive}
-          onClose={() => setConfirmArchive(false)}
+          onClose={() => { setConfirmArchive(false); setMutationError(null); }}
           onConfirm={async () => {
             setArchiving(true);
             try {
               await api.updatePlan(selectedPlan.id, { status: 'archived' });
+              setMutationError(null);
               setSelectedPlan(null);
               setConfirmArchive(false);
               setSearchParams({}, { replace: true });
               list.reset();
               loadActivePlans();
-            } catch { /* silent */ }
+            } catch {
+              // User-initiated mutation: keep the modal open and surface failure.
+              setMutationError(t('errors.actionFailed'));
+            }
             setArchiving(false);
           }}
           title={t('plans.archiveTitle')}
           message={t('plans.confirmArchive')}
           loading={archiving}
+          errorText={mutationError}
         />
       </div>
     );

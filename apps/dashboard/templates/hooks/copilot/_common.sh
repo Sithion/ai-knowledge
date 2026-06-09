@@ -19,6 +19,9 @@ cog_field() {
 }
 
 COG_SID="$(cog_field session_id)"
+# Sanitize: keep only alphanumeric and hyphens, max 64 chars (mirrors the Claude
+# helper) — prevents a crafted session_id from placing marker files outside /tmp.
+COG_SID="$(printf '%s' "$COG_SID" | tr -cd 'a-zA-Z0-9-' | cut -c1-64)"
 [ -z "$COG_SID" ] && COG_SID="default"
 COG_MARK="/tmp/.cognistore-copilot-${COG_SID}"
 

@@ -94,3 +94,13 @@ export const updatePlanTaskSchema = z.object({
   notes: z.string().nullable().optional(),
   position: z.number().int().min(0).optional(),
 });
+
+// ─── Tags ─────────────────────────────────────────────────────
+
+/** Batch tag merge (POST /api/tags/merge-batch). Bounded: 1..50 merges per call. */
+export const mergeTagsBatchSchema = z.object({
+  merges: z.array(z.object({
+    from: z.string().min(1, 'from is required'),
+    to: z.string().min(1, 'to is required'),
+  })).min(1, 'at least one merge is required').max(50, 'at most 50 merges per batch'),
+});

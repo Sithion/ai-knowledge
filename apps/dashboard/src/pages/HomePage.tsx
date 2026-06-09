@@ -247,12 +247,14 @@ export function HomePage() {
     setBulkDeleting(true);
     try {
       await api.bulkDeleteKnowledge(Array.from(selectedIds));
+      setDeleteError(null);
       setSelectedIds(new Set());
       setBulkMode(false);
       setShowBulkDeleteConfirm(false);
       handleSuccess();
-    } catch (error) {
-      console.error('Bulk delete failed:', error);
+    } catch {
+      // User-initiated mutation: keep the modal open and surface failure.
+      setDeleteError(t('errors.deleteFailed'));
     } finally {
       setBulkDeleting(false);
     }
@@ -262,6 +264,8 @@ export function HomePage() {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  // Error shown inside the delete ConfirmModals (modal stays open on failure).
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleDeleteClick = (id: string) => {
     setDeleteTargetId(id);
@@ -272,11 +276,14 @@ export function HomePage() {
     setDeleting(true);
     try {
       await api.deleteEntry(deleteTargetId);
+      setDeleteError(null);
       browse.setItems(prev => prev.filter(e => e.id !== deleteTargetId));
       setSearchResults(prev => prev.filter(e => e.id !== deleteTargetId));
       setDeleteTargetId(null);
-    } catch (error) {
-      console.error('Delete failed:', error);
+    } catch {
+      // User-initiated mutation: keep the modal open and surface failure —
+      // do NOT remove the row from the UI (the entry still exists server-side).
+      setDeleteError(t('errors.deleteFailed'));
     } finally {
       setDeleting(false);
     }
@@ -621,21 +628,23 @@ export function HomePage() {
       {/* Single delete confirmation modal */}
       <ConfirmModal
         isOpen={deleteTargetId !== null}
-        onClose={() => setDeleteTargetId(null)}
+        onClose={() => { setDeleteTargetId(null); setDeleteError(null); }}
         onConfirm={handleConfirmDelete}
         title={t('delete.title')}
         message={t('delete.message')}
         loading={deleting}
+        errorText={deleteError}
       />
 
       {/* Bulk delete confirmation modal */}
       <ConfirmModal
         isOpen={showBulkDeleteConfirm}
-        onClose={() => setShowBulkDeleteConfirm(false)}
+        onClose={() => { setShowBulkDeleteConfirm(false); setDeleteError(null); }}
         onConfirm={handleBulkDelete}
         title={t('delete.bulkTitle')}
         message={t('delete.bulkMessage', { count: selectedIds.size })}
         loading={bulkDeleting}
+        errorText={deleteError}
       />
     </div>
   );

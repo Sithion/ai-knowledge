@@ -1,12 +1,35 @@
 # Patch Notes
 
+## v2.2.0
+
+### Features
+- **Batch tag merge.** Tag Suggestions (Settings) now supports selecting multiple pairs and applying them all at once: checkbox per pair with select-all, a per-pair "keeper" selector (defaults to the more-used tag — usage counts are shown), and one **Apply N merges** action. Conflicting selections (the same tag merged in two directions, or a circular chain) are detected client-side and block Apply with a warning; plain chains (`a→b, b→c`) are allowed and collapse to their final target. The whole batch is ONE request — entries touched by several merges are **re-embedded only once** (bounded concurrency against Ollama), and the list refreshes a single time at the end. New `POST /api/tags/merge-batch` endpoint + `mergeTagsBatch` SDK method.
+- **Duplicate groups with one-click resolve.** The "Possible duplicates" panel (Settings → Knowledge Health) no longer lists raw pairs — N near-identical entries used to render as up to N·(N−1)/2 rows repeating the same title at 100%. Duplicates are now clustered into **group cards** (union-find over the KNN pair graph, wider K so big clusters stay intact): each card shows every member with scope · type · version · date, a radio to pick which entry to **keep** (defaults to the highest version), and a **"Keep selected, delete N"** action backed by the existing bulk delete (system entries remain protected; per-entry failures are surfaced). `GET /api/health/duplicates` now returns groups.
+
+### Fixes
+- **Agent no-op-loop hardening (field incident).** A user's Copilot CLI agent emitted hundreds of placeholder SQL calls trying to appease the cognistore protocol reminder. The Copilot `preToolUse` hook now only fires for edit/exec tools (unknown/third-party tools such as a `sql` MCP tool proceed silently), reminds at most **2×** per session, and the Claude Code deny hook **fails open after 3 denies** so a session can never be permanently wedged when the cognistore MCP server isn't connected (e.g. Ollama down). Hook messages and the injected agent instructions gain an explicit escape hatch: *if `mcp__cognistore__getKnowledge` is not among your available tools, skip the protocol — never substitute other tools to simulate compliance.* Hooks redeploy automatically on upgrade.
+- **Destructive actions no longer fail silently.** Deleting/archiving a plan, deleting knowledge (single or bulk), saving a new entry, creating a plan, and updating tasks now surface failures — confirm modals stay open with an inline error instead of pretending success (previously the UI cleared state even when the server call failed). Background polls remain silent by design (documented rule).
+- **Plan endpoints validate input.** `PUT /api/plans/:id`, `POST /api/plans/:id/tasks` and `PUT /api/plans/tasks/:taskId` now validate bodies with the shared zod schemas and return **400** with a clear message instead of passing raw payloads to the SDK.
+- **Atomic knowledge writes.** `create()` commits the entry row and its embedding in a single SQLite transaction — a failed embedding insert can no longer leave an orphan entry invisible to semantic search.
+
+### Improvements
+- **Token Consumption and Providers pages auto-refresh** (5s change-detection poll, same pattern as the Knowledge/Plans lists). The token poll pauses during a manual rescan; the providers poll never touches an open edit form.
+- **Accessibility:** modals are real dialogs (`role="dialog"`, `aria-modal`, labelled titles) with a focus trap — Tab cycles inside, Esc closes, focus returns to the trigger.
+- **Anti double-submit:** provider row buttons disable while a request for that provider is in flight.
+- **i18n:** provider-form placeholders translated; heatmap weekday labels are now locale-aware (`Intl.DateTimeFormat`); the language picker shows native self-names (English / Español / Português).
+- **Uninstall completion screen** is now React state instead of a raw `document.body.innerHTML` swap.
+- Tag suggestions API now includes per-tag usage counts (`countA`/`countB`).
+
+### Notes
+- New endpoint: `POST /api/tags/merge-batch` (1–50 merges per call). `GET /api/health/duplicates` response changed from pairs to groups (its only consumer is the dashboard health panel). No DB schema changes — no migration needed. All release-driving versions bumped to **2.2.0**.
+
 ## v2.1.3
 
 ### Security
 - **`shell-quote` bumped 1.8.3 → 1.8.4 (GHSA-w7jw-789q-3m8p, CVSS 9.2 critical).** A newly-published advisory failed the gating `osv-scan` CI job. The package is a transitive dependency of `@cognistore/core`; pinned via a root `package.json` `pnpm.overrides` (the override mechanism honored by the repo's pinned pnpm 9.15 — `pnpm-workspace.yaml` `overrides` are not read until pnpm 10).
 
 ### Docs
-- **New dashboard screenshot + README accuracy pass.** Replaced the hero screenshot with the current Knowledge Base view and corrected drift between the README and the shipping app: the MCP **Available Tools** table now lists all **17** tools (added `getTokenUsage`, `listPlans`, `deletePlanTask`, `archivePlan`); the **Dashboard** section reflects the real **seven** pages (added Token Consumption, Providers, Widgets, and the Plans stats sub-page); the **Stats** section drops the removed contribution heatmap and tag cloud and documents the current Top Tags chart; and the stale `scripts/test-agents.sh` / Docker references were replaced with the actual `pnpm test` (Playwright test runner, `packages/tests`) testing story for this Docker-free project.
+- **New dashboard screenshot + README accuracy pass.** Replaced the hero screenshot with the current Knowledge Base view and corrected drift between the README and the shipping app: the MCP **Available Tools** table now lists all **17** tools (added `getTokenUsage`, `listPlans`, `deletePlanTask`, `archivePlan`); the **Dashboard** section reflects the real **seven** pages (added Token Consumption, Providers, Widgets, and the Plans stats sub-page); the **Stats** section drops the removed contribution heatmap and tag cloud and documents the current Top Tags chart; and the stale `scripts/test-agents.sh` / Docker references were replaced with the actual `pnpm test` (Playwright test runner, `packages/tests`) testing story for this Docker-free project. Also corrected leftover **BSL 1.1** license references (README badge + footer, `bump-version.sh`, `documentation/ci-cd.md`) to **MIT** — the project's actual license (the `LICENSE` file and `@cognistore/mcp-server` were already MIT).
 
 ## v2.1.2
 
