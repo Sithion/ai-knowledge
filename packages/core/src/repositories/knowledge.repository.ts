@@ -33,35 +33,46 @@ export class KnowledgeRepository {
     private sqlite: SQLiteDatabase
   ) {}
 
+  /**
+   * Entry row + embedding are committed atomically: a failed embedding insert
+   * rolls the entry back instead of leaving an orphan row that semantic search
+   * can never find. Uses a RAW prepared insert (createPlan style) inside
+   * better-sqlite3's .transaction() — the body must be fully synchronous; an
+   * awaited drizzle insert opens an interleaving window where a concurrent
+   * create() issues BEGIN on the same connection ("cannot start a transaction
+   * within a transaction"). FTS stays best-effort inside the txn.
+   */
   async create(input: CreateKnowledgeInput & { embedding: number[] }) {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    const [entry] = await this.db
-      .insert(knowledgeEntries)
-      .values({
+    const insertTxn = this.sqlite.transaction(() => {
+      this.sqlite.prepare(
+        `INSERT INTO knowledge_entries
+           (id, title, content, tags, type, scope, source, version, expires_at, confidence_score, related_ids, agent_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`
+      ).run(
         id,
-        title: input.title,
-        content: input.content,
-        tags: input.tags,
-        type: input.type,
-        scope: input.scope,
-        source: input.source,
-        confidenceScore: input.confidenceScore ?? 1.0,
-        expiresAt: input.expiresAt ? input.expiresAt.toISOString() : null,
-        relatedIds: input.relatedIds ?? null,
-        agentId: input.agentId ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+        input.title,
+        input.content,
+        JSON.stringify(input.tags ?? []),
+        input.type,
+        input.scope,
+        input.source,
+        input.expiresAt ? input.expiresAt.toISOString() : null,
+        input.confidenceScore ?? 1.0,
+        input.relatedIds ? JSON.stringify(input.relatedIds) : null,
+        input.agentId ?? null,
+        now,
+        now,
+      );
+      // Inside the txn so a failure rolls back the entry row too.
+      insertEmbedding(this.sqlite, id, input.embedding);
+      try { insertFts(this.sqlite, { id, title: input.title, content: input.content, tags: ftsTags(input.tags) }); } catch { /* FTS optional */ }
+    });
+    insertTxn();
 
-    // Insert embedding into the sqlite-vec virtual table
-    insertEmbedding(this.sqlite, id, input.embedding);
-    // Keep the FTS5 index in sync (best-effort — never fail the write on FTS issues)
-    try { insertFts(this.sqlite, { id, title: input.title, content: input.content, tags: ftsTags(input.tags) }); } catch { /* FTS optional */ }
-
-    return entry;
+    return (await this.findById(id))!;
   }
 
   async findById(id: string) {
@@ -293,6 +304,14 @@ export class KnowledgeRepository {
     return result;
   }
 
+  /** Usage count for every tag (no limit/range) — feeds merge-keeper defaults. */
+  async tagCounts() {
+    const result = await this.db.all<{ tag: string; count: number }>(
+      sql`SELECT value as tag, COUNT(*) as count FROM knowledge_entries, json_each(knowledge_entries.tags) WHERE knowledge_entries.type != 'system' GROUP BY value`
+    );
+    return result;
+  }
+
   /**
    * Rename/merge a tag across all entries. Per-row correlated rebuild of the JSON
    * tags array: replace `from`→`to`, and `json_group_array(DISTINCT ...)` collapses
@@ -352,29 +371,108 @@ export class KnowledgeRepository {
   async findDuplicatePairs(opts: { threshold?: number; limit?: number } = {}) {
     const threshold = opts.threshold ?? 0.9;
     const limit = opts.limit ?? 100;
+    const { pairs } = await this.collectDuplicatePairs(threshold, 5, limit);
+    return pairs
+      .map((p) => ({ a: { id: p.a.id, title: p.a.title }, b: { id: p.b.id, title: p.b.title }, similarity: p.similarity }))
+      .sort((x, y) => y.similarity - x.similarity)
+      .slice(0, limit);
+  }
+
+  /**
+   * Shared KNN pair collection for findDuplicatePairs/findDuplicateGroups.
+   * `pairCap` exists only as a runaway safety net — group callers pass a large cap
+   * (a truncated pair graph would split/lose cluster members in union-find).
+   */
+  private async collectDuplicatePairs(threshold: number, k: number, pairCap: number) {
+    type Meta = { id: string; title: string; scope: string; type: string; version: number; updatedAt: string };
     const entries = await this.listAll();
-    const meta = new Map(entries.map((e) => [e.id, e]));
-    const pairs: { a: { id: string; title: string }; b: { id: string; title: string }; similarity: number }[] = [];
+    const meta = new Map<string, Meta>(entries.map((e) => [e.id, {
+      id: e.id, title: e.title, scope: e.scope, type: e.type,
+      version: (e as { version?: number }).version ?? 1, updatedAt: e.updatedAt,
+    }]));
+    const pairs: { a: Meta; b: Meta; similarity: number }[] = [];
     for (const entry of entries) {
       const emb = getEmbeddingById(this.sqlite, entry.id);
       if (!emb) continue;
-      const neighbors = searchKnn(this.sqlite, emb, 5);
+      const neighbors = searchKnn(this.sqlite, emb, k);
       for (const n of neighbors) {
         if (entry.id >= n.id) continue; // canonical order + drops self
         if (!meta.has(n.id)) continue;  // skip system / missing
         const similarity = 1 - n.distance;
         if (similarity >= threshold) {
-          const other = meta.get(n.id)!;
-          pairs.push({
-            a: { id: entry.id, title: entry.title },
-            b: { id: other.id, title: other.title },
-            similarity,
-          });
+          pairs.push({ a: meta.get(entry.id)!, b: meta.get(n.id)!, similarity });
         }
       }
-      if (pairs.length >= limit) break;
+      if (pairs.length >= pairCap) break;
     }
-    return pairs.sort((x, y) => y.similarity - x.similarity).slice(0, limit);
+    return { pairs, meta };
+  }
+
+  // KNN width for duplicate GROUPING. Per-entry KNN keeps a cluster of up to
+  // ~DUP_KNN_K identical members fully connected; raise if users report a giant
+  // duplicate cluster rendering as two cards.
+  private static readonly DUP_KNN_K = 20;
+  // Safety net only — never intended to truncate a real pair graph (105 pairs for
+  // a 15-member cluster; 5000 covers pathological DBs without unbounded memory).
+  private static readonly DUP_PAIR_CAP = 5000;
+
+  /**
+   * Cluster near-duplicate pairs into connected components (union-find) so N
+   * copies of one entry render as ONE group, not N(N-1)/2 repeated pair rows.
+   * `limit` applies to the GROUP list (size DESC, then similarity DESC) — never
+   * to the underlying pair collection.
+   */
+  async findDuplicateGroups(opts: { threshold?: number; limit?: number } = {}) {
+    const threshold = opts.threshold ?? 0.9;
+    const limit = opts.limit ?? 100;
+    const { pairs } = await this.collectDuplicatePairs(
+      threshold, KnowledgeRepository.DUP_KNN_K, KnowledgeRepository.DUP_PAIR_CAP,
+    );
+
+    // Union-find with path compression over pair endpoints.
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      let root = x;
+      while (parent.get(root) !== undefined && parent.get(root) !== root) root = parent.get(root)!;
+      // path compression
+      let cur = x;
+      while (cur !== root) { const next = parent.get(cur)!; parent.set(cur, root); cur = next; }
+      return root;
+    };
+    const union = (a: string, b: string) => {
+      if (!parent.has(a)) parent.set(a, a);
+      if (!parent.has(b)) parent.set(b, b);
+      const ra = find(a); const rb = find(b);
+      if (ra !== rb) parent.set(rb, ra);
+    };
+
+    const memberMeta = new Map<string, { id: string; title: string; scope: string; type: string; version: number; updatedAt: string }>();
+    const maxSim = new Map<string, number>(); // tracked per root AFTER all unions below
+    for (const p of pairs) {
+      union(p.a.id, p.b.id);
+      memberMeta.set(p.a.id, p.a);
+      memberMeta.set(p.b.id, p.b);
+    }
+    const grouped = new Map<string, { id: string; title: string; scope: string; type: string; version: number; updatedAt: string }[]>();
+    for (const m of memberMeta.values()) {
+      const root = find(m.id);
+      const arr = grouped.get(root) ?? [];
+      arr.push(m);
+      grouped.set(root, arr);
+    }
+    for (const p of pairs) {
+      const root = find(p.a.id);
+      maxSim.set(root, Math.max(maxSim.get(root) ?? 0, p.similarity));
+    }
+
+    const groups = Array.from(grouped.entries()).map(([root, members]) => {
+      members.sort((a, b) => (b.version - a.version) || b.updatedAt.localeCompare(a.updatedAt));
+      const groupId = members.reduce((min, m) => (m.id < min ? m.id : min), members[0].id);
+      return { groupId, maxSimilarity: maxSim.get(root) ?? 0, members };
+    });
+    return groups
+      .sort((x, y) => (y.members.length - x.members.length) || (y.maxSimilarity - x.maxSimilarity))
+      .slice(0, limit);
   }
 
   /**
