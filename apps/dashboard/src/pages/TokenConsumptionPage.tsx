@@ -130,10 +130,12 @@ export function TokenConsumptionPage() {
   const snapshotRef = useRef<string | null>(null);
 
   // Locale-aware weekday labels (index 0 = Sunday, matching byHourDay.dayOfWeek;
-  // 2023-01-01 was a Sunday).
+  // 2023-01-01 was a Sunday). Format in UTC so the label matches the UTC date —
+  // without timeZone:'UTC', a negative-offset local zone renders Date.UTC(...,1)
+  // as the previous (Saturday) evening, shifting the whole weekday axis by one.
   const dayLabels = useMemo(
     () => Array.from({ length: 7 }, (_, d) =>
-      new Intl.DateTimeFormat(i18n.language, { weekday: 'short' }).format(new Date(Date.UTC(2023, 0, 1 + d)))),
+      new Intl.DateTimeFormat(i18n.language, { weekday: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(2023, 0, 1 + d)))),
     [i18n.language],
   );
 

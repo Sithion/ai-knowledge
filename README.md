@@ -281,6 +281,8 @@ The desktop app includes a full dashboard with seven pages:
 - Service health monitoring (Database, Ollama) with real-time status polling
 - Check for updates (auto-updates in desktop, GitHub release link in dev mode)
 - Language selection (English, Spanish, Portuguese)
+- **Tag Suggestions with batch merge** — select multiple near-duplicate tag pairs, pick which tag to keep per pair (usage counts shown), and apply all merges in one shot
+- **Knowledge Health** — stale-entry report plus **duplicate groups**: near-identical entries are clustered into cards where you keep one and delete the rest in one click
 - Unified data export/import — single JSON file with selectable knowledge and plans via modal
 - Maintenance: re-deploy configurations, remove unused embeddings
 - Uninstall wizard with confirmation (removes all data, configs, and dependencies)
