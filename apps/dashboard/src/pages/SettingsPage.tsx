@@ -749,10 +749,60 @@ const ghostButtonStyle = {
 };
 
 type TagSuggestion = { a: string; b: string; similarity: number; countA: number; countB: number };
+type TagGroup = { key: string; members: { tag: string; count: number }[]; maxSimilarity: number };
+
+// Cluster overlapping suggestion pairs into GROUPS (union-find). With raw pairs,
+// "select all" was unusable: one tag appearing in several pairs got contradictory
+// default keepers ("'x' cannot be merged in two directions") with no practical way
+// to fix 40+ rows by hand. With one keeper per group, every merge is loser→keeper —
+// conflicts are impossible by construction (the server CONFLICT guard stays as a
+// backstop).
+function buildTagGroups(suggestions: TagSuggestion[]): TagGroup[] {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let root = x;
+    while (parent.get(root) !== undefined && parent.get(root) !== root) root = parent.get(root)!;
+    let cur = x;
+    while (cur !== root) { const next = parent.get(cur)!; parent.set(cur, root); cur = next; }
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const ra = find(a); const rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
+  };
+  const counts = new Map<string, number>();
+  for (const s of suggestions) {
+    union(s.a, s.b);
+    counts.set(s.a, s.countA);
+    counts.set(s.b, s.countB);
+  }
+  const byRoot = new Map<string, Set<string>>();
+  for (const tag of counts.keys()) {
+    const root = find(tag);
+    const set = byRoot.get(root) ?? new Set<string>();
+    set.add(tag);
+    byRoot.set(root, set);
+  }
+  const maxSim = new Map<string, number>();
+  for (const s of suggestions) {
+    const root = find(s.a);
+    maxSim.set(root, Math.max(maxSim.get(root) ?? 0, s.similarity));
+  }
+  return Array.from(byRoot.entries())
+    .map(([root, tags]) => {
+      const members = Array.from(tags)
+        .map((tag) => ({ tag, count: counts.get(tag) ?? 0 }))
+        .sort((x, y) => (y.count - x.count) || x.tag.localeCompare(y.tag));
+      return { key: members.map((m) => m.tag).join('|'), members, maxSimilarity: maxSim.get(root) ?? 0 };
+    })
+    .sort((x, y) => (y.members.length - x.members.length) || (y.maxSimilarity - x.maxSimilarity));
+}
 
 function TagSuggestionsSection() {
   const { t } = useTranslation();
-  const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
+  const [groups, setGroups] = useState<TagGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [keeper, setKeeper] = useState<Record<string, string>>({});
@@ -760,67 +810,51 @@ function TagSuggestionsSection() {
   const [applying, setApplying] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  const rowKey = (s: TagSuggestion) => `${s.a}|${s.b}`;
-  // Default keeper = the more-used tag of the pair (tiebreak: a).
-  const defaultKeeper = (s: TagSuggestion) => (s.countB > s.countA ? s.b : s.a);
-  const keeperOf = (s: TagSuggestion) => keeper[rowKey(s)] ?? defaultKeeper(s);
+  // Default keeper = the most-used tag of the group (members are pre-sorted).
+  const keeperOf = (g: TagGroup) => keeper[g.key] ?? g.members[0]?.tag;
 
   const load = useCallback(() => {
     setLoading(true);
     api.getTagSuggestions()
-      .then((s) => { setSuggestions(s); setSelected(new Set()); setKeeper({}); })
-      .catch(() => setSuggestions([]))
+      .then((s) => { setGroups(buildTagGroups(s)); setSelected(new Set()); setKeeper({}); })
+      .catch(() => setGroups([]))
       .finally(() => setLoading(false));
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const toggleRow = (key: string) => {
+  const toggleGroup = (key: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   };
-  const allSelected = suggestions.length > 0 && selected.size === suggestions.length;
+  const allSelected = groups.length > 0 && selected.size === groups.length;
   const toggleAll = () => {
-    setSelected(allSelected ? new Set() : new Set(suggestions.map(rowKey)));
+    setSelected(allSelected ? new Set() : new Set(groups.map((g) => g.key)));
   };
 
-  // Selected rows as {from,to} merges (from = the non-keeper side).
-  const selectedMerges = suggestions
-    .filter((s) => selected.has(rowKey(s)))
-    .map((s) => {
-      const keep = keeperOf(s);
-      return { from: keep === s.a ? s.b : s.a, to: keep };
+  // Every merge is member→keeper of its own group: each `from` appears exactly
+  // once and all of a group's merges share one target — no chains, no conflicts.
+  const selectedMerges = groups
+    .filter((g) => selected.has(g.key))
+    .flatMap((g) => {
+      const keep = keeperOf(g);
+      return g.members.filter((m) => m.tag !== keep).map((m) => ({ from: m.tag, to: keep }));
     });
-
-  // Client-side mirror of the server's conflict rules: duplicate `from` with
-  // different targets, or a circular chain, blocks Apply. Plain chains
-  // (a→b, b→c) are allowed — the server collapses them to terminal targets.
-  const conflictTag = (() => {
-    const target = new Map<string, string>();
-    for (const m of selectedMerges) {
-      const existing = target.get(m.from);
-      if (existing !== undefined && existing !== m.to) return m.from;
-      target.set(m.from, m.to);
-    }
-    for (const from of target.keys()) {
-      const seen = new Set<string>([from]);
-      let to = target.get(from)!;
-      while (target.has(to)) {
-        if (seen.has(to)) return to;
-        seen.add(to);
-        to = target.get(to)!;
-      }
-    }
-    return null;
-  })();
 
   const applyBatch = async () => {
     setApplying(true);
     try {
-      const res = await api.mergeTagsBatch(selectedMerges);
-      setMessage(t('tagSuggestions.batchDone', { entries: res.entriesReembedded, merges: res.applied.length }));
+      // The endpoint accepts at most 50 merges per call — chunk large batches.
+      let entries = 0;
+      let mergesApplied = 0;
+      for (let i = 0; i < selectedMerges.length; i += 50) {
+        const res = await api.mergeTagsBatch(selectedMerges.slice(i, i + 50));
+        entries += res.entriesReembedded;
+        mergesApplied += res.applied.length;
+      }
+      setMessage(t('tagSuggestions.batchDone', { entries, merges: mergesApplied }));
       setConfirmOpen(false);
       load();
     } catch {
@@ -836,7 +870,7 @@ function TagSuggestionsSection() {
       <h2 style={sectionHeaderStyle}>{t('tagSuggestions.title')}</h2>
       {loading ? (
         <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('tagSuggestions.loading')}</p>
-      ) : suggestions.length === 0 ? (
+      ) : groups.length === 0 ? (
         <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('tagSuggestions.none')}</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -845,39 +879,46 @@ function TagSuggestionsSection() {
             <input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={applying} />
             {t('tagSuggestions.selectAll')}
           </label>
-          {suggestions.map((s) => {
-            const key = rowKey(s);
-            const isSelected = selected.has(key);
-            const keep = keeperOf(s);
+          {groups.map((g) => {
+            const isSelected = selected.has(g.key);
+            const keep = keeperOf(g);
             return (
-              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', opacity: applying ? 0.6 : 1 }}>
+              <div key={g.key} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', opacity: applying ? 0.6 : 1 }}>
                 <input
                   type="checkbox"
                   checked={isSelected}
-                  onChange={() => toggleRow(key)}
+                  onChange={() => toggleGroup(g.key)}
                   disabled={applying}
                   style={{ cursor: 'pointer' }}
                 />
                 <span style={{ fontSize: 13 }}>
-                  <strong>{s.a}</strong> ↔ <strong>{s.b}</strong>
-                  <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>{Math.round(s.similarity * 100)}%</span>
+                  {g.members.map((m, i) => (
+                    <span key={m.tag}>
+                      {i > 0 && <span style={{ color: 'var(--text-secondary)' }}> ↔ </span>}
+                      <strong style={isSelected && keep === m.tag ? { color: 'var(--accent)' } : undefined}>{m.tag}</strong>
+                    </span>
+                  ))}
+                  <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>{Math.round(g.maxSimilarity * 100)}%</span>
                 </span>
                 {isSelected && (
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {[s.a, s.b].map((tag) => (
-                      <button
-                        key={tag}
-                        style={{
-                          ...ghostButtonStyle,
-                          ...(keep === tag ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}),
-                        }}
-                        disabled={applying}
-                        onClick={() => setKeeper((prev) => ({ ...prev, [key]: tag }))}
-                        title={t('tagSuggestions.uses', { count: tag === s.a ? s.countA : s.countB })}
-                      >
-                        {tag} · {t('tagSuggestions.uses', { count: tag === s.a ? s.countA : s.countB })}
-                      </button>
-                    ))}
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>{t('tagSuggestions.keepLabel')}</span>
+                    <select
+                      value={keep}
+                      disabled={applying}
+                      onChange={(e) => setKeeper((prev) => ({ ...prev, [g.key]: (e.target as HTMLSelectElement).value }))}
+                      style={{
+                        padding: '4px 8px', borderRadius: 6, fontSize: 12,
+                        backgroundColor: 'var(--bg-input)', color: 'var(--text-primary)',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      {g.members.map((m) => (
+                        <option key={m.tag} value={m.tag}>
+                          {m.tag} · {t('tagSuggestions.uses', { count: m.count })}
+                        </option>
+                      ))}
+                    </select>
                   </span>
                 )}
               </div>
@@ -885,16 +926,14 @@ function TagSuggestionsSection() {
           })}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
             <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-              {conflictTag
-                ? t('tagSuggestions.conflict', { tag: conflictTag })
-                : t('tagSuggestions.selectedCount', { count: selected.size })}
+              {t('tagSuggestions.selectedCount', { count: selected.size })}
             </span>
             <button
-              style={{ ...ghostButtonStyle, ...(selected.size > 0 && !conflictTag ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
-              disabled={selected.size === 0 || conflictTag !== null || applying}
+              style={{ ...ghostButtonStyle, ...(selectedMerges.length > 0 ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
+              disabled={selectedMerges.length === 0 || applying}
               onClick={() => setConfirmOpen(true)}
             >
-              {applying ? t('tagSuggestions.applying') : t('tagSuggestions.applyN', { count: selected.size })}
+              {applying ? t('tagSuggestions.applying') : t('tagSuggestions.applyN', { count: selectedMerges.length })}
             </button>
           </div>
         </div>
@@ -904,13 +943,14 @@ function TagSuggestionsSection() {
         onClose={() => { if (!applying) setConfirmOpen(false); }}
         onConfirm={applyBatch}
         title={t('tagSuggestions.title')}
-        message={t('tagSuggestions.confirmBatch', { count: selected.size })}
+        message={t('tagSuggestions.confirmBatch', { count: selectedMerges.length })}
         confirmLabel={t('tagSuggestions.mergeBtn')}
         loading={applying}
       />
     </div>
   );
 }
+
 
 type DuplicateGroup = { groupId: string; maxSimilarity: number; members: { id: string; title: string; scope: string; type: string; version: number; updatedAt: string }[] };
 

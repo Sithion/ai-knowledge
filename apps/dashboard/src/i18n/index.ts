@@ -53,6 +53,8 @@ const resources = {
         confirmBatch: 'Apply {{count}} tag merges? This rewrites and re-embeds all affected entries once.',
         batchDone: 'Updated {{entries}} entries across {{merges}} merges',
         conflict: "Conflicting selections — '{{tag}}' cannot be merged in two directions",
+        keepLabel: 'Keep:',
+        groupOf: '{{count}} similar tags',
       },
       health: {
         title: 'Knowledge Health',
@@ -222,6 +224,8 @@ const resources = {
         confirmBatch: '¿Aplicar {{count}} fusiones de etiquetas? Esto reescribe y re-embebe todas las entradas afectadas una sola vez.',
         batchDone: 'Se actualizaron {{entries}} entradas en {{merges}} fusiones',
         conflict: "Selecciones en conflicto — '{{tag}}' no puede fusionarse en dos direcciones",
+        keepLabel: 'Mantener:',
+        groupOf: '{{count}} etiquetas similares',
       },
       health: {
         title: 'Salud del Conocimiento',
@@ -391,6 +395,8 @@ const resources = {
         confirmBatch: 'Aplicar {{count}} mesclagens de tags? Isso reescreve e re-embeda todas as entradas afetadas uma única vez.',
         batchDone: '{{entries}} entradas atualizadas em {{merges}} mesclagens',
         conflict: "Seleções em conflito — '{{tag}}' não pode ser mesclada em duas direções",
+        keepLabel: 'Manter:',
+        groupOf: '{{count}} tags similares',
       },
       health: {
         title: 'Saúde do Conhecimento',
