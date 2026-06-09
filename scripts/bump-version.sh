@@ -43,13 +43,6 @@ if [ -f "$CARGO" ]; then
   echo "  Updated Cargo.toml"
 fi
 
-# LICENSE (BSL 1.1 — Licensed Work version)
-LICENSE="$ROOT/LICENSE"
-if [ -f "$LICENSE" ]; then
-  sed -i '' "s/CogniStore v[0-9]\.[0-9]\.[0-9]/CogniStore v${VERSION}/" "$LICENSE"
-  echo "  Updated LICENSE"
-fi
-
 echo ""
 echo "Done! All packages bumped to v${VERSION}"
 echo ""

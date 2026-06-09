@@ -9,7 +9,7 @@ Store, search, and retrieve knowledge using local vector embeddings — directly
 [![CI](https://github.com/Sithion/cognistore/actions/workflows/ci.yml/badge.svg)](https://github.com/Sithion/cognistore/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@cognistore/mcp-server)](https://www.npmjs.com/package/@cognistore/mcp-server)
 [![GitHub Release](https://img.shields.io/github/v/release/Sithion/cognistore)](https://github.com/Sithion/cognistore/releases)
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [Download](#quick-start) · [Features](#features) · [MCP Integration](#mcp-integration) · [External Providers](#external-knowledge-providers) · [Dashboard](#dashboard) · [Development](#development) · [Patch Notes](PATCH-NOTES.md)
 
@@ -392,4 +392,4 @@ Contributions are welcome. Please open an issue first to discuss what you'd like
 
 ## License
 
-[BSL 1.1](LICENSE) — Free for non-commercial use. Converts to Apache 2.0 on 2030-03-18.
+[MIT](LICENSE) — free to use, modify, and distribute.

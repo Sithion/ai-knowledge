@@ -102,7 +102,6 @@ pnpm bump 1.0.0
 This updates:
 - All 8 `package.json` files (root + apps + packages)
 - `apps/dashboard/src-tauri/Cargo.toml`
-- `LICENSE` (Licensed Work version)
 
 ### Release Flow
 
