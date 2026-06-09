@@ -14,6 +14,12 @@ import type {
   UpdateKnowledgeInput,
   SearchOptions,
 } from '@cognistore/shared';
+import {
+  mergeTagsBatchSchema,
+  updatePlanSchema,
+  createPlanTaskSchema,
+  updatePlanTaskSchema,
+} from '@cognistore/shared';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1525,6 +1531,26 @@ Pass an array to addKnowledge to create multiple entries at once.
     return sdk.mergeTags(String(from), String(to));
   });
 
+  app.post('/api/tags/merge-batch', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const parsed = mergeTagsBatchSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: parsed.error.issues[0]?.message ?? 'Invalid batch' };
+    }
+    try {
+      return await sdk.mergeTagsBatch(parsed.data.merges);
+    } catch (error) {
+      // CONFLICT = user-resolvable selection problem (duplicate-from / cycle).
+      if (error instanceof Error && error.message.startsWith('CONFLICT:')) {
+        reply.code(400);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  });
+
   // ─── Knowledge health (stale + duplicates) ───────────────────────
   app.get('/api/health/stale', async (request, reply) => {
     const err = ensureReady(reply);
@@ -1537,6 +1563,8 @@ Pass an array to addKnowledge to create multiple entries at once.
     return sdk.findStaleEntries(opts);
   });
 
+  // Returns duplicate GROUPS (connected components), not raw pairs — N copies of
+  // an entry render as one group. Single consumer: the Settings health panel.
   app.get('/api/health/duplicates', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
@@ -1544,7 +1572,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     const opts: { threshold?: number; limit?: number } = {};
     if (q.threshold) opts.threshold = Number(q.threshold);
     if (q.limit) opts.limit = Number(q.limit);
-    return sdk.findDuplicatePairs(opts);
+    return sdk.findDuplicateGroups(opts);
   });
 
   app.get('/api/knowledge/recent', async (request, reply) => {
@@ -1883,7 +1911,12 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.put<{ Params: { id: string }; Body: Record<string, unknown> }>('/api/plans/:id', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    const result = sdk.updatePlan(request.params.id, request.body as any);
+    const parsed = updatePlanSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: parsed.error.issues[0]?.message ?? 'Invalid plan update' };
+    }
+    const result = sdk.updatePlan(request.params.id, parsed.data);
     if (!result) { reply.code(404); return { error: 'Not found' }; }
     return result;
   });
@@ -1905,13 +1938,23 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post<{ Params: { id: string }; Body: { description: string; priority?: string; notes?: string } }>('/api/plans/:id/tasks', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    return sdk.createPlanTask({ planId: request.params.id, ...request.body });
+    const parsed = createPlanTaskSchema.omit({ planId: true }).safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: parsed.error.issues[0]?.message ?? 'Invalid task' };
+    }
+    return sdk.createPlanTask({ planId: request.params.id, ...parsed.data });
   });
 
   app.put<{ Params: { taskId: string }; Body: Record<string, unknown> }>('/api/plans/tasks/:taskId', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    const result = sdk.updatePlanTask(request.params.taskId, request.body as any);
+    const parsed = updatePlanTaskSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: parsed.error.issues[0]?.message ?? 'Invalid task update' };
+    }
+    const result = sdk.updatePlanTask(request.params.taskId, parsed.data);
     if (!result) return { error: 'Task not found' };
     return result;
   });
