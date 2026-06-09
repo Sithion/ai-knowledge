@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AreaChart, Area, BarChart, Bar, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell, Legend,
@@ -9,7 +9,6 @@ import { DateRangePicker } from '../components/DateRangePicker.js';
 import { MetricCard, WidgetCard, formatTokens, getHeatmapColor } from '../components/statsPrimitives.js';
 
 const MODEL_COLORS = ['#8b5cf6', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899'];
-const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const PROVIDERS: { key: ProviderFilter; labelKey: string }[] = [
   { key: 'all', labelKey: 'tokens.all' },
   { key: 'claude', labelKey: 'tokens.claude' },
@@ -88,7 +87,7 @@ function CacheGauge({ ratio }: { ratio: number }) {
   );
 }
 
-function HourDayHeatmap({ data }: { data: TokenUsageAggregates['byHourDay'] }) {
+function HourDayHeatmap({ data, dayLabels }: { data: TokenUsageAggregates['byHourDay']; dayLabels: string[] }) {
   const max = data.reduce((m, d) => Math.max(m, d.totalTokens), 0);
   const lookup = new Map(data.map((d) => [`${d.dayOfWeek}-${d.hour}`, d.totalTokens]));
   const cell = 12;
@@ -102,7 +101,7 @@ function HourDayHeatmap({ data }: { data: TokenUsageAggregates['byHourDay'] }) {
           </span>
         ))}
       </div>
-      {DAY_LABELS.map((label, day) => (
+      {dayLabels.map((label, day) => (
         <div key={day} style={{ display: 'flex', gap, alignItems: 'center', marginTop: gap }}>
           <span style={{ width: 26, fontSize: 10, color: 'var(--text-secondary)' }}>{label}</span>
           {Array.from({ length: 24 }, (_, h) => {
@@ -122,12 +121,21 @@ function HourDayHeatmap({ data }: { data: TokenUsageAggregates['byHourDay'] }) {
 }
 
 export function TokenConsumptionPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { range } = useAppSelector((s) => s.dateRange);
   const [data, setData] = useState<TokenUsageAggregates | null>(null);
   const [scanning, setScanning] = useState(false);
   const [provider, setProvider] = useState<ProviderFilter>('all');
   const [hydrated, setHydrated] = useState(false);
+  const snapshotRef = useRef<string | null>(null);
+
+  // Locale-aware weekday labels (index 0 = Sunday, matching byHourDay.dayOfWeek;
+  // 2023-01-01 was a Sunday).
+  const dayLabels = useMemo(
+    () => Array.from({ length: 7 }, (_, d) =>
+      new Intl.DateTimeFormat(i18n.language, { weekday: 'short' }).format(new Date(Date.UTC(2023, 0, 1 + d)))),
+    [i18n.language],
+  );
 
   // Hydrate the persisted provider filter once (shared with the widget via settings.json).
   useEffect(() => {
@@ -147,6 +155,25 @@ export function TokenConsumptionPage() {
   useEffect(() => {
     if (hydrated) load();
   }, [range.from, range.to, provider, hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 5s snapshot-poll for out-of-band changes (a scan from another window, new
+  // sessions logged by the scanner). The poll response IS the fresh data — only
+  // setData when the snapshot actually changed (no flicker). Paused while a
+  // manual rescan runs; rescan() does its own trailing load() when it finishes.
+  useEffect(() => {
+    if (!hydrated || scanning) return;
+    snapshotRef.current = null; // re-seed per filter/effect instance
+    const interval = setInterval(async () => {
+      try {
+        const fresh = await api.getTokenUsage({ from: range.from, to: range.to, source: PROVIDER_SOURCE[provider] });
+        const ft = fresh.totals;
+        const snapshot = `${ft.inputTokens}:${ft.outputTokens}:${ft.cacheReadTokens}:${ft.cacheCreationTokens}:${fresh.byDay.length}`;
+        if (snapshotRef.current !== null && snapshot !== snapshotRef.current) setData(fresh);
+        snapshotRef.current = snapshot;
+      } catch { /* ignore polling errors */ }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [range.from, range.to, provider, hydrated, scanning]);
 
   const changeProvider = (p: ProviderFilter) => {
     setProvider(p);
@@ -272,7 +299,7 @@ export function TokenConsumptionPage() {
             </WidgetCard>
 
             <WidgetCard title={t('tokens.timeOfDay')} state={data && data.byHourDay.length > 0 ? 'loaded' : 'empty'} emptyText={t('tokens.noData')}>
-              {data && <HourDayHeatmap data={data.byHourDay} />}
+              {data && <HourDayHeatmap data={data.byHourDay} dayLabels={dayLabels} />}
             </WidgetCard>
           </div>
 

@@ -322,7 +322,7 @@ export function SettingsPage() {
             // Server shuts down during uninstall — expected
           }
           setTimeout(() => {
-            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px;background:#0a0a1a;color:#22c55e;font-family:sans-serif"><h2>Uninstall complete</h2><p style="color:#6b7280">You can close this window.</p></div>';
+            setUninstallStep(4);
             try { window.close(); } catch { /* ignore */ }
           }, 2000);
         }}
@@ -330,6 +330,18 @@ export function SettingsPage() {
         message={t('settings.uninstallConfirm2')}
         confirmLabel={t('settings.yesUninstallAll')}
       />
+
+      {/* Uninstall Step 4 — done (React state, not an innerHTML body swap) */}
+      {uninstallStep === 4 && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 2000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flexDirection: 'column', gap: 16, backgroundColor: '#0a0a1a',
+        }}>
+          <h2 style={{ color: '#22c55e', fontSize: 20, fontWeight: 700 }}>{t('settings.uninstallCompleteTitle')}</h2>
+          <p style={{ color: '#6b7280', fontSize: 14 }}>{t('settings.uninstallCompleteHint')}</p>
+        </div>
+      )}
       </div>
     </div>
   );

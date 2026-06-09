@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useFocusTrap } from '../hooks/useFocusTrap.js';
 
 interface ConfirmModalProps {
   isOpen: boolean;
@@ -10,10 +11,15 @@ interface ConfirmModalProps {
   message: string;
   confirmLabel?: string;
   loading?: boolean;
+  /** When set, rendered in the error color above the buttons. Callers keep the
+   *  modal OPEN on mutation failure and pass the error here (never silently close). */
+  errorText?: string | null;
 }
 
-export function ConfirmModal({ isOpen, onClose, onConfirm, title, message, confirmLabel, loading }: ConfirmModalProps) {
+export function ConfirmModal({ isOpen, onClose, onConfirm, title, message, confirmLabel, loading, errorText }: ConfirmModalProps) {
   const { t } = useTranslation();
+  const titleId = useId();
+  const trapRef = useFocusTrap<HTMLDivElement>(isOpen);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -36,14 +42,21 @@ export function ConfirmModal({ isOpen, onClose, onConfirm, title, message, confi
       }}
     >
       <div
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
         style={{
           backgroundColor: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border)',
           padding: 24, maxWidth: 400, width: '90%',
         }}
       >
-        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>{title}</h3>
+        <h3 id={titleId} style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>{title}</h3>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20 }}>{message}</p>
+        {errorText && (
+          <p style={{ fontSize: 13, color: 'var(--error, #ef4444)', marginBottom: 16 }}>{errorText}</p>
+        )}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button
             onClick={onClose}
