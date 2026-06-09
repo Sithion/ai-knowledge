@@ -2,6 +2,9 @@
 
 ## v2.1.3
 
+### Security
+- **`shell-quote` bumped 1.8.3 → 1.8.4 (GHSA-w7jw-789q-3m8p, CVSS 9.2 critical).** A newly-published advisory failed the gating `osv-scan` CI job. The package is a transitive dependency of `@cognistore/core`; pinned via a root `package.json` `pnpm.overrides` (the override mechanism honored by the repo's pinned pnpm 9.15 — `pnpm-workspace.yaml` `overrides` are not read until pnpm 10).
+
 ### Docs
 - **New dashboard screenshot + README accuracy pass.** Replaced the hero screenshot with the current Knowledge Base view and corrected drift between the README and the shipping app: the MCP **Available Tools** table now lists all **17** tools (added `getTokenUsage`, `listPlans`, `deletePlanTask`, `archivePlan`); the **Dashboard** section reflects the real **seven** pages (added Token Consumption, Providers, Widgets, and the Plans stats sub-page); the **Stats** section drops the removed contribution heatmap and tag cloud and documents the current Top Tags chart; and the stale `scripts/test-agents.sh` / Docker references were replaced with the actual `pnpm test` (Playwright test runner, `packages/tests`) testing story for this Docker-free project.
 
