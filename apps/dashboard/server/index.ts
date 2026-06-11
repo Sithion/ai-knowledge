@@ -876,7 +876,7 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post('/api/upgrade/run', async (request, reply) => {
     if (upgradeRunning) { reply.code(409); return { error: 'Upgrade already in progress' }; }
     upgradeRunning = true;
-    const results: { step: string; status: 'success' | 'error'; message?: string }[] = [];
+    const results: { step: string; status: 'success' | 'error' | 'skipped'; message?: string }[] = [];
 
     // Step 1: Database migrations (handled automatically by createDbClient, but log it)
     try {
@@ -1167,7 +1167,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
 
-    const results: { step: string; status: 'success' | 'error'; message?: string }[] = [];
+    const results: { step: string; status: 'success' | 'error' | 'skipped'; message?: string }[] = [];
     const configTemplateDir = resolve(TEMPLATES_PATH, 'configs');
     const skillsDir = resolve(TEMPLATES_PATH, 'skills');
     const home = homedir();
