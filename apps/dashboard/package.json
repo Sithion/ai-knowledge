@@ -1,6 +1,6 @@
 {
   "name": "@cognistore/dashboard",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,7 +15,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:bundle": "node scripts/bundle-sidecar.mjs && tauri build",
-    "tauri:dmg": "node scripts/bundle-sidecar.mjs && tauri build --bundles dmg"
+    "tauri:dmg": "node scripts/bundle-sidecar.mjs && tauri build --bundles dmg",
+    "type-check": "tsc -p tsconfig.json --noEmit && tsc -p server/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@cognistore/config": "workspace:*",

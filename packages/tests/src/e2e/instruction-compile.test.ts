@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, copyFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, copyFileSync, readFileSync, rmSync, existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,3 +92,45 @@ test('copilot pre-tool-check exempts cognistore- tools and reminds with the righ
     execSync(`rm -f /tmp/.cognistore-copilot-${sid}*`);
   }
 });
+
+test('copilot user-prompt-check escapes multi-line DB content into VALID JSON (macOS/BSD-sed regression)', () => {
+  // Regression: the hook used the GNU-only sed idiom `:a;N;$!ba` to fold
+  // newlines, which errors on macOS/BSD sed and emitted a raw newline inside the
+  // JSON string → Copilot silently dropped the [COGNISTORE-PROTOCOL]. The awk
+  // escape must produce a single line of valid JSON with literal \n, on any sed.
+  const sid = `prompttest${process.pid}${Math.floor(Math.random() * 1e6)}`;
+  const hook = join(HOOKS_DIR, 'copilot/user-prompt-check.sh');
+  const dbPath = join(tmpdir(), `cognistore-hook-${sid}.db`);
+  // Content with the exact chars that break naive escaping: backslash, double
+  // quote, and multiple newlines.
+  const content = 'line one with "quotes"\nline two with \\ backslash\nline three';
+  try {
+    if (!sqlite3Available()) test.skip();
+    // Feed SQL via stdin (NOT the shell) so the content's quotes/newlines reach
+    // SQLite verbatim instead of being mangled by shell word-splitting.
+    const sql = `CREATE TABLE knowledge_entries(type TEXT, content TEXT);\nINSERT INTO knowledge_entries(type, content) VALUES('system', ${sqlLiteral(content)});`;
+    execSync(`sqlite3 ${JSON.stringify(dbPath)}`, { input: sql });
+
+    const out = execSync(`bash ${hook}`, {
+      input: JSON.stringify({ session_id: sid }),
+      env: { ...process.env, SQLITE_PATH: dbPath },
+    }).toString().trim();
+
+    // Single line, valid JSON, and the multi-line content survived as \n.
+    expect(out.split('\n')).toHaveLength(1);
+    const parsed = JSON.parse(out);
+    expect(parsed.systemMessage).toContain('[COGNISTORE-PROTOCOL]');
+    expect(parsed.systemMessage).toContain('line one with "quotes"');
+    expect(parsed.systemMessage).toContain('line two with \\ backslash');
+  } finally {
+    try { unlinkSync(dbPath); } catch { /* ignore */ }
+    execSync(`rm -f /tmp/.cognistore-copilot-${sid}*`);
+  }
+});
+
+function sqlite3Available(): boolean {
+  try { execSync('command -v sqlite3', { stdio: 'ignore' }); return true; } catch { return false; }
+}
+function sqlLiteral(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}

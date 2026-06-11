@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { KnowledgeSDK } from '@cognistore/sdk';
-import { KnowledgeType } from '@cognistore/shared';
+import { KnowledgeType, KnowledgeStatus } from '@cognistore/shared';
 
 const knowledgeTypeValues = ['decision', 'pattern', 'fix', 'constraint', 'gotcha'] as const;
 const knowledgeStatusValues = ['draft', 'active', 'completed', 'archived'] as const;
@@ -472,7 +472,7 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
     },
     WRITE,
     async (params) => {
-      const result = sdk.updatePlan(params.planId, { status: 'archived' });
+      const result = sdk.updatePlan(params.planId, { status: KnowledgeStatus.ARCHIVED });
       if (!result) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', type: 'plan', id: params.planId }) }] };
       return { content: [{ type: 'text' as const, text: JSON.stringify({ archived: true, id: result.id, status: result.status }, null, 2) }] };
     }

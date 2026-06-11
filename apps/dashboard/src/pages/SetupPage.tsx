@@ -39,7 +39,7 @@ export function SetupPage({ onComplete }: { onComplete: () => void }) {
     try {
       let status: SetupStatus;
       try { status = await api.getSetupStatus(); }
-      catch { status = { ollamaInstalled: false, ollamaRunning: false, databaseReady: false, modelAvailable: false, configsReady: false, sdkReady: false, allReady: false }; }
+      catch { status = { nodeReady: false, ollamaInstalled: false, ollamaRunning: false, databaseReady: false, modelAvailable: false, configsReady: false, sdkReady: false, allReady: false }; }
 
       // Step 0: Install Node.js v24
       if (status.nodeReady) {

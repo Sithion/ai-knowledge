@@ -12,6 +12,11 @@ export interface OllamaClientConfig {
   dimensions?: number;
   maxRetries?: number;
   maxInputChars?: number;
+  /** Per-request timeout for embed calls (ms). Prevents a stalled Ollama socket
+   *  from hanging SDK init and every search. Default 30s. */
+  requestTimeoutMs?: number;
+  /** Timeout for the lightweight health/model-availability checks (ms). Default 10s. */
+  healthTimeoutMs?: number;
 }
 
 export class OllamaEmbeddingClient {
@@ -20,6 +25,8 @@ export class OllamaEmbeddingClient {
   private dimensions: number;
   private maxRetries: number;
   private maxInputChars: number;
+  private requestTimeoutMs: number;
+  private healthTimeoutMs: number;
 
   constructor(config?: OllamaClientConfig) {
     this.host = config?.host ?? (process.env.OLLAMA_HOST ?? DEFAULT_OLLAMA_HOST);
@@ -27,6 +34,8 @@ export class OllamaEmbeddingClient {
     this.dimensions = config?.dimensions ?? (Number(process.env.EMBEDDING_DIMENSIONS) || DEFAULT_EMBEDDING_DIMENSIONS);
     this.maxRetries = config?.maxRetries ?? 3;
     this.maxInputChars = config?.maxInputChars ?? 2000;
+    this.requestTimeoutMs = config?.requestTimeoutMs ?? 30_000;
+    this.healthTimeoutMs = config?.healthTimeoutMs ?? 10_000;
   }
 
   private truncateText(text: string, maxChars: number): string {
@@ -90,7 +99,7 @@ export class OllamaEmbeddingClient {
 
   async isHealthy(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.host}/api/tags`);
+      const response = await fetch(`${this.host}/api/tags`, { signal: AbortSignal.timeout(this.healthTimeoutMs) });
       return response.ok;
     } catch {
       return false;
@@ -99,7 +108,7 @@ export class OllamaEmbeddingClient {
 
   async isModelAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.host}/api/tags`);
+      const response = await fetch(`${this.host}/api/tags`, { signal: AbortSignal.timeout(this.healthTimeoutMs) });
       if (!response.ok) return false;
 
       const data = (await response.json()) as OllamaTagsResponse;
@@ -110,22 +119,55 @@ export class OllamaEmbeddingClient {
   }
 
   async pullModel(): Promise<void> {
-    const response = await fetch(`${this.host}/api/pull`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: this.model }),
-    });
+    // A model pull legitimately streams for minutes (multi-GB download), so we
+    // do NOT cap total time — only the initial connect, plus a per-read idle
+    // guard so a STALLED stream (no bytes) can't hang setup forever.
+    //
+    // NOTE: AbortSignal.timeout() can't express "connect-only" — it would abort
+    // the whole fetch (body stream included) 30s after the request starts and
+    // kill the in-progress download. Use a controller whose connect timer is
+    // cleared the moment the response headers arrive, leaving the streaming
+    // phase governed solely by the per-read idle guard below.
+    const controller = new AbortController();
+    const connectTimer = setTimeout(() => controller.abort(), 30_000);
+    let response: Response;
+    try {
+      response = await fetch(`${this.host}/api/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.model }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(connectTimer);
+    }
 
     if (!response.ok) {
       throw new Error(`Failed to pull model ${this.model}: ${response.statusText}`);
     }
 
-    // Consume the stream to completion
+    // Consume the stream to completion, aborting if no chunk arrives for 120s.
     const reader = response.body?.getReader();
     if (reader) {
-      while (true) {
-        const { done } = await reader.read();
-        if (done) break;
+      const IDLE_MS = 120_000;
+      try {
+        while (true) {
+          let timer: ReturnType<typeof setTimeout>;
+          const idle = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`Model pull stalled (no data for ${IDLE_MS / 1000}s)`)), IDLE_MS);
+          });
+          try {
+            const { done } = await Promise.race([reader.read(), idle]);
+            if (done) break;
+          } finally {
+            clearTimeout(timer!);
+          }
+        }
+      } catch (err) {
+        // On a stall (idle timer fired) cancel the reader so the underlying
+        // socket is released instead of lingering until GC.
+        await reader.cancel().catch(() => {});
+        throw err;
       }
     }
   }
@@ -161,7 +203,9 @@ export class OllamaEmbeddingClient {
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        return await fetch(url, init);
+        // Each attempt gets a fresh per-request timeout so a dead socket fails
+        // fast instead of hanging (callers: embed() during init + every search).
+        return await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(this.requestTimeoutMs) });
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         if (attempt < this.maxRetries - 1) {

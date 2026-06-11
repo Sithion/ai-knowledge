@@ -43,6 +43,8 @@ interface PlanEntry {
   planFilePath?: string | null;
   createdAt: string;
   updatedAt: string;
+  taskCount?: number;
+  completedTasks?: number;
 }
 
 interface PlanTask {
@@ -535,7 +537,7 @@ export function PlansPage() {
   const [mutationError, setMutationError] = useState<string | null>(null);
   // Transient inline error for task updates in the detail view.
   const [taskError, setTaskError] = useTransientMessage(5000);
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   // Snapshot of the whole plan set (status + task aggregates) for the 5s poll below.
   // Seeded on the first tick; the list only resets when this string changes.
   const planSnapshotRef = useRef<string | null>(null);
@@ -1073,16 +1075,21 @@ export function PlansPage() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {list.items.map((plan) => {
-                const planTasks = plan.id === selectedPlan?.id ? tasks : [];
-                const done = planTasks.filter((t) => t.status === 'completed').length;
+                // List view is reached only after the `if (selectedPlan) return <detail>`
+                // early-return, so selectedPlan is always null here — there's no
+                // per-card selection state. Progress comes from the list endpoint's
+                // own taskCount/completedTasks (previously this read the detail-view
+                // `tasks` gated on selectedPlan, so the bar never rendered).
+                const total = plan.taskCount ?? 0;
+                const done = plan.completedTasks ?? 0;
                 return (
                   <div
                     key={plan.id}
                     onClick={() => selectPlan(plan)}
                     style={{
-                      backgroundColor: selectedPlan?.id === plan.id ? 'var(--accent-bg, rgba(99,102,241,0.1))' : 'var(--bg-card)',
+                      backgroundColor: 'var(--bg-card)',
                       borderRadius: 10,
-                      border: selectedPlan?.id === plan.id ? '1px solid var(--accent)' : '1px solid var(--border)',
+                      border: '1px solid var(--border)',
                       padding: 16, cursor: 'pointer', transition: 'all 0.15s',
                     }}
                   >
@@ -1107,7 +1114,7 @@ export function PlansPage() {
                           <> • updated {new Date(plan.updatedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' })}</>
                         )}
                       </span>
-                      {planTasks.length > 0 && <MiniProgress completed={done} total={planTasks.length} />}
+                      {total > 0 && <MiniProgress completed={done} total={total} />}
                     </div>
                   </div>
                 );

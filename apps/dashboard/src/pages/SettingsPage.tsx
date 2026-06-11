@@ -450,9 +450,13 @@ function MaintenanceSection() {
     setCleanResult(null);
     try {
       const res = await api.cleanupDatabase();
-      setCleanResult(`${res.orphansRemoved} orphan${res.orphansRemoved !== 1 ? 's' : ''} removed${res.sizeAfter ? ` — DB: ${res.sizeAfter}` : ''}`);
+      setCleanResult(
+        res.sizeAfter
+          ? t('settings.orphansRemovedDb', { count: res.orphansRemoved, size: res.sizeAfter })
+          : t('settings.orphansRemoved', { count: res.orphansRemoved })
+      );
     } catch {
-      setCleanResult('Cleanup failed');
+      setCleanResult(t('settings.cleanupFailed'));
     }
     setCleaning(false);
   };
@@ -464,12 +468,12 @@ function MaintenanceSection() {
       const res = await api.redeploy();
       const failed = res.results.filter((r) => r.status === 'error');
       if (failed.length === 0) {
-        setRedeployResult({ type: 'success', text: 'All configurations re-deployed successfully' });
+        setRedeployResult({ type: 'success', text: t('settings.redeploySuccess') });
       } else {
-        setRedeployResult({ type: 'error', text: `${failed.length} step(s) failed: ${failed.map((f) => f.step).join(', ')}` });
+        setRedeployResult({ type: 'error', text: t('settings.redeployStepsFailed', { count: failed.length, steps: failed.map((f) => f.step).join(', ') }) });
       }
     } catch {
-      setRedeployResult({ type: 'error', text: 'Re-deploy failed' });
+      setRedeployResult({ type: 'error', text: t('settings.redeployFailed') });
     }
     setRedeploying(false);
     setTimeout(() => setRedeployResult(null), 5000);
@@ -486,7 +490,7 @@ function MaintenanceSection() {
           <button
             onClick={handleRedeploy}
             disabled={redeploying}
-            title="Re-deploy skills, hooks, instructions, and MCP configs without losing data"
+            title={t('settings.redeployTooltip')}
             style={{
               display: 'flex', alignItems: 'center', gap: 8,
               padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600,
@@ -512,7 +516,7 @@ function MaintenanceSection() {
           <button
             onClick={handleCleanup}
             disabled={cleaning}
-            title="Remove unused embeddings"
+            title={t('settings.removeEmbeddings')}
             style={{
               display: 'flex', alignItems: 'center', gap: 8,
               padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600,
