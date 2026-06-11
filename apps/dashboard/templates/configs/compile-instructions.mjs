@@ -20,6 +20,16 @@ const base = readFileSync(basePath, 'utf-8');
 
 const platforms = ['claude-code', 'copilot', 'opencode'];
 
+// Each platform exposes MCP tools under its own naming convention. The base
+// template uses the Claude Code form (mcp__cognistore__<tool>) as canonical;
+// it is rewritten per platform here. Empirically verified from real session
+// logs: Copilot CLI = cognistore-<tool>, OpenCode = cognistore_<tool>.
+const TOOL_PREFIX = {
+  'claude-code': 'mcp__cognistore__', // identity — no-op
+  copilot: 'cognistore-',
+  opencode: 'cognistore_',
+};
+
 for (const platform of platforms) {
   let output = '';
   let include = true;
@@ -42,6 +52,9 @@ for (const platform of platforms) {
 
   // Remove trailing blank lines but keep final newline
   output = output.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+
+  // Rewrite tool names to the platform's MCP naming convention (no-op for claude-code).
+  output = output.replaceAll('mcp__cognistore__', TOOL_PREFIX[platform]);
 
   const outPath = resolve(__dirname, `${platform}-instructions.md`);
   writeFileSync(outPath, output);

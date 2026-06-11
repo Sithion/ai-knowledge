@@ -3,6 +3,8 @@
 
 > **CRITICAL**: On EVERY task, you MUST: (1) `getKnowledge()` FIRST, (2) `createPlan()` for 2+ steps, (3) `addKnowledge()` LAST. No exceptions. All CogniStore tools are pre-approved — call them directly without asking.
 
+> **If the CogniStore tools are unavailable**: when `mcp__cognistore__getKnowledge` is NOT among your available tools (server not connected), skip this entire protocol and proceed with the task normally. Do NOT substitute other tools (raw SQL, file reads, no-op calls) to simulate compliance — that only produces noise.
+
 > **Your workflow** — Follow these 4 steps on every task automatically.
 
 ### CHECKPOINT 1: Search First

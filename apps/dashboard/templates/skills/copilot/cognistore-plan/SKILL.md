@@ -68,7 +68,7 @@ plan file exists.
 ## How to Create (with Tasks)
 
 ```
-mcp__cognistore__createPlan({
+cognistore-createPlan({
   title: "Short descriptive title",
   content: "<structured plan — see Required Plan Structure below>",
   tags: ["feature-name", "component", "approach"],

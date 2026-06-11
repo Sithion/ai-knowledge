@@ -7,7 +7,7 @@ description: "Capture knowledge after completing tasks"
 Before finishing, save what you learned:
 
 ```
-mcp__cognistore__addKnowledge({
+cognistore_addKnowledge({
   title: "Descriptive title for semantic search",
   content, tags,
   type: "pattern|decision|fix|constraint|gotcha",

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { api } from '../api/client.js';
+import { api, ApiError } from '../api/client.js';
 import { useInfiniteList, PAGE_SIZE } from '../hooks/useInfiniteScroll.js';
 import { useTransientMessage } from '../hooks/useTransientMessage.js';
 import { FloatingAddButton } from '../components/FloatingAddButton.js';
@@ -543,7 +543,7 @@ export function PlansPage() {
   // Plan-file preview (collapsible) + open-in-editor. Cached per plan id so the 5s
   // detail poll (which replaces the selectedPlan object) doesn't reset it.
   const [filePreviewOpen, setFilePreviewOpen] = useState(false);
-  const [filePreview, setFilePreview] = useState<{ exists: boolean; content?: string; truncated?: boolean } | null>(null);
+  const [filePreview, setFilePreview] = useState<{ exists: boolean; content?: string; truncated?: boolean; disallowed?: boolean } | null>(null);
   const [filePreviewLoading, setFilePreviewLoading] = useState(false);
   const filePreviewPlanIdRef = useRef<string | null>(null);
 
@@ -629,8 +629,10 @@ export function PlansPage() {
         const res = await api.getPlanFile(selectedPlan.id);
         setFilePreview(res);
         filePreviewPlanIdRef.current = selectedPlan.id;
-      } catch {
-        setFilePreview({ exists: false });
+      } catch (e) {
+        // 403 = path outside the allowed roots — say so instead of the
+        // misleading "File not found".
+        setFilePreview({ exists: false, disallowed: e instanceof ApiError && e.status === 403 });
       }
       setFilePreviewLoading(false);
     }
@@ -641,8 +643,8 @@ export function PlansPage() {
     try {
       const r = await api.openPlanFile(selectedPlan.id);
       if (!r.ok) alert(r.unsupported ? t('planFile.unsupported') : t('planFile.notFound'));
-    } catch {
-      alert(t('planFile.notFound'));
+    } catch (e) {
+      alert(e instanceof ApiError && e.status === 403 ? t('planFile.disallowed') : t('planFile.notFound'));
     }
   };
 
@@ -813,7 +815,9 @@ export function PlansPage() {
                 {filePreviewLoading ? (
                   <p style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('planFile.preview')}…</p>
                 ) : !filePreview?.exists ? (
-                  <p style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('planFile.notFound')}</p>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                    {filePreview?.disallowed ? t('planFile.disallowed') : t('planFile.notFound')}
+                  </p>
                 ) : (
                   <>
                     <Markdown remarkPlugins={[remarkGfm]}>{filePreview.content || ''}</Markdown>

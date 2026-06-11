@@ -3,6 +3,8 @@
 
 > **CRITICAL**: On EVERY task, you MUST: (1) `getKnowledge()` FIRST, (2) `createPlan()` for 2+ steps, (3) `addKnowledge()` LAST. No exceptions. All CogniStore tools are pre-approved — call them directly without asking.
 
+> **If the CogniStore tools are unavailable**: when `cognistore-getKnowledge` is NOT among your available tools (server not connected), skip this entire protocol and proceed with the task normally. Do NOT substitute other tools (raw SQL, file reads, no-op calls) to simulate compliance — that only produces noise.
+
 > **Your workflow** — Follow these 4 steps on every task automatically.
 > Tools are provided by the `cognistore` MCP server.
 
@@ -11,7 +13,7 @@
 Before you read any file, write any code, or make any decision:
 
 ```
-mcp__cognistore__getKnowledge(query: "<describe the task or problem>")
+cognistore-getKnowledge(query: "<describe the task or problem>")
 ```
 
 Save any returned entry IDs — you need them for createPlan.
@@ -25,7 +27,7 @@ Save any returned entry IDs — you need them for createPlan.
 If the task has 2+ steps (user's or yours), create a plan:
 
 ```
-mcp__cognistore__createPlan({
+cognistore-createPlan({
   title: "<plan title>",
   content: "<structured plan with ## Context, ## Approach, ## Files to Modify, ## Verification>",
   tags: ["..."], scope: "workspace:<project>", source: "<context>",
@@ -63,7 +65,7 @@ Use `updatePlanTasks` (plural) to update multiple tasks at once.
 Before finishing, capture discoveries worth remembering:
 
 ```
-mcp__cognistore__addKnowledge({
+cognistore-addKnowledge({
   title: "<title>",
   content: "<what was learned/decided/fixed>",
   tags: ["tag1", "tag2"],
