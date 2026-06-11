@@ -122,12 +122,25 @@ export class OllamaEmbeddingClient {
     // A model pull legitimately streams for minutes (multi-GB download), so we
     // do NOT cap total time — only the initial connect, plus a per-read idle
     // guard so a STALLED stream (no bytes) can't hang setup forever.
-    const response = await fetch(`${this.host}/api/pull`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: this.model }),
-      signal: AbortSignal.timeout(30_000),
-    });
+    //
+    // NOTE: AbortSignal.timeout() can't express "connect-only" — it would abort
+    // the whole fetch (body stream included) 30s after the request starts and
+    // kill the in-progress download. Use a controller whose connect timer is
+    // cleared the moment the response headers arrive, leaving the streaming
+    // phase governed solely by the per-read idle guard below.
+    const controller = new AbortController();
+    const connectTimer = setTimeout(() => controller.abort(), 30_000);
+    let response: Response;
+    try {
+      response = await fetch(`${this.host}/api/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.model }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(connectTimer);
+    }
 
     if (!response.ok) {
       throw new Error(`Failed to pull model ${this.model}: ${response.statusText}`);
@@ -137,17 +150,24 @@ export class OllamaEmbeddingClient {
     const reader = response.body?.getReader();
     if (reader) {
       const IDLE_MS = 120_000;
-      while (true) {
-        let timer: ReturnType<typeof setTimeout>;
-        const idle = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`Model pull stalled (no data for ${IDLE_MS / 1000}s)`)), IDLE_MS);
-        });
-        try {
-          const { done } = await Promise.race([reader.read(), idle]);
-          if (done) break;
-        } finally {
-          clearTimeout(timer!);
+      try {
+        while (true) {
+          let timer: ReturnType<typeof setTimeout>;
+          const idle = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`Model pull stalled (no data for ${IDLE_MS / 1000}s)`)), IDLE_MS);
+          });
+          try {
+            const { done } = await Promise.race([reader.read(), idle]);
+            if (done) break;
+          } finally {
+            clearTimeout(timer!);
+          }
         }
+      } catch (err) {
+        // On a stall (idle timer fired) cancel the reader so the underlying
+        // socket is released instead of lingering until GC.
+        await reader.cancel().catch(() => {});
+        throw err;
       }
     }
   }
