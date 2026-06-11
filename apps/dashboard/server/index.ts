@@ -933,30 +933,55 @@ Pass an array to addKnowledge to create multiple entries at once.
             console.warn('[CogniStore] Model pull failed during upgrade:', e);
           }
 
-          // 2. Drop old vec tables and re-init SDK (recreates with new dimensions)
+          // Pre-flight: only drop the vec tables if Ollama can actually produce
+          // an embedding NOW. Dropping first and re-embedding second means a
+          // failed re-embed (Ollama down) would leave the DB with NO embeddings
+          // and degraded search until a later upgrade. The dimension mismatch is
+          // harmless — search keeps working with the existing embeddings — so if
+          // the probe fails we keep them and retry on the next upgrade.
+          let canEmbed = false;
           try {
-            const sqliteRaw = (sdk as any).sqlite ?? (sdk as any).db?.sqlite;
-            if (sqliteRaw) {
-              sqliteRaw.exec('DROP TABLE IF EXISTS knowledge_embeddings');
-              sqliteRaw.exec('DROP TABLE IF EXISTS plans_embeddings');
+            const probe = await fetch(`${host}/api/embeddings`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model, prompt: 'probe' }),
+              signal: AbortSignal.timeout(15000),
+            });
+            if (probe.ok) {
+              const pj = (await probe.json()) as { embedding?: number[] };
+              canEmbed = Array.isArray(pj.embedding) && pj.embedding.length > 0;
             }
-          } catch (e) { console.warn('[CogniStore] Drop vec tables failed:', e); }
+          } catch { canEmbed = false; }
 
-          await sdk.close();
-          sdkReady = false;
-          const reinitOk = await tryInitSDK();
-
-          // 3. Re-embed all knowledge entries
-          if (reinitOk) {
-            try {
-              const reembedded = await sdk.reembedAll();
-              results.push({ step: 'reembed', status: 'success', message: `Re-embedded ${reembedded} entries with new model` });
-              console.log(`[CogniStore] Re-embedded ${reembedded} entries`);
-            } catch (e: any) {
-              results.push({ step: 'reembed', status: 'error', message: e.message });
-            }
+          if (!canEmbed) {
+            results.push({ step: 'reembed', status: 'skipped', message: 'Ollama unavailable — kept existing embeddings, will re-embed on next upgrade' });
+            console.warn('[CogniStore] Upgrade: skipping re-embed (Ollama cannot embed); existing embeddings preserved');
           } else {
-            results.push({ step: 'reembed', status: 'error', message: 'SDK re-init failed after dropping vec tables' });
+            // 2. Drop old vec tables and re-init SDK (recreates with new dimensions)
+            try {
+              const sqliteRaw = (sdk as any).sqlite ?? (sdk as any).db?.sqlite;
+              if (sqliteRaw) {
+                sqliteRaw.exec('DROP TABLE IF EXISTS knowledge_embeddings');
+                sqliteRaw.exec('DROP TABLE IF EXISTS plans_embeddings');
+              }
+            } catch (e) { console.warn('[CogniStore] Drop vec tables failed:', e); }
+
+            await sdk.close();
+            sdkReady = false;
+            const reinitOk = await tryInitSDK();
+
+            // 3. Re-embed all knowledge entries
+            if (reinitOk) {
+              try {
+                const reembedded = await sdk.reembedAll();
+                results.push({ step: 'reembed', status: 'success', message: `Re-embedded ${reembedded} entries with new model` });
+                console.log(`[CogniStore] Re-embedded ${reembedded} entries`);
+              } catch (e: any) {
+                results.push({ step: 'reembed', status: 'error', message: e.message });
+              }
+            } else {
+              results.push({ step: 'reembed', status: 'error', message: 'SDK re-init failed after dropping vec tables' });
+            }
           }
         }
       }
