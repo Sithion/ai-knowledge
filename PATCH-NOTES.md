@@ -1,5 +1,27 @@
 # Patch Notes
 
+## v2.2.3
+
+A meticulous three-reviewer (code / security / quality) hardening pass over the whole app. No new features; fixes + robustness + test coverage. All artifacts redeploy automatically on app upgrade — no manual action needed.
+
+### Fixes
+- **Copilot's `[COGNISTORE-PROTOCOL]` injection was silently dropped on macOS.** `copilot/user-prompt-check.sh` escaped the DB-sourced protocol with the GNU-only `sed ':a;N;$!ba;s/\n/\\n/g'` idiom, which errors on macOS/BSD `sed` (`unused label 'a'`) → a literal newline landed inside the JSON string → Copilot CLI received invalid JSON and dropped the protocol for **every macOS Copilot user**. Replaced with a single portable `awk` pass (escapes `\`, `"`, folds newlines to `\n`) — no jq/perl/python dependency. Regression test added.
+- **The dashboard frontend was never type-checked — three real bugs were shipping.** `vite`/esbuild strips types from `.tsx`, and the frontend `tsconfig` (inheriting the root `lib:["ES2022"]` without DOM) emitted ~142 false DOM errors, so nobody ran `tsc` on it. With the `lib`/`types` fixed, the genuine errors surfaced: (1) `SetupPage` read `nodeReady` from a `catch` fallback that omitted it (failed status check → `undefined`); (2) the Plans list computed progress from detail-view state that's null in list view, so the **mini progress bar never rendered**; (3) `archivePlan` in the MCP server passed a bare `'archived'` string instead of the `KnowledgeStatus` enum. All fixed, plus two React-19 `useRef` arg fixes.
+
+### Security / robustness
+- **`POST /api/import` now validates its body.** It was the only write endpoint with zero validation (`request.body as any` straight into the importer). A bounded zod schema now gates it (type enum, content ≤ 500 KB, ≤ 200 tags, ≤ 50 000 items, unknown keys stripped) → **400** on a bad payload; the existing system→pattern rewrite stays as a second guard so a privileged `system` entry can never be imported.
+- **Plan-file read closed a TOCTOU window.** `GET /api/plans/:id/file` validated the (DB-stored, allow-listed) path, then re-resolved it for `existsSync`/`statSync`/`readFileSync` — a local symlink-swap race between check and read could leak 256 KB of another file. It now opens the fd **once** (`O_RDONLY|O_NOFOLLOW`) and `fstat`s + reads from that fd, so the resolved file can't be swapped out from under it.
+- **Upgrade re-embed no longer drops data when Ollama is down.** On a dimension-change upgrade the server dropped the vec tables then re-embedded; if Ollama was unavailable, semantic search was degraded until a later successful re-embed. It now pre-flights an embed probe and **skips the drop** (keeping existing embeddings) when Ollama can't embed.
+- **Ollama and frontend fetches are now time-bounded.** `@cognistore/embeddings` had no request timeout — a stalled Ollama socket could hang SDK init and every search. Added `AbortSignal.timeout` (30 s embed, 10 s health, 30 s connect + 120 s idle-guard on the model-pull stream). The dashboard API client gained a 30 s default request timeout (30 min for setup/upgrade/uninstall) so a stalled call surfaces an error instead of an infinite spinner.
+
+### i18n
+- **SettingsPage maintenance strings now translate.** The redeploy/cleanup result messages and two button tooltips were hardcoded English; moved to `t()` keys in en/es/pt (with i18next plurals for the orphan-count and failed-step messages).
+
+### Tests / internal
+- **New HTTP-endpoint test harness.** Boots the real dashboard sidecar against a temp DB + an in-test mock Ollama and exercises the route handlers the service-level tests can't reach: the `/api/import` zod gate (invalid/oversized/empty → 400, valid strips unknown keys, `system`→`pattern`), the plan-file allow-list + fd read (404 / 403 / missing / real read), and CRUD error shapes. Runs on CI with no Ollama installed.
+- **CI now type-checks the frontend + MCP server.** New `type-check` job runs `pnpm type-check` (dashboard frontend, server, MCP server, and each package's `tsc`).
+- **Server hygiene (mechanical, behavior-preserving):** a typed `getRawSqlite()` accessor centralizing the raw-handle casts, and a `sendError()` helper collapsing the repeated `reply.code(n); return { error }` pattern.
+
 ## v2.2.2
 
 ### Fixes

@@ -1,9 +1,9 @@
 {
   "name": "@cognistore/mcp-server",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "private": false,
   "type": "module",
-  "description": "MCP server for CogniStore \u2014 integrates with Claude Code and GitHub Copilot",
+  "description": "MCP server for CogniStore — integrates with Claude Code and GitHub Copilot",
   "license": "MIT",
   "repository": {
     "type": "git",
