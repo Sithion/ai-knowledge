@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, sep } from 'node:path';
 import { execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -16,6 +16,7 @@ import type {
 } from '@cognistore/shared';
 import {
   mergeTagsBatchSchema,
+  importSchema,
   updatePlanSchema,
   createPlanTaskSchema,
   updatePlanTaskSchema,
@@ -1808,17 +1809,24 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post('/api/import', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
+    const parsed = importSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: parsed.error.issues[0]?.message ?? 'Invalid import payload' };
+    }
     try {
-      const body = request.body as any;
-      const include: string[] = body.include || [];
+      const body = parsed.data;
+      const include = body.include;
       const result: Record<string, unknown> = {};
 
-      if (include.includes('knowledge') && Array.isArray(body.knowledge)) {
-        const sanitized = body.knowledge.map((e: any) => e.type === 'system' ? { ...e, type: 'pattern' } : e);
-        result.knowledge = await sdk.importKnowledge(sanitized);
+      if (include.includes('knowledge') && body.knowledge) {
+        // Second guard (the schema already bounds/strips): never import a
+        // privileged system entry — rewrite it to a normal pattern entry.
+        const sanitized = body.knowledge.map((e) => e.type === 'system' ? { ...e, type: 'pattern' } : e);
+        result.knowledge = await sdk.importKnowledge(sanitized as any);
       }
 
-      if (include.includes('plans') && Array.isArray(body.plans)) {
+      if (include.includes('plans') && body.plans) {
         result.plans = await sdk.importPlans(body.plans);
       }
 
@@ -1921,24 +1929,32 @@ Pass an array to addKnowledge to create multiple entries at once.
       if (r.error === 'disallowed') { reply.code(403); return { error: 'Forbidden' }; }
       return { exists: false };
     }
-    if (!existsSync(r.path)) return { exists: false };
-    const st = statSync(r.path);
-    if (!st.isFile()) return { exists: false };
-    let content: string;
-    let truncated = false;
-    if (st.size > PLAN_FILE_MAX_BYTES) {
-      // Bounded read: only the first PLAN_FILE_MAX_BYTES, never load the whole file.
-      const fd = openSync(r.path, 'r');
-      try {
-        const buf = Buffer.alloc(PLAN_FILE_MAX_BYTES);
-        const read = readSync(fd, buf, 0, PLAN_FILE_MAX_BYTES, 0);
-        content = buf.subarray(0, read).toString('utf-8');
-      } finally { closeSync(fd); }
-      truncated = true;
-    } else {
-      content = readFileSync(r.path, 'utf-8');
+    // Open the fd ONCE, then fstat + read from THAT fd — never re-resolve the
+    // path. This closes the TOCTOU between the allow-list/symlink check above and
+    // the read: a local race that swaps r.path to a symlink can't redirect us.
+    // O_NOFOLLOW refuses a symlink at the final path component.
+    let fd: number;
+    try {
+      fd = openSync(r.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch {
+      // ENOENT (missing) or ELOOP (symlink at final component) → not found.
+      return { exists: false };
     }
-    return { exists: true, path: r.path, content, truncated };
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile()) return { exists: false };
+      const cap = Math.min(st.size, PLAN_FILE_MAX_BYTES);
+      const buf = Buffer.alloc(cap);
+      const read = readSync(fd, buf, 0, cap, 0);
+      return {
+        exists: true,
+        path: r.path,
+        content: buf.subarray(0, read).toString('utf-8'),
+        truncated: st.size > PLAN_FILE_MAX_BYTES,
+      };
+    } finally {
+      closeSync(fd);
+    }
   });
 
   app.post<{ Params: { id: string } }>('/api/plans/:id/open', async (request, reply) => {

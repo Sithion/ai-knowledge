@@ -104,3 +104,35 @@ export const mergeTagsBatchSchema = z.object({
     to: z.string().min(1, 'to is required'),
   })).min(1, 'at least one merge is required').max(50, 'at most 50 merges per batch'),
 });
+
+// ─── Import ───────────────────────────────────────────────────
+
+const MAX_IMPORT_ITEMS = 50_000;
+
+/**
+ * Tolerant of the JSON export shape (expiresAt is a string, not a Date; scope
+ * isn't re-regex'd) but bounds field lengths and STRIPS unknown keys (z.object
+ * default). `type` allows every KnowledgeType including 'system' — the import
+ * endpoint rewrites system→pattern as a second guard so privileged system
+ * entries can't be imported.
+ */
+const importKnowledgeEntrySchema = z.object({
+  title: z.string().max(2_000).optional(),
+  content: z.string().min(1).max(500_000),
+  tags: z.array(z.string().max(200)).max(200).optional().default([]),
+  type: knowledgeTypeSchema,
+  scope: z.string().min(1).max(300),
+  source: z.string().max(300).optional(),
+  confidenceScore: z.number().min(0).max(1).optional(),
+  expiresAt: z.string().max(64).nullable().optional(),
+  relatedIds: z.array(z.string().max(64)).nullable().optional(),
+  agentId: z.string().max(200).nullable().optional(),
+});
+
+/** Body of POST /api/import. Knowledge entries are strictly shaped+bounded;
+ *  plans are passed through (importPlans needs their full shape) but bounded. */
+export const importSchema = z.object({
+  include: z.array(z.string().max(50)).max(10).optional().default([]),
+  knowledge: z.array(importKnowledgeEntrySchema).max(MAX_IMPORT_ITEMS).optional(),
+  plans: z.array(z.record(z.unknown())).max(MAX_IMPORT_ITEMS).optional(),
+});
