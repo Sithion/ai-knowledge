@@ -793,6 +793,17 @@ Pass an array to addKnowledge to create multiple entries at once.
           const destDir = resolve(home, '.claude', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
+          const destHooks = resolve(destDir, 'hooks');
+          if (existsSync(resolve(srcDir, 'hooks'))) {
+            for (const file of readdirSync(destHooks)) {
+              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
+            }
+          } else if (existsSync(destHooks)) {
+            // Stale hooks/ from an older template version (current skills ship
+            // SKILL.md only) — they embed outdated tool names; remove so agents
+            // stop receiving stale instructions after upgrade.
+            rmSync(destHooks, { recursive: true, force: true });
+          }
           results.push(`Skill ${name} installed (Claude)`);
         }
       }
@@ -803,6 +814,17 @@ Pass an array to addKnowledge to create multiple entries at once.
           const destDir = resolve(home, '.copilot', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
+          const destHooks = resolve(destDir, 'hooks');
+          if (existsSync(resolve(srcDir, 'hooks'))) {
+            for (const file of readdirSync(destHooks)) {
+              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
+            }
+          } else if (existsSync(destHooks)) {
+            // Stale hooks/ from an older template version (current skills ship
+            // SKILL.md only) — they embed outdated tool names; remove so agents
+            // stop receiving stale instructions after upgrade.
+            rmSync(destHooks, { recursive: true, force: true });
+          }
           results.push(`Skill ${name} installed (Copilot)`);
         }
       }
@@ -1044,11 +1066,16 @@ Pass an array to addKnowledge to create multiple entries at once.
           const destDir = resolve(home, '.claude', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
-          const hooksDir = resolve(destDir, 'hooks');
-          if (existsSync(hooksDir)) {
-            for (const file of readdirSync(hooksDir)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(hooksDir, file), 0o755);
+          const destHooks = resolve(destDir, 'hooks');
+          if (existsSync(resolve(srcDir, 'hooks'))) {
+            for (const file of readdirSync(destHooks)) {
+              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
             }
+          } else if (existsSync(destHooks)) {
+            // Stale hooks/ from an older template version (current skills ship
+            // SKILL.md only) — they embed outdated tool names; remove so agents
+            // stop receiving stale instructions after upgrade.
+            rmSync(destHooks, { recursive: true, force: true });
           }
         }
       }
@@ -1059,11 +1086,16 @@ Pass an array to addKnowledge to create multiple entries at once.
           const destDir = resolve(home, '.copilot', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
-          const hooksDir = resolve(destDir, 'hooks');
-          if (existsSync(hooksDir)) {
-            for (const file of readdirSync(hooksDir)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(hooksDir, file), 0o755);
+          const destHooks = resolve(destDir, 'hooks');
+          if (existsSync(resolve(srcDir, 'hooks'))) {
+            for (const file of readdirSync(destHooks)) {
+              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
             }
+          } else if (existsSync(destHooks)) {
+            // Stale hooks/ from an older template version (current skills ship
+            // SKILL.md only) — they embed outdated tool names; remove so agents
+            // stop receiving stale instructions after upgrade.
+            rmSync(destHooks, { recursive: true, force: true });
           }
         }
       }
@@ -1157,11 +1189,16 @@ Pass an array to addKnowledge to create multiple entries at once.
           const destDir = resolve(home, '.claude', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
-          const hooksDir = resolve(destDir, 'hooks');
-          if (existsSync(hooksDir)) {
-            for (const file of readdirSync(hooksDir)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(hooksDir, file), 0o755);
+          const destHooks = resolve(destDir, 'hooks');
+          if (existsSync(resolve(srcDir, 'hooks'))) {
+            for (const file of readdirSync(destHooks)) {
+              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
             }
+          } else if (existsSync(destHooks)) {
+            // Stale hooks/ from an older template version (current skills ship
+            // SKILL.md only) — they embed outdated tool names; remove so agents
+            // stop receiving stale instructions after upgrade.
+            rmSync(destHooks, { recursive: true, force: true });
           }
         }
       }
@@ -1171,11 +1208,16 @@ Pass an array to addKnowledge to create multiple entries at once.
           const destDir = resolve(home, '.copilot', 'skills', name);
           mkdirSync(destDir, { recursive: true });
           cpSync(srcDir, destDir, { recursive: true });
-          const hooksDir = resolve(destDir, 'hooks');
-          if (existsSync(hooksDir)) {
-            for (const file of readdirSync(hooksDir)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(hooksDir, file), 0o755);
+          const destHooks = resolve(destDir, 'hooks');
+          if (existsSync(resolve(srcDir, 'hooks'))) {
+            for (const file of readdirSync(destHooks)) {
+              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
             }
+          } else if (existsSync(destHooks)) {
+            // Stale hooks/ from an older template version (current skills ship
+            // SKILL.md only) — they embed outdated tool names; remove so agents
+            // stop receiving stale instructions after upgrade.
+            rmSync(destHooks, { recursive: true, force: true });
           }
         }
       }

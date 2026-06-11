@@ -6,7 +6,9 @@ export default {
     "tool.execute.after": async (event) => {
       const workTools = ["Write", "Edit", "MultiEdit", "Bash", "NotebookEdit"];
       const toolName = event.tool || "";
-      if (toolName.startsWith("mcp__cognistore__")) return;
+      // OpenCode exposes MCP tools as cognistore_<tool>; the Claude-style
+      // mcp__cognistore__ form is kept only for compat with older setups.
+      if (toolName.startsWith("cognistore_") || toolName.startsWith("mcp__cognistore__")) return;
       if (workTools.includes(toolName)) {
         console.log("📋 If you have an active plan, ensure task tracking is current.");
       }

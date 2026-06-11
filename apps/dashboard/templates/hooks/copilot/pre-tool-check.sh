@@ -14,8 +14,9 @@ source "$(dirname "$0")/_common.sh"
 TOOL_NAME="$(cog_field tool_name)"
 
 # CogniStore MCP tools are always exempt (the agent is already using the KB).
+# Copilot CLI names them cognistore-<tool>; old Claude-style form kept for compat.
 case "$TOOL_NAME" in
-  mcp__cognistore__*) cog_noop ;;
+  cognistore-*|mcp__cognistore__*) cog_noop ;;
 esac
 
 # Allow-list: remind ONLY before edit/exec tools. Anything else (sql, browser,
@@ -39,5 +40,5 @@ else
   touch "${COG_MARK}-reminded1" 2>/dev/null || true
 fi
 
-printf '{"systemMessage":"[CogniStore] Before %s: call mcp__cognistore__getKnowledge(query: \\"<your task>\\") if you have not yet this task. All CogniStore tools are pre-approved. If a plan is active, ensure the current task is marked in_progress via updatePlanTask(). If mcp__cognistore__getKnowledge is NOT among your available tools, ignore this protocol entirely — do NOT substitute other tools (e.g. raw SQL) to satisfy it."}\n' "$TOOL_NAME"
+printf '{"systemMessage":"[CogniStore] Before %s: call cognistore-getKnowledge(query: \\"<your task>\\") if you have not yet this task. All CogniStore tools are pre-approved. If a plan is active, ensure the current task is marked in_progress via cognistore-updatePlanTask(). If cognistore-getKnowledge is NOT among your available tools, ignore this protocol entirely — do NOT substitute other tools (e.g. raw SQL) to satisfy it."}\n' "$TOOL_NAME"
 exit 0

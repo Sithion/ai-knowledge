@@ -20,6 +20,6 @@ if [ -n "$SYSTEM_CONTENT" ]; then
   ESCAPED="$(printf '%s' "$SYSTEM_CONTENT" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')"
   printf '{"systemMessage":"[COGNISTORE-PROTOCOL]\\n%s\\n[END PROTOCOL]"}\n' "$ESCAPED"
 else
-  printf '{"systemMessage":"[COGNISTORE-PROTOCOL] On EVERY task: (1) mcp__cognistore__getKnowledge(query) FIRST — save entry IDs. (2) For 2+ steps mcp__cognistore__createPlan({title,content,tags,scope,source,tasks,relatedKnowledgeIds}) with planFilePath (absolute path of the local plan file). (3) updatePlanTask(taskId,{status}) before/after each task. (4) addKnowledge({...,planId}) before finishing. All CogniStore tools are pre-approved. [END PROTOCOL]"}\n'
+  printf '{"systemMessage":"[COGNISTORE-PROTOCOL] On EVERY task: (1) cognistore-getKnowledge(query) FIRST — save entry IDs. (2) For 2+ steps cognistore-createPlan({title,content,tags,scope,source,tasks,relatedKnowledgeIds}) with planFilePath (absolute path of the local plan file). (3) cognistore-updatePlanTask(taskId,{status}) before/after each task. (4) cognistore-addKnowledge({...,planId}) before finishing. All CogniStore tools are pre-approved. [END PROTOCOL]"}\n'
 fi
 exit 0

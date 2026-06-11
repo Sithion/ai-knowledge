@@ -22,15 +22,15 @@ description: >
 ## How to Call
 
 ```
-mcp__cognistore__getKnowledge(query: "<describe the task or problem>")
+cognistore-getKnowledge(query: "<describe the task or problem>")
 ```
 
 ### Examples
 
 ```
-mcp__cognistore__getKnowledge(query: "authentication middleware patterns")
-mcp__cognistore__getKnowledge(query: "database migration approach")
-mcp__cognistore__getKnowledge(query: "React form validation approach")
+cognistore-getKnowledge(query: "authentication middleware patterns")
+cognistore-getKnowledge(query: "database migration approach")
+cognistore-getKnowledge(query: "React form validation approach")
 ```
 
 ## Evaluate Results
@@ -46,14 +46,14 @@ mcp__cognistore__getKnowledge(query: "React form validation approach")
 - **FIRST action of every task** — before reading files, before writing code, before making decisions
 - **No exceptions** — no task is "too simple" or "too obvious" to query first
 - **A single query costs ~30 tokens** — a missed cache hit wastes 2,000–8,000 tokens on redundant work
-- **After completing work** — store new findings using `mcp__cognistore__addKnowledge`
+- **After completing work** — store new findings using `cognistore-addKnowledge`
 
 ## Knowledge Management: Update, Don't Duplicate
 
 When a query returns an existing entry and your work produces updated information:
 
-- **UPDATE the existing entry** using `mcp__cognistore__updateKnowledge(id, ...)` — do NOT create a new one
-- **DELETE obsolete entries** using `mcp__cognistore__deleteKnowledge(id)` if the knowledge is no longer valid
+- **UPDATE the existing entry** using `cognistore-updateKnowledge(id, ...)` — do NOT create a new one
+- **DELETE obsolete entries** using `cognistore-deleteKnowledge(id)` if the knowledge is no longer valid
 - **Only ADD new entries** when the knowledge is genuinely new (no existing entry covers the topic)
 
 ## What's Worth Storing
@@ -67,9 +67,9 @@ Only capture knowledge that **saves future sessions significant time**:
 
 | Tool | Purpose |
 |------|---------|
-| `mcp__cognistore__getKnowledge` | Query knowledge (this skill) |
-| `mcp__cognistore__addKnowledge` | Store new knowledge |
-| `mcp__cognistore__updateKnowledge` | Update existing entry |
-| `mcp__cognistore__deleteKnowledge` | Remove outdated entry |
-| `mcp__cognistore__listTags` | Browse all tags |
-| `mcp__cognistore__healthCheck` | Verify system status |
+| `cognistore-getKnowledge` | Query knowledge (this skill) |
+| `cognistore-addKnowledge` | Store new knowledge |
+| `cognistore-updateKnowledge` | Update existing entry |
+| `cognistore-deleteKnowledge` | Remove outdated entry |
+| `cognistore-listTags` | Browse all tags |
+| `cognistore-healthCheck` | Verify system status |

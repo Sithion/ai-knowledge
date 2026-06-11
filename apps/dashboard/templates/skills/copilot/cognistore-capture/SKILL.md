@@ -24,7 +24,7 @@ description: >
 ## How to Call
 
 ```
-mcp__cognistore__addKnowledge({
+cognistore-addKnowledge({
   title: "Descriptive title for semantic search",
   content: "Description of what was learned",
   type: "fix" | "decision" | "pattern" | "constraint" | "gotcha",
@@ -52,8 +52,8 @@ Only store knowledge that **saves significant time in future sessions**. Do NOT 
 
 **CRITICAL**: Before calling `addKnowledge`, check if a related entry already exists from your initial query:
 
-1. If yes → **UPDATE it** with `mcp__cognistore__updateKnowledge(id, { content, tags })` instead of creating a new entry
-2. If the existing entry is wrong → **DELETE it** with `mcp__cognistore__deleteKnowledge(id)` and create a fresh one
+1. If yes → **UPDATE it** with `cognistore-updateKnowledge(id, { content, tags })` instead of creating a new entry
+2. If the existing entry is wrong → **DELETE it** with `cognistore-deleteKnowledge(id)` and create a fresh one
 3. Only **ADD** when the knowledge is genuinely new — no existing entry covers the topic
 
 ## Rules

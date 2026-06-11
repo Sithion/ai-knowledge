@@ -7,7 +7,7 @@ description: "Create and track CogniStore plans for multi-step tasks"
 For tasks with 2+ steps, create a plan and track execution.
 
 ```
-mcp__cognistore__createPlan({
+cognistore_createPlan({
   title, content: "<structured plan>", tags, scope, source,
   tasks: [{ description: "Step 1" }, ...],
   relatedKnowledgeIds: ["<ids>"]

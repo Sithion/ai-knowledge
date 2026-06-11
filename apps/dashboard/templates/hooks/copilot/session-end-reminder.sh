@@ -10,6 +10,6 @@ if [ -f "$CAPTURED" ]; then
   printf '{"systemMessage":"[CogniStore] Session ending — knowledge captured. Mark remaining plan tasks completed. Discovered a reusable PATTERN about a language/framework/tool? Store it with type: \\"pattern\\", scope: \\"global\\"."}\n'
 else
   cleanup
-  printf '{"systemMessage":"[CogniStore] Session ending — you have NOT captured knowledge. If you learned, fixed, decided, or discovered anything reusable, call mcp__cognistore__addKnowledge({ title, content, tags, type, scope, source, planId }) NOW. Reusable insights → type: \\"pattern\\", scope: \\"global\\". All CogniStore tools are pre-approved."}\n'
+  printf '{"systemMessage":"[CogniStore] Session ending — you have NOT captured knowledge. If you learned, fixed, decided, or discovered anything reusable, call cognistore-addKnowledge({ title, content, tags, type, scope, source, planId }) NOW. Reusable insights → type: \\"pattern\\", scope: \\"global\\". All CogniStore tools are pre-approved."}\n'
 fi
 exit 0
