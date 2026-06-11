@@ -1861,6 +1861,9 @@ Pass an array to addKnowledge to create multiple entries at once.
   const ALLOWED_PLAN_FILE_ROOTS = [
     resolve(homedir(), '.claude', 'plans'),
     resolve(homedir(), '.cognistore'),
+    // Copilot CLI writes plan files under its session dir
+    // (~/.copilot/session-state/<sid>/files/<name>.md or .../plan.md).
+    resolve(homedir(), '.copilot', 'session-state'),
   ];
   const isUnderAllowedRoot = (abs: string) =>
     ALLOWED_PLAN_FILE_ROOTS.some((root) => abs === root || abs.startsWith(root + sep));

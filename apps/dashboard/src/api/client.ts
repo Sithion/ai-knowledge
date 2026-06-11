@@ -1,5 +1,14 @@
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+/** Error thrown for non-OK API responses — carries the HTTP status so callers
+ *  can distinguish e.g. 403 (disallowed) from 404 (missing). */
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
   if (options?.body) {
@@ -10,7 +19,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
   if (!response.ok) {
-    throw new Error(`API error: ${response.statusText}`);
+    throw new ApiError(`API error: ${response.statusText}`, response.status);
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.includes('application/json')) {
