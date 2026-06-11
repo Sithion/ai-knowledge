@@ -188,16 +188,25 @@ async function start() {
   };
 
   const SYSTEM_KNOWLEDGE_TITLE = 'CogniStore Agent Workflow';
+  // This seed is ONE DB entry injected into EVERY session of EVERY platform
+  // (Claude Code, Copilot CLI, OpenCode) via UserPromptSubmit hooks — so tool
+  // references must be platform-neutral. Each platform exposes the cognistore
+  // MCP tools under its own name (see the prefix note in the text below);
+  // hardcoding one platform's full names here caused "Tool does not exist"
+  // errors on the others.
   const SYSTEM_KNOWLEDGE_CONTENT = `## CRITICAL: On EVERY task, you MUST: (1) getKnowledge() FIRST, (2) createPlan() for 2+ steps, (3) addKnowledge() LAST. No exceptions. All CogniStore tools are pre-approved — call them directly.
+
+## Tool naming — use the form shown in YOUR tool list
+CogniStore tools carry a platform prefix: mcp__cognistore__<tool> in Claude Code, cognistore-<tool> in Copilot CLI, cognistore_<tool> in OpenCode. The steps below use the bare tool name — call it with the prefix your platform shows. If NO cognistore tool exists in your tool list, skip this protocol entirely — never substitute other tools (e.g. raw SQL) to simulate it.
 
 ## Your Workflow — Follow on every task automatically
 
 ### 1. Search existing knowledge (FIRST action)
-mcp__cognistore__getKnowledge(query: "<describe your task>")
+getKnowledge(query: "<describe your task>")
 Save any returned entry IDs for step 2.
 
 ### 2. Create a plan (for tasks with 2+ steps)
-mcp__cognistore__createPlan({
+createPlan({
   title, content, tags, scope, source,
   tasks: [{ description: "Step 1" }, { description: "Step 2" }, ...],
   relatedKnowledgeIds: ["<ids-from-step-1>"]
@@ -209,12 +218,12 @@ Plan completes automatically when all tasks are done.
 MANDATORY: if you wrote the plan to a local file (e.g. plan mode writes ~/.claude/plans/<name>.md), you MUST pass its ABSOLUTE path as planFilePath so the CogniStore plan links back to the on-disk file. Always.
 
 ### 3. Track each task
-Before starting a task: mcp__cognistore__updatePlanTask(taskId, { status: "in_progress" })
-After finishing a task: mcp__cognistore__updatePlanTask(taskId, { status: "completed" })
+Before starting a task: updatePlanTask(taskId, { status: "in_progress" })
+After finishing a task: updatePlanTask(taskId, { status: "completed" })
 Use updatePlanTasks (plural) to update multiple tasks at once.
 
 ### 4. Save what you learned (LAST action)
-mcp__cognistore__addKnowledge({
+addKnowledge({
   title, content, tags, type, scope, source,
   planId: "<your-plan-id>"
 })
