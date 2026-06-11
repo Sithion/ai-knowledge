@@ -9,15 +9,32 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+// Default per-request timeout. A stalled sidecar (crashed mid-request) used to
+// leave the UI spinner forever; AbortSignal.timeout fails the call instead.
+// Long-running setup/upgrade calls pass a larger timeoutMs (see api below).
+const DEFAULT_TIMEOUT_MS = 30_000;
+// Setup/upgrade calls (model pulls, installs, re-embed) legitimately run for
+// minutes — bound them generously rather than at the 30s default.
+const LONG_TIMEOUT_MS = 30 * 60_000;
+
+async function request<T>(path: string, options?: RequestInit, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> {
   const headers: Record<string, string> = {};
   if (options?.body) {
     headers['Content-Type'] = 'application/json';
   }
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers,
-    ...options,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers,
+      signal: options?.signal ?? AbortSignal.timeout(timeoutMs),
+      ...options,
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      throw new ApiError('Request timed out — the backend did not respond', 0);
+    }
+    throw e;
+  }
   if (!response.ok) {
     throw new ApiError(`API error: ${response.statusText}`, response.status);
   }
@@ -47,22 +64,22 @@ export interface SetupResult {
 }
 
 export const api = {
-  // Setup
+  // Setup — installs/downloads can take minutes; allow a long (but bounded) timeout.
   getSetupStatus: () => request<SetupStatus>('/api/setup/status'),
-  setupNode: () => request<SetupResult>('/api/setup/node', { method: 'POST' }),
-  setupOllama: () => request<SetupResult>('/api/setup/ollama', { method: 'POST' }),
-  setupOllamaStart: () => request<SetupResult>('/api/setup/ollama-start', { method: 'POST' }),
+  setupNode: () => request<SetupResult>('/api/setup/node', { method: 'POST' }, LONG_TIMEOUT_MS),
+  setupOllama: () => request<SetupResult>('/api/setup/ollama', { method: 'POST' }, LONG_TIMEOUT_MS),
+  setupOllamaStart: () => request<SetupResult>('/api/setup/ollama-start', { method: 'POST' }, LONG_TIMEOUT_MS),
   setupDatabase: () => request<SetupResult>('/api/setup/database', { method: 'POST' }),
-  setupModel: () => request<SetupResult>('/api/setup/model', { method: 'POST' }),
+  setupModel: () => request<SetupResult>('/api/setup/model', { method: 'POST' }, LONG_TIMEOUT_MS),
   setupConfigure: () => request<SetupResult>('/api/setup/configure', { method: 'POST' }),
   setupComplete: () => request<SetupResult>('/api/setup/complete', { method: 'POST' }),
 
-  // Upgrade
+  // Upgrade — re-embed + model pull can take minutes.
   checkUpgrade: () => request<{ needsUpgrade: boolean; fromVersion: string | null; toVersion: string; isFirstInstall: boolean }>('/api/upgrade/check'),
-  runUpgrade: () => request<{ success: boolean; fromVersion: string; toVersion: string; results: { step: string; status: string; message?: string }[] }>('/api/upgrade/run', { method: 'POST' }),
+  runUpgrade: () => request<{ success: boolean; fromVersion: string; toVersion: string; results: { step: string; status: string; message?: string }[] }>('/api/upgrade/run', { method: 'POST' }, LONG_TIMEOUT_MS),
 
   // Uninstall
-  uninstallAll: () => request<SetupResult>('/api/uninstall', { method: 'POST' }),
+  uninstallAll: () => request<SetupResult>('/api/uninstall', { method: 'POST' }, LONG_TIMEOUT_MS),
 
   // Knowledge CRUD
   search: (query: string, options?: Record<string, unknown>) =>
