@@ -243,7 +243,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     if (!sdkReady) return;
     try {
       // listRecent filters system entries, so use direct sqlite query
-      const existing = (sdk as any).sqlite?.prepare?.(
+      const existing = getRawSqlite()?.prepare?.(
         "SELECT id FROM knowledge_entries WHERE type = 'system' AND title = ?"
       )?.get(SYSTEM_KNOWLEDGE_TITLE) as { id: string } | undefined;
 
@@ -313,6 +313,19 @@ Pass an array to addKnowledge to create multiple entries at once.
     }
     return null;
   };
+
+  /** Set the status code and return a uniform error body. Centralizes the
+   *  reply.code(n); return { error } pattern repeated across handlers. */
+  const sendError = (reply: any, code: number, error: string, extra?: Record<string, unknown>) => {
+    reply.code(code);
+    return { error, ...extra };
+  };
+
+  /** The SDK keeps its better-sqlite3 handle private; a few maintenance/integrity
+   *  paths need raw access. Centralize the one unavoidable cast here. */
+  type RawSqlite = { prepare: (sql: string) => any; exec: (sql: string) => unknown; transaction?: (fn: any) => any };
+  const getRawSqlite = (): RawSqlite | undefined =>
+    ((sdk as any).sqlite ?? (sdk as any).db?.sqlite) as RawSqlite | undefined;
 
   // ─── Setup endpoints ───────────────────────────────────────────
 
@@ -875,7 +888,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   let upgradeRunning = false;
   app.post('/api/upgrade/run', async (request, reply) => {
-    if (upgradeRunning) { reply.code(409); return { error: 'Upgrade already in progress' }; }
+    if (upgradeRunning) { return sendError(reply, 409, 'Upgrade already in progress'); }
     upgradeRunning = true;
     const results: { step: string; status: 'success' | 'error' | 'skipped'; message?: string }[] = [];
 
@@ -896,7 +909,7 @@ Pass an array to addKnowledge to create multiple entries at once.
         const needsReembed = await (async () => {
           try {
             // Check if vec table has wrong dimensions by trying a dummy query
-            const sqliteRaw = (sdk as any).sqlite ?? (sdk as any).db?.sqlite;
+            const sqliteRaw = getRawSqlite();
             if (!sqliteRaw) return false;
             const row = sqliteRaw.prepare('SELECT embedding FROM knowledge_embeddings LIMIT 1').get() as { embedding: Buffer } | undefined;
             if (!row) return false; // No entries yet, nothing to re-embed
@@ -960,7 +973,7 @@ Pass an array to addKnowledge to create multiple entries at once.
           } else {
             // 2. Drop old vec tables and re-init SDK (recreates with new dimensions)
             try {
-              const sqliteRaw = (sdk as any).sqlite ?? (sdk as any).db?.sqlite;
+              const sqliteRaw = getRawSqlite();
               if (sqliteRaw) {
                 sqliteRaw.exec('DROP TABLE IF EXISTS knowledge_embeddings');
                 sqliteRaw.exec('DROP TABLE IF EXISTS plans_embeddings');
@@ -993,7 +1006,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     // Step 1c: Embedding integrity check — detect entries without embeddings
     try {
       if (sdkReady) {
-        const sqliteRaw = (sdk as any).sqlite ?? (sdk as any).db?.sqlite;
+        const sqliteRaw = getRawSqlite();
         if (sqliteRaw) {
           const entryCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_entries').get() as { c: number }).c;
           const embeddingCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_embeddings_rowids').get() as { c: number }).c;
@@ -1544,7 +1557,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
     const { from, to } = request.query;
-    if (!from || !to) { reply.code(400); return { error: 'from and to are required (ISO date)' }; }
+    if (!from || !to) { return sendError(reply, 400, 'from and to are required (ISO date)'); }
     const days = daysBetween(from, to);
     const rows = sdk.getOperationsByDay(days);
     // Filter to the exact requested range — getOperationsByDay returns the
@@ -1563,7 +1576,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       const err = ensureReady(reply);
       if (err) return err;
       const { from, to, source, model, project } = request.query;
-      if (!from || !to) { reply.code(400); return { error: 'from and to are required (ISO date)' }; }
+      if (!from || !to) { return sendError(reply, 400, 'from and to are required (ISO date)'); }
       return sdk.getTokenUsage({ from, to, source, model, project });
     },
   );
@@ -1714,7 +1727,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
     const entry = await sdk.getKnowledgeById(request.params.id);
-    if (!entry) { reply.code(404); return { error: 'Not found' }; }
+    if (!entry) { return sendError(reply, 404, 'Not found'); }
     return entry;
   });
 
@@ -1728,7 +1741,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
     const result = await sdk.updateKnowledge(request.params.id, request.body);
-    if (!result) { reply.code(404); return { error: 'Not found' }; }
+    if (!result) { return sendError(reply, 404, 'Not found'); }
     return result;
   });
 
@@ -1882,7 +1895,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply);
     if (err) return err;
     const result = sdk.getPlanById(request.params.id);
-    if (!result) { reply.code(404); return { error: 'Not found' }; }
+    if (!result) { return sendError(reply, 404, 'Not found'); }
     return result;
   });
 
@@ -1923,10 +1936,10 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply); if (err) return err;
     if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const plan = sdk.getPlanById(request.params.id);
-    if (!plan) { reply.code(404); return { error: 'Not found' }; }
+    if (!plan) { return sendError(reply, 404, 'Not found'); }
     const r = resolvePlanFilePath(plan.planFilePath);
     if ('error' in r) {
-      if (r.error === 'disallowed') { reply.code(403); return { error: 'Forbidden' }; }
+      if (r.error === 'disallowed') { return sendError(reply, 403, 'Forbidden'); }
       return { exists: false };
     }
     // Open the fd ONCE, then fstat + read from THAT fd — never re-resolve the
@@ -1961,7 +1974,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     const err = ensureReady(reply); if (err) return err;
     if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const plan = sdk.getPlanById(request.params.id);
-    if (!plan) { reply.code(404); return { error: 'Not found' }; }
+    if (!plan) { return sendError(reply, 404, 'Not found'); }
     const r = resolvePlanFilePath(plan.planFilePath);
     if ('error' in r) { reply.code(r.error === 'disallowed' ? 403 : 404); return { ok: false }; }
     if (!existsSync(r.path)) { reply.code(404); return { ok: false }; }
@@ -2012,7 +2025,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       return { error: parsed.error.issues[0]?.message ?? 'Invalid plan update' };
     }
     const result = sdk.updatePlan(request.params.id, parsed.data);
-    if (!result) { reply.code(404); return { error: 'Not found' }; }
+    if (!result) { return sendError(reply, 404, 'Not found'); }
     return result;
   });
 
@@ -2171,7 +2184,7 @@ Pass an array to addKnowledge to create multiple entries at once.
     try {
       const cfg = readProvidersConfig();
       const idx = cfg.providers.findIndex((p) => p.id === request.params.id);
-      if (idx === -1) { reply.code(404); return { error: 'Not found' }; }
+      if (idx === -1) { return sendError(reply, 404, 'Not found'); }
       const entry = providerEntrySchema.parse({ ...request.body, id: request.params.id });
       cfg.providers[idx] = entry;
       writeProvidersConfig(cfg);
@@ -2215,7 +2228,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   app.post<{ Params: { id: string }; Body: { redirectUri?: string } }>('/api/providers/:id/oauth/start', async (request, reply) => {
     const entry = readProvidersConfig().providers.find((p) => p.id === request.params.id);
-    if (!entry) { reply.code(404); return { error: 'Not found' }; }
+    if (!entry) { return sendError(reply, 404, 'Not found'); }
     if (entry.transport !== 'http' || entry.auth?.type !== 'oauth' || !entry.url) {
       reply.code(400); return { ok: false, message: 'not an OAuth provider' };
     }
@@ -2267,7 +2280,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   app.post<{ Params: { id: string } }>('/api/providers/:id/test', async (request, reply) => {
     const entry = readProvidersConfig().providers.find((p) => p.id === request.params.id);
-    if (!entry) { reply.code(404); return { error: 'Not found' }; }
+    if (!entry) { return sendError(reply, 404, 'Not found'); }
     // OAuth providers can't authorize from a headless route (no browser). If no
     // tokens are stored yet, tell the UI to run the interactive Connect flow.
     if (entry.transport === 'http' && entry.auth?.type === 'oauth') {
