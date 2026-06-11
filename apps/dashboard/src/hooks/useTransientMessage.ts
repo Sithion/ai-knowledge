@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  */
 export function useTransientMessage(timeoutMs = 5000): [string | null, (msg: string | null) => void] {
   const [message, setMessage] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const set = useCallback((msg: string | null) => {
     if (timer.current) clearTimeout(timer.current);

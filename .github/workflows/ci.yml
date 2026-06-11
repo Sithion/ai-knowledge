@@ -107,6 +107,22 @@ jobs:
           check_url "https://api.github.com/repos/Sithion/cognistore/releases/latest" "GitHub Releases API"
           if [ "$FAILED" -ne 0 ]; then exit 1; fi
 
+  type-check:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      # Type-checks the dashboard FRONTEND (.tsx — vite/esbuild skips it) and the
+      # MCP server (tsup/esbuild skips it); library packages type-check via their
+      # tsc build, pulled in by the turbo ^build dependency.
+      - run: pnpm type-check
+
   build-and-test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest

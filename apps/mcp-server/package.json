@@ -3,7 +3,7 @@
   "version": "2.2.2",
   "private": false,
   "type": "module",
-  "description": "MCP server for CogniStore — integrates with Claude Code and GitHub Copilot",
+  "description": "MCP server for CogniStore \u2014 integrates with Claude Code and GitHub Copilot",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -22,7 +22,8 @@
     "build:deps": "pnpm --filter @cognistore/shared build && pnpm --filter @cognistore/core build && pnpm --filter @cognistore/embeddings build && pnpm --filter @cognistore/sdk build",
     "dev": "tsx src/index.ts",
     "clean": "rm -rf dist",
-    "test": "if find . -name '*.test.ts' -o -name '*.spec.ts' | grep -q .; then npx playwright test; else echo 'No tests found, skipping'; fi"
+    "test": "if find . -name '*.test.ts' -o -name '*.spec.ts' | grep -q .; then npx playwright test; else echo 'No tests found, skipping'; fi",
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
