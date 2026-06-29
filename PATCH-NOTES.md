@@ -14,7 +14,7 @@ Provenance tracking — every knowledge entry and plan now records **which platf
 - New API endpoints `GET /api/metrics/by-agent` and `GET /api/metrics/by-platform`; `/api/knowledge/recent` accepts `agent`/`platform` query params.
 
 ### Fixes
-- **`osv-scan` CI is green again.** Four npm advisories with available fixes were failing the scan (`vite` 6.4.2→6.4.3, `hono` 4.12.24→4.12.25, `esbuild` 0.27.7→0.28.1, `@babel/core` 7.29.0→7.29.6). Root cause: the version pins lived in `pnpm-workspace.yaml`, whose `overrides:` block is **inert under pnpm 9** (a pnpm-10 feature) — so they never applied. The fixes now live in `package.json` `pnpm.overrides` where pnpm 9 reads them; the `esbuild` bump is a selective `esbuild@0.27.7` override so the drizzle-kit `0.18` loader is left untouched.
+- **`osv-scan` CI is green again.** Four npm advisories with available fixes were failing the scan (`vite` 6.4.2→6.4.3, `hono` 4.12.24→4.12.25, `esbuild` 0.27.7→0.28.1, `@babel/core` 7.29.0→7.29.6). Root cause: the version pins lived in `pnpm-workspace.yaml`, whose `overrides:` block is **inert under pnpm 9** (a pnpm-10 feature) — so they never applied. The fixes now live in `package.json` `pnpm.overrides` where pnpm 9 reads them; the `esbuild` bump is a selective `esbuild@0.27.7` override so the drizzle-kit `0.18` loader is left untouched. Also bumped the Rust crate `anyhow` 1.0.102→1.0.103 (RUSTSEC-2026-0190).
 
 ## v2.2.3
 
