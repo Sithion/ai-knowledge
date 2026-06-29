@@ -1,5 +1,21 @@
 # Patch Notes
 
+## v2.3.0
+
+Provenance tracking — every knowledge entry and plan now records **which platform** and **which agent** created it, with new dashboard charts and filters. The schema migration, MCP-config re-injection, and instruction/template updates all redeploy automatically on app upgrade — no manual action needed.
+
+### Features
+- **Agent & platform provenance.** Each entry/plan now carries a `platform` (the host app — Claude Code / Copilot / OpenCode, auto-detected) and an `agent` (the calling agent's own name, e.g. a custom `documentation` agent). The platform is detected automatically: the app injects a per-platform `COGNISTORE_PLATFORM` env var into each MCP config, with the MCP `clientInfo` handshake as a fallback (anything unrecognized → `unknown`). The agent is whatever a named/custom agent passes as `agentId` on `addKnowledge`/`createPlan` (left `unspecified` when not provided) — the injected instructions now remind custom agents to set it so their discoveries can be summarized per agent.
+- **Two new Stats charts: "Knowledge by Agent" and "Knowledge by Platform".** Both follow the global date range. The bars are clickable and deep-link to the knowledge list filtered by that agent/platform.
+- **Agent & platform filters on the knowledge list.** Browse mode now filters by `agent`/`platform` (via `?agent=`/`?platform=` deep-links from the charts), shown as removable filter chips.
+
+### Internal
+- **Migration `2.3.0`** adds `platform` to `knowledge_entries` and `agent_id` + `platform` to `plans` (plus indexes), in both the disk and embedded migration paths so the bundled MCP server and the dashboard stay in sync. New repository aggregations `countByAgent`/`countByPlatform` `COALESCE` NULL into a single `unspecified`/`unknown` bucket; the list filters round-trip those sentinels back to `IS NULL`.
+- New API endpoints `GET /api/metrics/by-agent` and `GET /api/metrics/by-platform`; `/api/knowledge/recent` accepts `agent`/`platform` query params.
+
+### Fixes
+- **`osv-scan` CI is green again.** Four npm advisories with available fixes were failing the scan (`vite` 6.4.2→6.4.3, `hono` 4.12.24→4.12.25, `esbuild` 0.27.7→0.28.1, `@babel/core` 7.29.0→7.29.6). Root cause: the version pins lived in `pnpm-workspace.yaml`, whose `overrides:` block is **inert under pnpm 9** (a pnpm-10 feature) — so they never applied. The fixes now live in `package.json` `pnpm.overrides` where pnpm 9 reads them; the `esbuild` bump is a selective `esbuild@0.27.7` override so the drizzle-kit `0.18` loader is left untouched.
+
 ## v2.2.3
 
 A meticulous three-reviewer (code / security / quality) hardening pass over the whole app. No new features; fixes + robustness + test coverage. All artifacts redeploy automatically on app upgrade — no manual action needed.

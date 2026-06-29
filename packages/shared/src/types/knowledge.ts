@@ -39,7 +39,10 @@ export interface KnowledgeEntry {
   expiresAt: Date | null;
   confidenceScore: number;
   relatedIds: string[] | null;
+  /** Caller-provided agent/role identity that created this entry (e.g. "documentation"). */
   agentId: string | null;
+  /** Auto-detected host platform: "claude-code" | "copilot" | "opencode" | "unknown". */
+  platform: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -55,6 +58,7 @@ export interface CreateKnowledgeInput {
   expiresAt?: Date | null;
   relatedIds?: string[] | null;
   agentId?: string | null;
+  platform?: string | null;
   skipDedup?: boolean;
 }
 
@@ -69,6 +73,7 @@ export interface UpdateKnowledgeInput {
   expiresAt?: Date | null;
   relatedIds?: string[] | null;
   agentId?: string | null;
+  platform?: string | null;
 }
 
 // ─── Plans (separate entity) ─────────────────────────────────
@@ -83,6 +88,10 @@ export interface Plan {
   source: string;
   /** Absolute path to the local plan file this plan was authored from (plan mode), if any. */
   planFilePath?: string | null;
+  /** Caller-provided agent/role identity that created this plan (e.g. "documentation"). */
+  agentId?: string | null;
+  /** Auto-detected host platform: "claude-code" | "copilot" | "opencode" | "unknown". */
+  platform?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -96,6 +105,8 @@ export interface CreatePlanInput {
   status?: KnowledgeStatus;
   /** Absolute path to the local plan file (REQUIRED whenever a plan was persisted to a file). */
   planFilePath?: string | null;
+  agentId?: string | null;
+  platform?: string | null;
 }
 
 export interface UpdatePlanInput {
@@ -106,6 +117,8 @@ export interface UpdatePlanInput {
   status?: KnowledgeStatus;
   source?: string;
   planFilePath?: string | null;
+  agentId?: string | null;
+  platform?: string | null;
 }
 
 // ─── Plan Tasks ──────────────────────────────────────────────

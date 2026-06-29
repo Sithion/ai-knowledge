@@ -34,6 +34,7 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 - **Zero configuration** — The setup wizard handles everything: Ollama, database, model downloads, MCP config injection, AI skills installation, and system knowledge seeding.
 - **System knowledge** — Mandatory protocol entries (type `system`) are seeded on setup, injected into agent sessions via hooks, hidden from the dashboard, and protected from deletion. Agents always operate with the correct protocol without manual configuration.
 - **Plans** — Create and manage implementation plans with task lists, priority tracking, relations to knowledge entries, and archive completed plans from the dashboard.
+- **Provenance tracking** — Every entry and plan records which **platform** (Claude Code / Copilot / OpenCode, auto-detected) and which **agent** (the calling agent's own name) created it, surfaced as dashboard charts and knowledge-list filters.
 - **Desktop dashboard** — Browse, search, filter, and manage your knowledge base and plans through the built-in UI with stats and charts. All destructive actions use modal confirmations.
 - **Auto-update** — The app checks for updates every 30 minutes and installs them automatically.
 - **Multi-language** — Dashboard available in English, Spanish, and Portuguese.
@@ -240,7 +241,7 @@ The desktop app includes a full dashboard with seven pages:
 ### Knowledge (Home)
 
 - Semantic search with natural language queries
-- Server-side filtering by type, scope, and tags with infinite scroll over the whole base
+- Server-side filtering by type, scope, tags, agent, and platform with infinite scroll over the whole base (agent/platform filters deep-link from the Stats charts and show as removable chips)
 - Knowledge cards with title, tag chips, type badges, related plans, and similarity scores
 - Inline icon buttons for edit (pencil) and delete (trash) on each card
 - Bulk select mode for multi-delete with floating action bar
@@ -267,7 +268,7 @@ The desktop app includes a full dashboard with seven pages:
 
 ### Stats
 
-- Knowledge stats: type and scope distribution (pie), 15-day activity trend, and a full-width **Top Tags** bar chart with a median reference line — each tag is clickable and filters the knowledge list
+- Knowledge stats: type and scope distribution (pie), **Knowledge by Agent** and **Knowledge by Platform** bar charts (clickable, deep-linking to the filtered knowledge list), 15-day activity trend, and a full-width **Top Tags** bar chart with a median reference line — each tag is clickable and filters the knowledge list
 - Plans stats sub-page: plan-status and task-status donut charts plus a 15-day plans activity chart
 - Metric cards: total entries, recent activity, database size
 - Configurable auto-refresh interval (Off / 1s / 10s / 30s / 1m / 5m)

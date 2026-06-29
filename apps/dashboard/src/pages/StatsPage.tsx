@@ -348,6 +348,58 @@ function TopTagsChart({ data }: { data: { tag: string; count: number }[] }) {
   );
 }
 
+/**
+ * Horizontal bar chart for provenance (agent/platform). Bars are clickable and
+ * deep-link to the knowledge list filtered by the clicked value — the chart
+ * labels include the "unspecified"/"unknown" sentinels, which HomePage + the
+ * repository round-trip back to NULL, so no special-casing is needed here.
+ */
+function ProvenanceChart({ data, color, linkParam }: { data: { name: string; count: number }[]; color: string; linkParam: 'agent' | 'platform' }) {
+  const navigate = useNavigate();
+  const { ref, width } = useContainerWidth();
+  const maxVal = Math.max(...data.map((d) => d.count));
+
+  const go = (name?: string) => {
+    if (name) navigate(`/?${linkParam}=` + encodeURIComponent(name));
+  };
+
+  return (
+    <div ref={ref}>
+      {width >= CHART_MIN_WIDTH ? (
+        <ResponsiveContainer width="100%" height={Math.max(160, data.length * 28)}>
+          <BarChart data={data} layout="vertical" margin={{ left: 60 }}>
+            <XAxis type="number" hide />
+            <YAxis type="category" dataKey="name" tick={{ fill: 'var(--text-secondary)', fontSize: 11 }} width={90} />
+            <Tooltip contentStyle={{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} itemStyle={{ color: 'var(--text-primary)' }} labelStyle={{ color: 'var(--text-secondary)' }} />
+            <Bar
+              dataKey="count"
+              fill={color}
+              radius={[0, 4, 4, 0]}
+              barSize={16}
+              cursor="pointer"
+              onClick={(d: any) => go(d?.name ?? d?.payload?.name)}
+            />
+          </BarChart>
+        </ResponsiveContainer>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {data.map((entry) => (
+            <div key={entry.name} style={{ cursor: 'pointer' }} onClick={() => go(entry.name)}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{entry.name}</span>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{entry.count}</span>
+              </div>
+              <div style={{ height: 6, borderRadius: 3, backgroundColor: 'var(--bg-input)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', borderRadius: 3, width: `${(entry.count / maxVal) * 100}%`, backgroundColor: color }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Main Page ── */
 
 export function StatsPage() {
@@ -369,6 +421,8 @@ export function StatsPage() {
   const [distinctTagCount, setDistinctTagCount] = useState(0);
   const [rangedByType, setRangedByType] = useState<{ type: string; count: number }[]>([]);
   const [rangedByScope, setRangedByScope] = useState<{ scope: string; count: number }[]>([]);
+  const [rangedByAgent, setRangedByAgent] = useState<{ agent: string; count: number }[]>([]);
+  const [rangedByPlatform, setRangedByPlatform] = useState<{ platform: string; count: number }[]>([]);
   // cleanup moved to Settings page
 
 
@@ -396,6 +450,12 @@ export function StatsPage() {
     api.getByScope(r)
       .then((res) => { if (!cancelled) setRangedByScope(res); })
       .catch(() => { if (!cancelled) setRangedByScope([]); });
+    api.getByAgent(r)
+      .then((res) => { if (!cancelled) setRangedByAgent(res); })
+      .catch(() => { if (!cancelled) setRangedByAgent([]); });
+    api.getByPlatform(r)
+      .then((res) => { if (!cancelled) setRangedByPlatform(res); })
+      .catch(() => { if (!cancelled) setRangedByPlatform([]); });
     return () => { cancelled = true; };
   }, [range.from, range.to]);
 
@@ -431,6 +491,10 @@ export function StatsPage() {
   }));
   const hasTypeData = rangedTypeData.length > 0;
   const hasScopeData = rangedByScope.length > 0;
+  const agentChartData = rangedByAgent.map((a) => ({ name: a.agent, count: a.count }));
+  const platformChartData = rangedByPlatform.map((p) => ({ name: p.platform, count: p.count }));
+  const hasAgentData = agentChartData.length > 0;
+  const hasPlatformData = platformChartData.length > 0;
   const hasActivityData = rangedActivity.some((d) => d.reads + d.writes > 0);
   const hasTopTags = rangedTopTags.length > 0;
   // Silence unused warnings — `metrics` and `stats.byScope` are still
@@ -500,6 +564,29 @@ export function StatsPage() {
           maxBodyHeight={380}
         >
           {hasScopeData && <ScopeDistribution data={rangedByScope} />}
+        </WidgetCard>
+      </div>
+
+      {/* ── Provenance Row: who created the knowledge (agent + platform) ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 24 }}>
+        {/* Agent Distribution (clickable → filtered knowledge list) */}
+        <WidgetCard
+          title={`${t('stats.knowledgeByAgent')} ${t('stats.thisPeriod')}`}
+          state={hasAgentData ? 'loaded' : 'empty'}
+          emptyText={t('stats.noData')}
+          maxBodyHeight={380}
+        >
+          {hasAgentData && <ProvenanceChart data={agentChartData} color="#06b6d4" linkParam="agent" />}
+        </WidgetCard>
+
+        {/* Platform Distribution (clickable → filtered knowledge list) */}
+        <WidgetCard
+          title={`${t('stats.knowledgeByPlatform')} ${t('stats.thisPeriod')}`}
+          state={hasPlatformData ? 'loaded' : 'empty'}
+          emptyText={t('stats.noData')}
+          maxBodyHeight={380}
+        >
+          {hasPlatformData && <ProvenanceChart data={platformChartData} color="#ec4899" linkParam="platform" />}
         </WidgetCard>
       </div>
 

@@ -456,13 +456,15 @@ Pass an array to addKnowledge to create multiple entries at once.
    *  better-sqlite3 is an external dep of @cognistore/mcp-server, so npx rebuilds
    *  it against this Node — keeping the MCP child on the same major as the sidecar.
    */
-  function buildMcpEntry() {
+  function buildMcpEntry(platform: 'claude-code' | 'copilot' | 'opencode') {
     const binDir = findNodeBinDir();
     const env: Record<string, string> = {
       SQLITE_PATH: resolve(INSTALL_DIR, 'knowledge.db'),
       OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://localhost:11434',
       OLLAMA_MODEL: process.env.OLLAMA_MODEL || 'nomic-embed-text',
       EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS || '256',
+      // Provenance: stamps which host app created each entry/plan via this config.
+      COGNISTORE_PLATFORM: platform,
     };
     if (binDir) {
       // Prepend the resolved Node bin dir so `node` resolves to the required major.
@@ -780,14 +782,17 @@ Pass an array to addKnowledge to create multiple entries at once.
 
       // Clear stale npx caches + setup MCP configs (uses the pinned Node npx path)
       clearNpxMcpCache();
-      const mcpEntry = buildMcpEntry();
+      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
+      const claudeEntry = buildMcpEntry('claude-code');
+      const copilotEntry = buildMcpEntry('copilot');
+      const opencodeEntry = buildMcpEntry('opencode');
 
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, mcpEntry);
+      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
       results.push('Claude MCP config set');
 
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, mcpEntry); results.push('Claude JSON config set'); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, mcpEntry); results.push('Copilot MCP config set'); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(mcpEntry); results.push('OpenCode MCP config set'); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); results.push('Claude JSON config set'); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); results.push('Copilot MCP config set'); } catch { /* optional */ }
+      try { await configManager.setupOpenCodeMcp(opencodeEntry); results.push('OpenCode MCP config set'); } catch { /* optional */ }
 
       // Inject tool permissions for auto-approve (read + write)
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); results.push('Claude permissions injected'); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
@@ -1083,11 +1088,14 @@ Pass an array to addKnowledge to create multiple entries at once.
     // Step 3: Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
     try {
       clearNpxMcpCache();
-      const mcpEntry = buildMcpEntry();
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, mcpEntry);
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(mcpEntry); } catch { /* optional */ }
+      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
+      const claudeEntry = buildMcpEntry('claude-code');
+      const copilotEntry = buildMcpEntry('copilot');
+      const opencodeEntry = buildMcpEntry('opencode');
+      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
+      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
+      try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
       results.push({ step: 'mcp-configs', status: 'success' });
     } catch (e: any) {
@@ -1211,11 +1219,14 @@ Pass an array to addKnowledge to create multiple entries at once.
     // 2. Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
     try {
       clearNpxMcpCache();
-      const mcpEntry = buildMcpEntry();
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, mcpEntry);
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(mcpEntry); } catch { /* optional */ }
+      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
+      const claudeEntry = buildMcpEntry('claude-code');
+      const copilotEntry = buildMcpEntry('copilot');
+      const opencodeEntry = buildMcpEntry('opencode');
+      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
+      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
+      try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
       results.push({ step: 'mcp-configs', status: 'success' });
     } catch (e: any) { results.push({ step: 'mcp-configs', status: 'error', message: e.message }); }
@@ -1671,9 +1682,11 @@ Pass an array to addKnowledge to create multiple entries at once.
     const q = request.query as any;
     const limit = Math.min(Math.max(Number(q.limit) || 20, 1), 200);
     const offset = Math.max(Number(q.offset) || 0, 0);
-    const filters: { type?: string; scope?: string; tags?: string[] } = {};
+    const filters: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string } = {};
     if (q.type) filters.type = String(q.type);
     if (q.scope) filters.scope = String(q.scope);
+    if (q.agent) filters.agent = String(q.agent).slice(0, 64);
+    if (q.platform) filters.platform = String(q.platform).slice(0, 64);
     if (q.tags) {
       const tags = String(q.tags).split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20);
       if (tags.length) filters.tags = tags;
@@ -1704,6 +1717,22 @@ Pass an array to addKnowledge to create multiple entries at once.
     const q = request.query as any;
     const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
     return sdk.countByScope(opts);
+  });
+
+  app.get('/api/metrics/by-agent', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.countByAgent(opts);
+  });
+
+  app.get('/api/metrics/by-platform', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.countByPlatform(opts);
   });
 
   app.post<{ Body: Record<string, unknown> }>('/api/knowledge/search', async (request, reply) => {

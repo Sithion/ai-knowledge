@@ -95,7 +95,15 @@ export class KnowledgeService {
         });
         if (similar.length > 0) {
           const existing = similar[0].entry;
-          const updated = await this.repository.update(existing.id, { ...rest, embedding });
+          // Preserve provenance on the dedup-update path: createKnowledgeSchema defaults
+          // agentId/platform to null, so a re-add that omits them would otherwise wipe the
+          // existing row's provenance back to NULL. Only overwrite when a non-null value is
+          // supplied (last-non-null-wins); omitting keeps what was already recorded.
+          const { platform, agentId, ...keep } = rest;
+          const prov: { platform?: string; agentId?: string } = {};
+          if (platform != null) prov.platform = platform;
+          if (agentId != null) prov.agentId = agentId;
+          const updated = await this.repository.update(existing.id, { ...keep, ...prov, embedding });
           this.logOp('write');
           return { ...this.toKnowledgeEntry(updated!), deduplicated: true };
         }
@@ -332,7 +340,7 @@ export class KnowledgeService {
     return hash.toString(36);
   }
 
-  async listRecent(limit = 20, filters?: { type?: string; scope?: string; tags?: string[] }, offset = 0) {
+  async listRecent(limit = 20, filters?: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string }, offset = 0) {
     const entries = await this.repository.listRecent(limit, filters, offset);
     return entries.map((e) => this.toKnowledgeEntry(e));
   }
@@ -525,6 +533,14 @@ export class KnowledgeService {
 
   async countByScope(opts: { from?: string; to?: string } = {}) {
     return this.repository.countByScope(opts);
+  }
+
+  async countByAgent(opts: { from?: string; to?: string } = {}) {
+    return this.repository.countByAgent(opts);
+  }
+
+  async countByPlatform(opts: { from?: string; to?: string } = {}) {
+    return this.repository.countByPlatform(opts);
   }
 
   // ─── Plans (separate entity) ────────────────────────────────
@@ -855,7 +871,8 @@ export class KnowledgeService {
           ? row.relatedIds
           : JSON.parse(row.relatedIds)
         : null,
-      agentId: row.agentId,
+      agentId: row.agentId ?? row.agent_id ?? null,
+      platform: row.platform ?? null,
       createdAt: new Date(row.createdAt ?? row.created_at),
       updatedAt: new Date(row.updatedAt ?? row.updated_at),
     };
@@ -871,6 +888,8 @@ export class KnowledgeService {
       status: row.status,
       source: row.source ?? '',
       planFilePath: row.plan_file_path ?? row.planFilePath ?? null,
+      agentId: row.agent_id ?? row.agentId ?? null,
+      platform: row.platform ?? null,
       createdAt: new Date(row.created_at ?? row.createdAt),
       updatedAt: new Date(row.updated_at ?? row.updatedAt),
     };

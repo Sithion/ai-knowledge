@@ -85,11 +85,13 @@ export const api = {
   search: (query: string, options?: Record<string, unknown>) =>
     request('/api/knowledge/search', { method: 'POST', body: JSON.stringify({ query, ...options }) }),
 
-  listRecent: (limit = 20, filters?: { type?: string; scope?: string; tags?: string[] }, offset = 0) => {
+  listRecent: (limit = 20, filters?: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string }, offset = 0) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (offset) params.set('offset', String(offset));
     if (filters?.type) params.set('type', filters.type);
     if (filters?.scope) params.set('scope', filters.scope);
+    if (filters?.agent) params.set('agent', filters.agent);
+    if (filters?.platform) params.set('platform', filters.platform);
     if (filters?.tags && filters.tags.length) params.set('tags', filters.tags.join(','));
     return request<any[]>(`/api/knowledge/recent?${params}`);
   },
@@ -148,6 +150,16 @@ export const api = {
   getByScope: (range?: { from: string; to: string }) => {
     const path = range ? `/api/metrics/by-scope?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-scope';
     return request<{ scope: string; count: number }[]>(path);
+  },
+
+  getByAgent: (range?: { from: string; to: string }) => {
+    const path = range ? `/api/metrics/by-agent?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-agent';
+    return request<{ agent: string; count: number }[]>(path);
+  },
+
+  getByPlatform: (range?: { from: string; to: string }) => {
+    const path = range ? `/api/metrics/by-platform?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-platform';
+    return request<{ platform: string; count: number }[]>(path);
   },
 
   getStats: () => request('/api/stats'),

@@ -1,6 +1,6 @@
 {
   "name": "cognistore",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "private": true,
   "description": "Semantic knowledge management for AI agents",
   "scripts": {
@@ -25,7 +25,11 @@
   },
   "pnpm": {
     "overrides": {
-      "shell-quote": ">=1.8.4"
+      "shell-quote": ">=1.8.4",
+      "vite": "6.4.3",
+      "hono": "4.12.25",
+      "@babel/core": "7.29.6",
+      "esbuild@0.27.7": "0.28.1"
     }
   }
 }
