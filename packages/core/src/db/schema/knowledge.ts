@@ -20,6 +20,7 @@ export const knowledgeEntries = sqliteTable(
     confidenceScore: real('confidence_score').notNull().default(1.0),
     relatedIds: text('related_ids', { mode: 'json' }).$type<string[] | null>(),
     agentId: text('agent_id'),
+    platform: text('platform'),
     createdAt: text('created_at')
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
@@ -30,5 +31,6 @@ export const knowledgeEntries = sqliteTable(
   (table) => [
     index('idx_type').on(table.type),
     index('idx_scope').on(table.scope),
+    index('idx_knowledge_platform').on(table.platform),
   ]
 );

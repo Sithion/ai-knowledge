@@ -34,6 +34,9 @@ export function HomePage() {
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [scopeFilter, setScopeFilter] = useState('');
+  // Provenance filters — set via deep-link from the Stats charts (?agent=/?platform=).
+  const [agentFilter, setAgentFilter] = useState('');
+  const [platformFilter, setPlatformFilter] = useState('');
 
   // External knowledge providers (additive federated search; local list is unaffected)
   const [externalSections, setExternalSections] = useState<ExternalSection[]>([]);
@@ -57,7 +60,7 @@ export function HomePage() {
 
   const types = ['decision', 'pattern', 'fix', 'constraint', 'gotcha'];
 
-  const hasActiveFilters = typeFilter !== '' || scopeFilter !== '' || selectedTags.length > 0 || query.trim() !== '';
+  const hasActiveFilters = typeFilter !== '' || scopeFilter !== '' || agentFilter !== '' || platformFilter !== '' || selectedTags.length > 0 || query.trim() !== '';
 
   const tagsKey = selectedTags.join(',');
   const searchMode = query.trim().length > 0;
@@ -68,13 +71,15 @@ export function HomePage() {
   const browse = useInfiniteList<Record<string, unknown>>(
     (offset) => {
       if (searchMode) return Promise.resolve([]);
-      const filters: { type?: string; scope?: string; tags?: string[] } = {};
+      const filters: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string } = {};
       if (typeFilter) filters.type = typeFilter;
       if (scopeFilter) filters.scope = scopeFilter;
+      if (agentFilter) filters.agent = agentFilter;
+      if (platformFilter) filters.platform = platformFilter;
       if (selectedTags.length) filters.tags = selectedTags;
       return api.listRecent(PAGE_SIZE, filters, offset) as Promise<Record<string, unknown>[]>;
     },
-    [typeFilter, scopeFilter, tagsKey, searchMode],
+    [typeFilter, scopeFilter, agentFilter, platformFilter, tagsKey, searchMode],
   );
 
   // SEARCH mode (non-empty box): semantic search, filters applied server-side.
@@ -172,12 +177,16 @@ export function HomePage() {
     return () => { cancelled = true; clearTimeout(handle); };
   }, [query, externalEnabled]);
 
-  // Read ?tag= from URL on mount
+  // Read ?tag= / ?agent= / ?platform= from URL on mount (deep-links from Stats charts)
   useEffect(() => {
     const tagParam = searchParams.get('tag');
     if (tagParam) {
       setSelectedTags(tagParam.split(',').map(t => t.trim()).filter(Boolean));
     }
+    const agentParam = searchParams.get('agent');
+    if (agentParam) setAgentFilter(agentParam);
+    const platformParam = searchParams.get('platform');
+    if (platformParam) setPlatformFilter(platformParam);
   }, []); // Only on mount
 
   // Sync selectedTags to URL
@@ -212,6 +221,8 @@ export function HomePage() {
       setQuery('');
       setTypeFilter('');
       setScopeFilter('');
+      setAgentFilter('');
+      setPlatformFilter('');
       setSelectedTags([]);
       setRelatedPlans([]);
       setSearchParams({}, { replace: true });
@@ -299,7 +310,13 @@ export function HomePage() {
     setSelectedTags([]);
     setTypeFilter('');
     setScopeFilter('');
+    setAgentFilter('');
+    setPlatformFilter('');
     setQuery('');
+    const newParams = new URLSearchParams(searchParams);
+    newParams.delete('agent');
+    newParams.delete('platform');
+    setSearchParams(newParams, { replace: true });
   };
 
   const handleSuccess = () => {
@@ -474,6 +491,30 @@ export function HomePage() {
             <option key={scope} value={scope}>{scope}</option>
           ))}
         </select>
+        {agentFilter && (
+          <button
+            onClick={() => { setAgentFilter(''); const p = new URLSearchParams(searchParams); p.delete('agent'); setSearchParams(p, { replace: true }); }}
+            style={{
+              padding: '6px 12px', borderRadius: 6,
+              border: '1px solid var(--border)', backgroundColor: 'var(--bg-input)',
+              color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            {t('filters.agent')}: {agentFilter} ✕
+          </button>
+        )}
+        {platformFilter && (
+          <button
+            onClick={() => { setPlatformFilter(''); const p = new URLSearchParams(searchParams); p.delete('platform'); setSearchParams(p, { replace: true }); }}
+            style={{
+              padding: '6px 12px', borderRadius: 6,
+              border: '1px solid var(--border)', backgroundColor: 'var(--bg-input)',
+              color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            {t('filters.platform')}: {platformFilter} ✕
+          </button>
+        )}
         {hasActiveFilters && (
           <button
             onClick={handleClearAll}

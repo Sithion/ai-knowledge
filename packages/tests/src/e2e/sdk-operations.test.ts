@@ -62,31 +62,52 @@ test('getOperationCounts returns correct counts', async () => {
   expect(counts.writesLastDay).toBeGreaterThanOrEqual(counts.writesLastHour);
 });
 
-test('cleanupOldOperations removes old entries', () => {
-  // Retention is 30 days (must cover the 15-day Activity chart window).
-  // Insert fake old entries past the retention window.
-  const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+test('cleanupOldOperations removes entries older than the 800-day retention', () => {
+  // Retention is 800 days: the '2y' (730-day) dashboard window + ~70-day
+  // margin. See OPERATIONS_RETENTION_DAYS in packages/core knowledge.repository.ts.
+  const DAY = 24 * 60 * 60 * 1000;
+  const oldDate = new Date(Date.now() - 801 * DAY).toISOString();
   ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('read', oldDate);
   ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('write', oldDate);
   ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('read', oldDate);
 
-  // Insert a recent entry that must survive (well within the 30-day window
-  // but older than the previous 7-day cutoff to lock in the new retention).
-  const recentDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-  ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('read', recentDate);
+  // ~400 days old: INSIDE the new window but far outside the old 30-day one —
+  // must survive, locking in the raised retention.
+  const survivorDate = new Date(Date.now() - 400 * DAY).toISOString();
+  ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('read', survivorDate);
 
-  // Count total before cleanup
   const totalBefore = (ctx.sqlite.prepare('SELECT COUNT(*) as count FROM operations_log').get() as { count: number }).count;
-
   const removed = ctx.service.cleanupOldOperations();
   expect(removed).toBeGreaterThanOrEqual(3);
 
   const totalAfter = (ctx.sqlite.prepare('SELECT COUNT(*) as count FROM operations_log').get() as { count: number }).count;
   expect(totalAfter).toBe(totalBefore - removed);
 
-  // Verify recent entries still exist, including the 10-day-old one
-  const recentCount = (ctx.sqlite.prepare(
-    'SELECT COUNT(*) as count FROM operations_log WHERE created_at >= ?'
-  ).get(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()) as { count: number }).count;
-  expect(recentCount).toBeGreaterThan(0);
+  const olderThanRetention = (ctx.sqlite.prepare(
+    'SELECT COUNT(*) as count FROM operations_log WHERE created_at < ?'
+  ).get(new Date(Date.now() - 800 * DAY).toISOString()) as { count: number }).count;
+  expect(olderThanRetention).toBe(0);
+
+  const survivor = (ctx.sqlite.prepare(
+    'SELECT COUNT(*) as count FROM operations_log WHERE created_at = ?'
+  ).get(survivorDate) as { count: number }).count;
+  expect(survivor).toBe(1);
+});
+
+test('getOperationsByDay(730) returns 730 zero-filled buckets', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const d400 = new Date(Date.now() - 400 * DAY);
+  ctx.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)').run('write', d400.toISOString());
+
+  const buckets = ctx.service.getOperationsByDay(730);
+  expect(buckets.length).toBe(730);
+
+  const bucket = buckets.find((b) => b.date === d400.toISOString().split('T')[0]);
+  expect(bucket).toBeDefined();
+  expect(bucket!.writes).toBeGreaterThanOrEqual(1);
+
+  for (const b of buckets) {
+    expect(typeof b.reads).toBe('number');
+    expect(typeof b.writes).toBe('number');
+  }
 });

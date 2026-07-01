@@ -231,7 +231,7 @@ export class KnowledgeSDK {
     }
   }
 
-  async listRecent(limit = 20, filters?: { type?: string; scope?: string; tags?: string[] }, offset = 0) {
+  async listRecent(limit = 20, filters?: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string }, offset = 0) {
     this.ensureInitialized();
     try {
       return await this.service!.listRecent(limit, filters, offset);
@@ -330,6 +330,24 @@ export class KnowledgeSDK {
       return await this.service!.countByScope(opts);
     } catch (error) {
       throw this.wrapError(error, 'Failed to count by scope');
+    }
+  }
+
+  async countByAgent(opts: { from?: string; to?: string } = {}) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.countByAgent(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to count by agent');
+    }
+  }
+
+  async countByPlatform(opts: { from?: string; to?: string } = {}) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.countByPlatform(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to count by platform');
     }
   }
 
@@ -510,6 +528,11 @@ export class KnowledgeSDK {
   getOperationsByDay(days: number = 15) {
     this.ensureInitialized();
     return this.service!.getOperationsByDay(days);
+  }
+
+  getPlansByDay(days: number = 15) {
+    this.ensureInitialized();
+    return this.service!.getPlansByDay(days);
   }
 
   cleanupOldOperations() {

@@ -301,4 +301,39 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect(r.status).toBe(404);
     expect((await r.json()).error).toBe('Not found');
   });
+
+  // ─── Ranged metrics: 2-year windows (v2.4.0) ─────────────────────
+
+  test('GET /api/metrics/activity clamps a >2y range to 730 daily buckets', async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const from = encodeURIComponent(new Date(Date.now() - 900 * DAY).toISOString());
+    const to = encodeURIComponent(new Date().toISOString());
+    const r = await fetch(`${baseUrl}/api/metrics/activity?from=${from}&to=${to}`);
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    // HTTP layer intersects zero-fill (local dates) with buildDateSeries (UTC) —
+    // can differ by 1 near midnight in positive-UTC-offset TZs (review finding).
+    expect(body.operationsByDay.length).toBeGreaterThanOrEqual(729);
+    expect(body.operationsByDay.length).toBeLessThanOrEqual(730);
+  });
+
+  test('GET /api/metrics/plans honors from/to and zero-fills the range', async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const from = encodeURIComponent(new Date(Date.now() - 29 * DAY).toISOString());
+    const to = encodeURIComponent(new Date().toISOString());
+    const r = await fetch(`${baseUrl}/api/metrics/plans?from=${from}&to=${to}`);
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    // daysBetween is inclusive: 29d span → 30 buckets; tolerate 29 for the
+    // local-vs-UTC boundary-day intersection (review finding).
+    expect(body.plansByDay.length).toBeGreaterThanOrEqual(29);
+    expect(body.plansByDay.length).toBeLessThanOrEqual(30);
+    expect(body.plansByDay.every((d: any) => typeof d.count === 'number')).toBe(true);
+  });
+
+  test('GET /api/metrics/plans without params keeps the legacy 15-day window', async () => {
+    const r = await fetch(`${baseUrl}/api/metrics/plans`);
+    expect(r.status).toBe(200);
+    expect((await r.json()).plansByDay.length).toBe(15);
+  });
 });

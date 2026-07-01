@@ -1,5 +1,25 @@
 # Patch Notes
 
+## v2.3.0
+
+Provenance tracking — every knowledge entry and plan now records **which platform** and **which agent** created it, with new dashboard charts and filters. The schema migration, MCP-config re-injection, and instruction/template updates all redeploy automatically on app upgrade — no manual action needed.
+
+### Features
+- **Agent & platform provenance.** Each entry/plan now carries a `platform` (the host app — Claude Code / Copilot / OpenCode, auto-detected) and an `agent` (the calling agent's own name, e.g. a custom `documentation` agent). The platform is detected automatically: the app injects a per-platform `COGNISTORE_PLATFORM` env var into each MCP config, with the MCP `clientInfo` handshake as a fallback (anything unrecognized → `unknown`). The agent is whatever a named/custom agent passes as `agentId` on `addKnowledge`/`createPlan` (left `unspecified` when not provided) — the injected instructions now remind custom agents to set it so their discoveries can be summarized per agent.
+- **Two new Stats charts: "Knowledge by Agent" and "Knowledge by Platform".** Both follow the global date range. The bars are clickable and deep-link to the knowledge list filtered by that agent/platform.
+- **Agent & platform filters on the knowledge list.** Browse mode now filters by `agent`/`platform` (via `?agent=`/`?platform=` deep-links from the charts), shown as removable filter chips.
+- **Dashboard now keeps and shows up to 2 years of history.** Activity records were vanishing after ~1 month: the operations log was pruned at 30 days and the metrics API clamped any range to 365 days. Retention is now **800 days** (the 730-day view window + margin) and the API clamp is **730 days**, with a new **`2Y`** preset in the date-range picker. Long-range charts thin their X-axis automatically and switch to `YYYY-MM` labels past a year so 730 daily points stay readable. Note: operations already deleted by the old 30-day pruning are unrecoverable — the 2-year history fills in from this release forward.
+- **The "Plans Activity" chart now follows the global date-range picker.** It was hardcoded to the last 15 days; it now honors the selected range (including `2Y`), backed by a new `getPlansByDay()` SQL aggregation instead of an in-memory scan of every plan. Completed/archived plan embeddings are now kept **730 days** (was 30) before dropping out of semantic search.
+
+### Internal
+- **Migration `2.3.0`** adds `platform` to `knowledge_entries` and `agent_id` + `platform` to `plans` (plus indexes), in both the disk and embedded migration paths so the bundled MCP server and the dashboard stay in sync. New repository aggregations `countByAgent`/`countByPlatform` `COALESCE` NULL into a single `unspecified`/`unknown` bucket; the list filters round-trip those sentinels back to `IS NULL`.
+- New API endpoints `GET /api/metrics/by-agent` and `GET /api/metrics/by-platform`; `/api/knowledge/recent` accepts `agent`/`platform` query params.
+- **2-year history is constants-only — no schema migration.** `OPERATIONS_RETENTION_DAYS` 30→800 and the `daysBetween` clamp 365→730 (the retention comment cites the clamp as the binding constraint: retention must exceed the largest requestable window). `getPlansByDay(days)` mirrors `getOperationsByDay`'s zero-fill (repository → service → SDK); `GET /api/metrics/plans` gained optional `from`/`to` (legacy 15-day fallback when absent, so the summary widgets that call it unparameterized are unaffected). New shared `dateAxisProps()` chart helper. Tests: the operations-retention test now asserts an ~400-day row survives (not just that >800-day rows are deleted) plus a 730-bucket zero-fill check; new `getPlansByDay` service test; three ranged `/api/metrics/*` HTTP tests.
+
+### Fixes
+- **Custom date-range calendar is now legible on the dark theme.** The `react-day-picker` (v9) popover shipped its default light stylesheet, so day numbers were washed out and the selected range rendered as a light-lavender block on the dark background. Added a scoped `.rdp-dark` theme (accent-colored selection, translucent range highlight, `--text-primary`/`--text-secondary` day and weekday text, themed nav chevrons and today marker).
+- **`osv-scan` CI is green again.** Four npm advisories with available fixes were failing the scan (`vite` 6.4.2→6.4.3, `hono` 4.12.24→4.12.25, `esbuild` 0.27.7→0.28.1, `@babel/core` 7.29.0→7.29.6). Root cause: the version pins lived in `pnpm-workspace.yaml`, whose `overrides:` block is **inert under pnpm 9** (a pnpm-10 feature) — so they never applied. The fixes now live in `package.json` `pnpm.overrides` where pnpm 9 reads them; the `esbuild` bump is a selective `esbuild@0.27.7` override so the drizzle-kit `0.18` loader is left untouched. Also bumped the Rust crate `anyhow` 1.0.102→1.0.103 (RUSTSEC-2026-0190).
+
 ## v2.2.3
 
 A meticulous three-reviewer (code / security / quality) hardening pass over the whole app. No new features; fixes + robustness + test coverage. All artifacts redeploy automatically on app upgrade — no manual action needed.

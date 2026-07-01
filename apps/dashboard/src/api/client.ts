@@ -85,11 +85,13 @@ export const api = {
   search: (query: string, options?: Record<string, unknown>) =>
     request('/api/knowledge/search', { method: 'POST', body: JSON.stringify({ query, ...options }) }),
 
-  listRecent: (limit = 20, filters?: { type?: string; scope?: string; tags?: string[] }, offset = 0) => {
+  listRecent: (limit = 20, filters?: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string }, offset = 0) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (offset) params.set('offset', String(offset));
     if (filters?.type) params.set('type', filters.type);
     if (filters?.scope) params.set('scope', filters.scope);
+    if (filters?.agent) params.set('agent', filters.agent);
+    if (filters?.platform) params.set('platform', filters.platform);
     if (filters?.tags && filters.tags.length) params.set('tags', filters.tags.join(','));
     return request<any[]>(`/api/knowledge/recent?${params}`);
   },
@@ -148,6 +150,16 @@ export const api = {
   getByScope: (range?: { from: string; to: string }) => {
     const path = range ? `/api/metrics/by-scope?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-scope';
     return request<{ scope: string; count: number }[]>(path);
+  },
+
+  getByAgent: (range?: { from: string; to: string }) => {
+    const path = range ? `/api/metrics/by-agent?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-agent';
+    return request<{ agent: string; count: number }[]>(path);
+  },
+
+  getByPlatform: (range?: { from: string; to: string }) => {
+    const path = range ? `/api/metrics/by-platform?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-platform';
+    return request<{ platform: string; count: number }[]>(path);
   },
 
   getStats: () => request('/api/stats'),
@@ -261,12 +273,12 @@ export const api = {
     request(`/api/plans/tasks/${taskId}`, { method: 'DELETE' }),
 
   // Plan Metrics
-  getPlanMetrics: () =>
+  getPlanMetrics: (from?: string, to?: string) =>
     request<{
       plans: { total: number; draft: number; active: number; completed: number; archived: number };
       tasks: { total: number; pending: number; inProgress: number; completed: number; avgPerPlan: number };
       plansByDay: { date: string; count: number }[];
-    }>('/api/metrics/plans'),
+    }>(`/api/metrics/plans${from && to ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : ''}`),
 
   // Maintenance
   cleanupDatabase: () => request<{ success: boolean; orphansRemoved: number; vacuumed: boolean; sizeAfter: string }>(
@@ -352,7 +364,7 @@ export interface TokenUsageAggregates {
 
 export interface AppSettings {
   autoUpdate: boolean;
-  dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
+  dateRangePreset: '1d' | '1w' | '1m' | '1y' | '2y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: ProviderFilter;
   alwaysSearchExternalProviders: boolean;

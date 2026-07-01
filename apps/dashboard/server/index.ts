@@ -86,7 +86,7 @@ const SETTINGS_FILE = resolve(INSTALL_DIR, 'settings.json');
 
 export interface AppSettings {
   autoUpdate: boolean;
-  dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
+  dateRangePreset: '1d' | '1w' | '1m' | '1y' | '2y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: 'all' | 'claude' | 'copilot';
   alwaysSearchExternalProviders: boolean;
@@ -269,7 +269,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // Periodic maintenance every 6 hours: cleanup old ops log + WAL checkpoint
   setInterval(() => {
-    if (sdkReady) { try { sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(); sdk.walCheckpoint(); } catch { /* silent */ } }
+    if (sdkReady) { try { sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(730); sdk.walCheckpoint(); } catch { /* silent */ } }
   }, 6 * 60 * 60 * 1000);
 
   // Token usage scan every 5 minutes — incremental, idempotent.
@@ -456,13 +456,15 @@ Pass an array to addKnowledge to create multiple entries at once.
    *  better-sqlite3 is an external dep of @cognistore/mcp-server, so npx rebuilds
    *  it against this Node — keeping the MCP child on the same major as the sidecar.
    */
-  function buildMcpEntry() {
+  function buildMcpEntry(platform: 'claude-code' | 'copilot' | 'opencode') {
     const binDir = findNodeBinDir();
     const env: Record<string, string> = {
       SQLITE_PATH: resolve(INSTALL_DIR, 'knowledge.db'),
       OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://localhost:11434',
       OLLAMA_MODEL: process.env.OLLAMA_MODEL || 'nomic-embed-text',
       EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS || '256',
+      // Provenance: stamps which host app created each entry/plan via this config.
+      COGNISTORE_PLATFORM: platform,
     };
     if (binDir) {
       // Prepend the resolved Node bin dir so `node` resolves to the required major.
@@ -780,14 +782,17 @@ Pass an array to addKnowledge to create multiple entries at once.
 
       // Clear stale npx caches + setup MCP configs (uses the pinned Node npx path)
       clearNpxMcpCache();
-      const mcpEntry = buildMcpEntry();
+      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
+      const claudeEntry = buildMcpEntry('claude-code');
+      const copilotEntry = buildMcpEntry('copilot');
+      const opencodeEntry = buildMcpEntry('opencode');
 
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, mcpEntry);
+      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
       results.push('Claude MCP config set');
 
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, mcpEntry); results.push('Claude JSON config set'); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, mcpEntry); results.push('Copilot MCP config set'); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(mcpEntry); results.push('OpenCode MCP config set'); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); results.push('Claude JSON config set'); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); results.push('Copilot MCP config set'); } catch { /* optional */ }
+      try { await configManager.setupOpenCodeMcp(opencodeEntry); results.push('OpenCode MCP config set'); } catch { /* optional */ }
 
       // Inject tool permissions for auto-approve (read + write)
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); results.push('Claude permissions injected'); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
@@ -1083,11 +1088,14 @@ Pass an array to addKnowledge to create multiple entries at once.
     // Step 3: Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
     try {
       clearNpxMcpCache();
-      const mcpEntry = buildMcpEntry();
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, mcpEntry);
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(mcpEntry); } catch { /* optional */ }
+      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
+      const claudeEntry = buildMcpEntry('claude-code');
+      const copilotEntry = buildMcpEntry('copilot');
+      const opencodeEntry = buildMcpEntry('opencode');
+      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
+      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
+      try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
       results.push({ step: 'mcp-configs', status: 'success' });
     } catch (e: any) {
@@ -1211,11 +1219,14 @@ Pass an array to addKnowledge to create multiple entries at once.
     // 2. Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
     try {
       clearNpxMcpCache();
-      const mcpEntry = buildMcpEntry();
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, mcpEntry);
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, mcpEntry); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(mcpEntry); } catch { /* optional */ }
+      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
+      const claudeEntry = buildMcpEntry('claude-code');
+      const copilotEntry = buildMcpEntry('copilot');
+      const opencodeEntry = buildMcpEntry('opencode');
+      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
+      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
+      try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
       results.push({ step: 'mcp-configs', status: 'success' });
     } catch (e: any) { results.push({ step: 'mcp-configs', status: 'error', message: e.message }); }
@@ -1531,13 +1542,14 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Ranged metrics (driven by the global date-range picker) ────
 
-  /** Days inclusive between two ISO dates — clamped to 1..365. */
+  /** Days inclusive between two ISO dates — clamped to 1..730 (the '2y' preset).
+   *  Keep <= OPERATIONS_RETENTION_DAYS (800) in packages/core knowledge.repository.ts. */
   const daysBetween = (fromISO: string, toISO: string): number => {
     const from = new Date(fromISO).getTime();
     const to = new Date(toISO).getTime();
     if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return 7;
     const diffDays = Math.floor((to - from) / (24 * 60 * 60 * 1000)) + 1;
-    return Math.max(1, Math.min(365, diffDays));
+    return Math.max(1, Math.min(730, diffDays));
   };
 
   /** Build a contiguous day series of zeros for the requested range. */
@@ -1671,9 +1683,11 @@ Pass an array to addKnowledge to create multiple entries at once.
     const q = request.query as any;
     const limit = Math.min(Math.max(Number(q.limit) || 20, 1), 200);
     const offset = Math.max(Number(q.offset) || 0, 0);
-    const filters: { type?: string; scope?: string; tags?: string[] } = {};
+    const filters: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string } = {};
     if (q.type) filters.type = String(q.type);
     if (q.scope) filters.scope = String(q.scope);
+    if (q.agent) filters.agent = String(q.agent).slice(0, 64);
+    if (q.platform) filters.platform = String(q.platform).slice(0, 64);
     if (q.tags) {
       const tags = String(q.tags).split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20);
       if (tags.length) filters.tags = tags;
@@ -1704,6 +1718,22 @@ Pass an array to addKnowledge to create multiple entries at once.
     const q = request.query as any;
     const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
     return sdk.countByScope(opts);
+  });
+
+  app.get('/api/metrics/by-agent', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.countByAgent(opts);
+  });
+
+  app.get('/api/metrics/by-platform', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const q = request.query as any;
+    const opts = q.from && q.to ? { from: String(q.from), to: String(q.to) } : {};
+    return sdk.countByPlatform(opts);
   });
 
   app.post<{ Body: Record<string, unknown> }>('/api/knowledge/search', async (request, reply) => {
@@ -2075,7 +2105,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Plan Metrics endpoint ──────────────────────────────────
 
-  app.get('/api/metrics/plans', async (_request, reply) => {
+  app.get<{ Querystring: { from?: string; to?: string } }>('/api/metrics/plans', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
 
@@ -2090,18 +2120,16 @@ Pass an array to addKnowledge to create multiple entries at once.
         if (s in plansByStatus) (plansByStatus as any)[s]++;
       }
 
-      // Plans created per day (last 15 days)
-      const now = new Date();
-      const plansByDay: { date: string; count: number }[] = [];
-      for (let i = 14; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
-        const count = allPlans.filter((p: any) => {
-          const created = new Date(p.createdAt).toISOString().split('T')[0];
-          return created === dateStr;
-        }).length;
-        plansByDay.push({ date: dateStr, count });
+      // Plans created per day — follows the global date-range picker when
+      // from/to are given; falls back to the legacy 15-day window otherwise.
+      const { from, to } = request.query;
+      let plansByDay: { date: string; count: number }[];
+      if (from && to) {
+        const days = daysBetween(from, to);
+        const set = new Set(buildDateSeries(from, to));
+        plansByDay = sdk.getPlansByDay(days).filter((r) => set.has(r.date));
+      } else {
+        plansByDay = sdk.getPlansByDay(15);
       }
 
       return {

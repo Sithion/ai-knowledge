@@ -20,6 +20,37 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
   // ── Auto-linking state (shared across tool calls within a session) ──
   let lastSearchResultIds: string[] = [];
 
+  // ── Provenance resolution ──────────────────────────────────────
+  // platform is auto-detected; agentId is whatever the calling agent passes.
+  const PLATFORM_ALLOWLIST = new Set(['claude-code', 'copilot', 'opencode']);
+
+  /** Trim, strip control chars/newlines, cap at 64, empty→null. Defends logs/exports. */
+  function normalizeProvenance(s: string | undefined | null): string | undefined {
+    if (typeof s !== 'string') return undefined;
+    // Drop control chars (code < 32) and DEL (127) without embedding control literals in source.
+    const cleaned = Array.from(s)
+      .filter((c) => { const n = c.charCodeAt(0); return n >= 32 && n !== 127; })
+      .join('')
+      .trim()
+      .slice(0, 64);
+    return cleaned.length > 0 ? cleaned : undefined;
+  }
+
+  /**
+   * Resolve the host platform. Primary source = COGNISTORE_PLATFORM env injected
+   * per-platform by the app's ConfigManager; fallback = MCP clientInfo.name from
+   * the initialize handshake (only known post-connect, so read lazily). Anything
+   * outside the allowlist (incl. arbitrary client-supplied names) → "unknown".
+   */
+  function resolvePlatform(): string {
+    const raw =
+      normalizeProvenance(process.env.COGNISTORE_PLATFORM) ??
+      normalizeProvenance(server.server.getClientVersion()?.name);
+    if (!raw) return 'unknown';
+    const mapped = raw.toLowerCase() === 'claude' ? 'claude-code' : raw.toLowerCase();
+    return PLATFORM_ALLOWLIST.has(mapped) ? mapped : 'unknown';
+  }
+
   // ─── Knowledge Tools ──────────────────────────────────────────
 
   // Shared schema for a single knowledge entry
@@ -31,7 +62,7 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
     scope: z.string().describe('Scope: "global" or "workspace:<project-name>"'),
     source: z.string().describe('Source of the knowledge'),
     confidenceScore: z.number().min(0).max(1).optional().describe('Confidence score 0-1'),
-    agentId: z.string().optional().describe('ID of the agent that created this'),
+    agentId: z.string().optional().describe("Your agent/role name (e.g. 'documentation', 'code-reviewer') so entries can be summarized per agent. Pass it whenever you are a named/custom agent."),
     planId: z.string().optional().describe('Plan ID to auto-link this knowledge as output. ALWAYS pass this if you have an active plan.'),
   });
 
@@ -45,7 +76,8 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
       scope: params.scope,
       source: params.source,
       confidenceScore: params.confidenceScore,
-      agentId: params.agentId,
+      agentId: normalizeProvenance(params.agentId),
+      platform: resolvePlatform(),
     });
 
     let linked = false;
@@ -276,6 +308,7 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
       scope: z.string().describe('Scope: "global" or "workspace:<project-name>"'),
       source: z.string().describe('Source/context of the plan'),
       planFilePath: z.string().optional().describe('ABSOLUTE path to the local plan file you wrote (e.g. a plan-mode file like /home/user/.claude/plans/<name>.md). REQUIRED whenever you persisted the plan to a file — always link it so the CogniStore plan points back to the on-disk file.'),
+      agentId: z.string().optional().describe("Your agent/role name (e.g. 'documentation') so plans can be summarized per agent. Pass it whenever you are a named/custom agent."),
       relatedKnowledgeIds: z.array(z.string()).optional().describe('IDs of knowledge entries consulted during planning (auto-linked as input)'),
       tasks: z.array(z.object({
         description: z.string(),
@@ -295,6 +328,8 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
         scope: params.scope,
         source: params.source,
         planFilePath: params.planFilePath,
+        agentId: normalizeProvenance(params.agentId),
+        platform: resolvePlatform(),
         relatedKnowledgeIds: inputIds.size > 0 ? [...inputIds] : undefined,
         tasks: params.tasks,
       });

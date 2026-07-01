@@ -41,6 +41,8 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 | Store external-provider secret in OS keychain (`set_provider_secret`) | Delete keychain entries via `cleanup_provider_secrets` on uninstall |
 | Create `~/.cognistore/providers.json` (external knowledge providers) | Removed with directory |
 
+> **Note (provenance):** Setup injects a per-platform `COGNISTORE_PLATFORM` env var (`claude-code` / `copilot` / `opencode`) into the `env` block of each MCP config entry. This is not a separate resource — it is part of the MCP config entries above and is removed when those entries are removed via ConfigManager, so no extra uninstall row is required.
+
 ## Development Rules (MANDATORY)
 
 ### Upgrade Scripts

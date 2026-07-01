@@ -140,6 +140,16 @@ ALTER TABLE plans ADD COLUMN plan_file_path TEXT;
   '2.1.0': `
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(id UNINDEXED, title, content, tags);
 `,
+  // v2.3.0: provenance tracking — platform (auto) + agent_id (caller) on entries and plans.
+  // knowledge_entries.agent_id already exists since 0.8.0; only platform is new there.
+  '2.3.0': `
+ALTER TABLE knowledge_entries ADD COLUMN platform TEXT;
+ALTER TABLE plans ADD COLUMN agent_id TEXT;
+ALTER TABLE plans ADD COLUMN platform TEXT;
+CREATE INDEX IF NOT EXISTS idx_knowledge_platform ON knowledge_entries(platform);
+CREATE INDEX IF NOT EXISTS idx_plans_platform ON plans(platform);
+CREATE INDEX IF NOT EXISTS idx_plans_agent ON plans(agent_id);
+`,
 };
 
 /**

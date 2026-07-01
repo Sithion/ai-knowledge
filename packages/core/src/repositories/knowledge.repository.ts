@@ -23,9 +23,11 @@ import {
 import type { CreateKnowledgeInput, UpdateKnowledgeInput, SearchOptions } from '@cognistore/shared';
 import { DEFAULT_SEARCH_LIMIT, DEFAULT_SIMILARITY_THRESHOLD } from '@cognistore/shared';
 
-// Retention window for the operations_log table. Must be >= the largest window
-// the dashboard chart asks for (currently 15 days via getOperationsByDay).
-const OPERATIONS_RETENTION_DAYS = 30;
+// Retention window for the operations_log table. Must exceed the largest
+// window the dashboard can request: /api/metrics/activity clamps its range to
+// 730 days via daysBetween() in apps/dashboard/server/index.ts, and the '2y'
+// preset uses that maximum. 800 = 730-day max view + ~70-day margin.
+const OPERATIONS_RETENTION_DAYS = 800;
 
 export class KnowledgeRepository {
   constructor(
@@ -49,8 +51,8 @@ export class KnowledgeRepository {
     const insertTxn = this.sqlite.transaction(() => {
       this.sqlite.prepare(
         `INSERT INTO knowledge_entries
-           (id, title, content, tags, type, scope, source, version, expires_at, confidence_score, related_ids, agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`
+           (id, title, content, tags, type, scope, source, version, expires_at, confidence_score, related_ids, agent_id, platform, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         input.title,
@@ -63,6 +65,7 @@ export class KnowledgeRepository {
         input.confidenceScore ?? 1.0,
         input.relatedIds ? JSON.stringify(input.relatedIds) : null,
         input.agentId ?? null,
+        input.platform ?? null,
         now,
         now,
       );
@@ -245,12 +248,29 @@ export class KnowledgeRepository {
 
   async listRecent(
     limit = 20,
-    filters?: { type?: string; scope?: string; tags?: string[] },
+    filters?: { type?: string; scope?: string; tags?: string[]; agent?: string; platform?: string },
     offset = 0,
   ) {
     const conditions: any[] = [ne(knowledgeEntries.type, 'system')];
     if (filters?.type) conditions.push(sql`${knowledgeEntries.type} = ${filters.type}`);
     if (filters?.scope) conditions.push(sql`${knowledgeEntries.scope} = ${filters.scope}`);
+    // Provenance filters round-trip the chart sentinel labels back to the stored
+    // shape: the "unspecified"/"unknown" bars represent NULL rows (and, for
+    // platform, also literal "unknown" written by the MCP resolver).
+    if (filters?.agent) {
+      conditions.push(
+        filters.agent === 'unspecified'
+          ? isNull(knowledgeEntries.agentId)
+          : sql`${knowledgeEntries.agentId} = ${filters.agent}`,
+      );
+    }
+    if (filters?.platform) {
+      conditions.push(
+        filters.platform === 'unknown'
+          ? or(isNull(knowledgeEntries.platform), sql`${knowledgeEntries.platform} = 'unknown'`)
+          : sql`${knowledgeEntries.platform} = ${filters.platform}`,
+      );
+    }
     // Tag filter: OR across the requested tags (matches searchBySimilarity + the
     // previous client-side `.some()` semantics). Reuses the json_each EXISTS pattern.
     if (filters?.tags && filters.tags.length > 0) {
@@ -553,6 +573,49 @@ export class KnowledgeRepository {
     return results.map((r) => ({ scope: r.scope, count: Number(r.count) }));
   }
 
+  /**
+   * Count entries by the agent that created them. agent_id is caller-provided and
+   * NULL when not passed; COALESCE collapses NULL into a single "unspecified"
+   * bucket (the chart label the frontend round-trips back to IS NULL on filter).
+   */
+  async countByAgent(opts: { from?: string; to?: string } = {}) {
+    const { from, to } = opts;
+    const conditions = [ne(knowledgeEntries.type, 'system')];
+    if (from && to) {
+      conditions.push(sql`${knowledgeEntries.createdAt} >= ${from}`);
+      conditions.push(sql`${knowledgeEntries.createdAt} < ${to}`);
+    }
+    const agentLabel = sql<string>`COALESCE(${knowledgeEntries.agentId}, 'unspecified')`;
+    const results = await this.db
+      .select({ agent: agentLabel, count: sql<number>`count(*)` })
+      .from(knowledgeEntries)
+      .where(and(...conditions))
+      .groupBy(agentLabel);
+    return results.map((r) => ({ agent: r.agent, count: Number(r.count) }));
+  }
+
+  /**
+   * Count entries by the platform that created them. platform is NULL for
+   * pre-2.3.0 / dashboard-created rows and the literal "unknown" for MCP rows
+   * whose client couldn't be resolved; COALESCE merges both into one "unknown"
+   * bucket so they don't render as two slices.
+   */
+  async countByPlatform(opts: { from?: string; to?: string } = {}) {
+    const { from, to } = opts;
+    const conditions = [ne(knowledgeEntries.type, 'system')];
+    if (from && to) {
+      conditions.push(sql`${knowledgeEntries.createdAt} >= ${from}`);
+      conditions.push(sql`${knowledgeEntries.createdAt} < ${to}`);
+    }
+    const platformLabel = sql<string>`COALESCE(${knowledgeEntries.platform}, 'unknown')`;
+    const results = await this.db
+      .select({ platform: platformLabel, count: sql<number>`count(*)` })
+      .from(knowledgeEntries)
+      .where(and(...conditions))
+      .groupBy(platformLabel);
+    return results.map((r) => ({ platform: r.platform, count: Number(r.count) }));
+  }
+
   async listAll() {
     return this.db
       .select()
@@ -573,12 +636,12 @@ export class KnowledgeRepository {
 
   // ─── Plans (separate table) ──────────────────────────────────
 
-  createPlan(input: { title: string; content: string; tags: string[]; scope: string; source: string; status?: string; planFilePath?: string | null; embedding: number[] }): any {
+  createPlan(input: { title: string; content: string; tags: string[]; scope: string; source: string; status?: string; planFilePath?: string | null; agentId?: string | null; platform?: string | null; embedding: number[] }): any {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     this.sqlite.prepare(
-      'INSERT INTO plans (id, title, content, tags, scope, status, source, plan_file_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(id, input.title, input.content, JSON.stringify(input.tags), input.scope, input.status ?? 'draft', input.source, input.planFilePath ?? null, now, now);
+      'INSERT INTO plans (id, title, content, tags, scope, status, source, plan_file_path, agent_id, platform, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(id, input.title, input.content, JSON.stringify(input.tags), input.scope, input.status ?? 'draft', input.source, input.planFilePath ?? null, input.agentId ?? null, input.platform ?? null, now, now);
 
     // Insert embedding into plans_embeddings
     try {
@@ -902,6 +965,30 @@ export class KnowledgeRepository {
       else if (row.operation === 'write') map[row.date].writes = row.count;
     }
     return Object.entries(map).map(([date, counts]) => ({ date, ...counts }));
+  }
+
+  /** Plans created per day, zero-filled for every day in the window (mirrors getOperationsByDay). */
+  getPlansByDay(days: number = 15): { date: string; count: number }[] {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const rows = this.sqlite.prepare(`
+      SELECT date(created_at) as date, COUNT(*) as count
+      FROM plans
+      WHERE created_at >= ?
+      GROUP BY date(created_at)
+      ORDER BY date(created_at)
+    `).all(cutoff) as { date: string; count: number }[];
+
+    const map: Record<string, number> = {};
+    const now = new Date();
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      map[d.toISOString().split('T')[0]] = 0;
+    }
+    for (const row of rows) {
+      map[row.date] = row.count;
+    }
+    return Object.entries(map).map(([date, count]) => ({ date, count }));
   }
 
   cleanupOldOperations(): number {

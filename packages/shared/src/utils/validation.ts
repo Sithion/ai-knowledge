@@ -24,7 +24,8 @@ export const createKnowledgeSchema = z.object({
   confidenceScore: z.number().min(0).max(1).optional().default(1.0),
   expiresAt: z.date().nullable().optional().default(null),
   relatedIds: z.array(z.string().uuid()).nullable().optional().default(null),
-  agentId: z.string().nullable().optional().default(null),
+  agentId: z.string().max(64).nullable().optional().default(null),
+  platform: z.string().max(64).nullable().optional().default(null),
 });
 
 export const updateKnowledgeSchema = z.object({
@@ -37,7 +38,8 @@ export const updateKnowledgeSchema = z.object({
   confidenceScore: z.number().min(0).max(1).optional(),
   expiresAt: z.date().nullable().optional(),
   relatedIds: z.array(z.string().uuid()).nullable().optional(),
-  agentId: z.string().nullable().optional(),
+  agentId: z.string().max(64).nullable().optional(),
+  platform: z.string().max(64).nullable().optional(),
 });
 
 export const searchOptionsSchema = z.object({
@@ -60,6 +62,8 @@ export const createPlanSchema = z.object({
   source: z.string().min(1, 'Source is required'),
   status: knowledgeStatusSchema.optional().default(KnowledgeStatus.DRAFT),
   planFilePath: z.string().min(1).nullable().optional(),
+  agentId: z.string().max(64).nullable().optional(),
+  platform: z.string().max(64).nullable().optional(),
   tasks: z.array(z.object({
     description: z.string().min(1),
     priority: z.enum(['low', 'medium', 'high']).optional(),
@@ -74,6 +78,8 @@ export const updatePlanSchema = z.object({
   status: knowledgeStatusSchema.optional(),
   source: z.string().min(1).optional(),
   planFilePath: z.string().min(1).nullable().optional(),
+  agentId: z.string().max(64).nullable().optional(),
+  platform: z.string().max(64).nullable().optional(),
 });
 
 // ─── Plan Tasks ───────────────────────────────────────────────
@@ -127,6 +133,7 @@ const importKnowledgeEntrySchema = z.object({
   expiresAt: z.string().max(64).nullable().optional(),
   relatedIds: z.array(z.string().max(64)).nullable().optional(),
   agentId: z.string().max(200).nullable().optional(),
+  platform: z.string().max(200).nullable().optional(),
 });
 
 /** Body of POST /api/import. Knowledge entries are strictly shaped+bounded;

@@ -185,6 +185,47 @@ test.describe('Migration system', () => {
     }
   });
 
+  test('v2.3.0 adds provenance columns (platform on entries; agent_id+platform on plans)', () => {
+    const dbPath = tmpDbPath();
+    try {
+      const { sqlite } = createDbClient(dbPath);
+      const cols = (table: string) =>
+        (sqlite.prepare(`PRAGMA table_info('${table}')`).all() as { name: string }[]).map((c) => c.name);
+
+      expect(getSchemaVersions(sqlite)).toContain('2.3.0');
+      expect(cols('knowledge_entries')).toContain('platform');
+      expect(cols('plans')).toContain('agent_id');
+      expect(cols('plans')).toContain('platform');
+      sqlite.close();
+    } finally {
+      cleanupDb(dbPath);
+    }
+  });
+
+  test('v2.3.0 provenance columns also apply via embedded migrations (bundled mode)', () => {
+    const dbPath = tmpDbPath();
+    try {
+      const sqlite = new BetterSqlite3(dbPath);
+      sqlite.pragma('journal_mode = WAL');
+      sqlite.pragma('foreign_keys = ON');
+      sqliteVec.load(sqlite);
+
+      const fakeDir = join(tmpdir(), `nonexistent-migrations-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      runMigrations(sqlite, fakeDir);
+
+      const cols = (table: string) =>
+        (sqlite.prepare(`PRAGMA table_info('${table}')`).all() as { name: string }[]).map((c) => c.name);
+
+      expect(getSchemaVersions(sqlite)).toContain('2.3.0');
+      expect(cols('knowledge_entries')).toContain('platform');
+      expect(cols('plans')).toContain('agent_id');
+      expect(cols('plans')).toContain('platform');
+      sqlite.close();
+    } finally {
+      cleanupDb(dbPath);
+    }
+  });
+
   test('re-running createDbClient is idempotent', () => {
     const dbPath = tmpDbPath();
     try {
