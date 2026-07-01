@@ -141,7 +141,11 @@ jobs:
         run: |
           OUTPUT=$(cd apps/mcp-server && npm publish --dry-run --access public 2>&1)
           echo "$OUTPUT"
-          WARNINGS=$(echo "$OUTPUT" | grep "npm warn publish" | grep -v "script name was cleaned" | grep -v "auto-corrected some errors" | grep -v "errors corrected" || true)
+          # "requires you to be logged in ... (dry-run)" is an inherent, benign
+          # warning when publishing unauthenticated in CI — and npm's newer CLI
+          # now prefixes it with the command name ("npm warn publish ..."), so it
+          # started matching this grep. It says nothing about package.json quality.
+          WARNINGS=$(echo "$OUTPUT" | grep "npm warn publish" | grep -v "script name was cleaned" | grep -v "auto-corrected some errors" | grep -v "errors corrected" | grep -v "requires you to be logged in" || true)
           if [ -n "$WARNINGS" ]; then
             echo "$WARNINGS"
             echo "::error::npm publish dry-run produced warnings. Fix package.json before merging."
