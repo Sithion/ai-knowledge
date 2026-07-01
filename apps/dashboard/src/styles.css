@@ -76,3 +76,31 @@ select option {
 .plan-markdown table { border-collapse: collapse; width: 100%; margin-bottom: 12px; font-size: 13px; }
 .plan-markdown th, .plan-markdown td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
 .plan-markdown th { background: var(--bg-input); font-weight: 600; }
+
+/* ── react-day-picker (v9) dark theme — DateRangePicker calendar popover ── */
+.rdp-dark {
+  --rdp-accent-color: var(--accent);
+  /* range highlight: translucent accent instead of the default light lavender.
+     rgba mirrors --accent (#6366f1) for webviews without color-mix support. */
+  --rdp-accent-background-color: rgba(99, 102, 241, 0.22);
+  --rdp-range_middle-background-color: rgba(99, 102, 241, 0.22);
+  --rdp-range_middle-color: var(--text-primary);
+  --rdp-range_start-color: #fff;
+  --rdp-range_end-color: #fff;
+  --rdp-today-color: var(--accent-hover);
+  --rdp-day_button-border-radius: 8px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.rdp-dark .rdp-month_caption,
+.rdp-dark .rdp-caption_label { color: var(--text-primary); font-weight: 600; }
+.rdp-dark .rdp-weekday { color: var(--text-secondary); font-weight: 500; }
+.rdp-dark .rdp-day_button { color: var(--text-primary); }
+.rdp-dark .rdp-day_button:hover:not(:disabled) { background-color: var(--border); }
+.rdp-dark .rdp-outside .rdp-day_button { color: var(--text-secondary); opacity: 0.5; }
+.rdp-dark .rdp-disabled { opacity: 0.35; }
+.rdp-dark .rdp-today:not(.rdp-selected) .rdp-day_button { color: var(--accent-hover); font-weight: 600; }
+.rdp-dark .rdp-chevron { fill: var(--text-secondary); }
+.rdp-dark .rdp-button_next:hover:not(:disabled) .rdp-chevron,
+.rdp-dark .rdp-button_previous:hover:not(:disabled) .rdp-chevron { fill: var(--accent-hover); }

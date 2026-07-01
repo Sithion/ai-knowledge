@@ -843,6 +843,10 @@ export class KnowledgeService {
     return this.repository.getOperationsByDay(days);
   }
 
+  getPlansByDay(days: number = 15) {
+    return this.repository.getPlansByDay(days);
+  }
+
   cleanupOldOperations() {
     return this.repository.cleanupOldOperations();
   }

@@ -23,9 +23,11 @@ import {
 import type { CreateKnowledgeInput, UpdateKnowledgeInput, SearchOptions } from '@cognistore/shared';
 import { DEFAULT_SEARCH_LIMIT, DEFAULT_SIMILARITY_THRESHOLD } from '@cognistore/shared';
 
-// Retention window for the operations_log table. Must be >= the largest window
-// the dashboard chart asks for (currently 15 days via getOperationsByDay).
-const OPERATIONS_RETENTION_DAYS = 30;
+// Retention window for the operations_log table. Must exceed the largest
+// window the dashboard can request: /api/metrics/activity clamps its range to
+// 730 days via daysBetween() in apps/dashboard/server/index.ts, and the '2y'
+// preset uses that maximum. 800 = 730-day max view + ~70-day margin.
+const OPERATIONS_RETENTION_DAYS = 800;
 
 export class KnowledgeRepository {
   constructor(
@@ -963,6 +965,30 @@ export class KnowledgeRepository {
       else if (row.operation === 'write') map[row.date].writes = row.count;
     }
     return Object.entries(map).map(([date, counts]) => ({ date, ...counts }));
+  }
+
+  /** Plans created per day, zero-filled for every day in the window (mirrors getOperationsByDay). */
+  getPlansByDay(days: number = 15): { date: string; count: number }[] {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const rows = this.sqlite.prepare(`
+      SELECT date(created_at) as date, COUNT(*) as count
+      FROM plans
+      WHERE created_at >= ?
+      GROUP BY date(created_at)
+      ORDER BY date(created_at)
+    `).all(cutoff) as { date: string; count: number }[];
+
+    const map: Record<string, number> = {};
+    const now = new Date();
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      map[d.toISOString().split('T')[0]] = 0;
+    }
+    for (const row of rows) {
+      map[row.date] = row.count;
+    }
+    return Object.entries(map).map(([date, count]) => ({ date, count }));
   }
 
   cleanupOldOperations(): number {

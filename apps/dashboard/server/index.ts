@@ -86,7 +86,7 @@ const SETTINGS_FILE = resolve(INSTALL_DIR, 'settings.json');
 
 export interface AppSettings {
   autoUpdate: boolean;
-  dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
+  dateRangePreset: '1d' | '1w' | '1m' | '1y' | '2y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: 'all' | 'claude' | 'copilot';
   alwaysSearchExternalProviders: boolean;
@@ -269,7 +269,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // Periodic maintenance every 6 hours: cleanup old ops log + WAL checkpoint
   setInterval(() => {
-    if (sdkReady) { try { sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(); sdk.walCheckpoint(); } catch { /* silent */ } }
+    if (sdkReady) { try { sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(730); sdk.walCheckpoint(); } catch { /* silent */ } }
   }, 6 * 60 * 60 * 1000);
 
   // Token usage scan every 5 minutes — incremental, idempotent.
@@ -1542,13 +1542,14 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Ranged metrics (driven by the global date-range picker) ────
 
-  /** Days inclusive between two ISO dates — clamped to 1..365. */
+  /** Days inclusive between two ISO dates — clamped to 1..730 (the '2y' preset).
+   *  Keep <= OPERATIONS_RETENTION_DAYS (800) in packages/core knowledge.repository.ts. */
   const daysBetween = (fromISO: string, toISO: string): number => {
     const from = new Date(fromISO).getTime();
     const to = new Date(toISO).getTime();
     if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return 7;
     const diffDays = Math.floor((to - from) / (24 * 60 * 60 * 1000)) + 1;
-    return Math.max(1, Math.min(365, diffDays));
+    return Math.max(1, Math.min(730, diffDays));
   };
 
   /** Build a contiguous day series of zeros for the requested range. */
@@ -2104,7 +2105,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Plan Metrics endpoint ──────────────────────────────────
 
-  app.get('/api/metrics/plans', async (_request, reply) => {
+  app.get<{ Querystring: { from?: string; to?: string } }>('/api/metrics/plans', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
 
@@ -2119,18 +2120,16 @@ Pass an array to addKnowledge to create multiple entries at once.
         if (s in plansByStatus) (plansByStatus as any)[s]++;
       }
 
-      // Plans created per day (last 15 days)
-      const now = new Date();
-      const plansByDay: { date: string; count: number }[] = [];
-      for (let i = 14; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
-        const count = allPlans.filter((p: any) => {
-          const created = new Date(p.createdAt).toISOString().split('T')[0];
-          return created === dateStr;
-        }).length;
-        plansByDay.push({ date: dateStr, count });
+      // Plans created per day — follows the global date-range picker when
+      // from/to are given; falls back to the legacy 15-day window otherwise.
+      const { from, to } = request.query;
+      let plansByDay: { date: string; count: number }[];
+      if (from && to) {
+        const days = daysBetween(from, to);
+        const set = new Set(buildDateSeries(from, to));
+        plansByDay = sdk.getPlansByDay(days).filter((r) => set.has(r.date));
+      } else {
+        plansByDay = sdk.getPlansByDay(15);
       }
 
       return {

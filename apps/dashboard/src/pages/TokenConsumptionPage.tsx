@@ -7,6 +7,7 @@ import { useAppSelector } from '../store/index.js';
 import { api, PROVIDER_SOURCE, SOURCE_TO_PROVIDER, type ProviderFilter, type TokenUsageAggregates } from '../api/client.js';
 import { DateRangePicker } from '../components/DateRangePicker.js';
 import { MetricCard, WidgetCard, formatTokens, getHeatmapColor } from '../components/statsPrimitives.js';
+import { dateAxisProps } from '../utils/chartAxis.js';
 
 const MODEL_COLORS = ['#8b5cf6', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899'];
 const PROVIDERS: { key: ProviderFilter; labelKey: string }[] = [
@@ -274,7 +275,7 @@ export function TokenConsumptionPage() {
             <WidgetCard title={t('tokens.activity')} state="loaded">
               <ResponsiveContainer width="100%" height={220}>
                 <AreaChart data={dailySeries}>
-                  <XAxis dataKey="date" tick={{ fill: 'var(--text-secondary)', fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
+                  <XAxis dataKey="date" tick={{ fill: 'var(--text-secondary)', fontSize: 10 }} {...dateAxisProps(dailySeries.length)} />
                   <YAxis hide />
                   <Tooltip
                     contentStyle={{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }}

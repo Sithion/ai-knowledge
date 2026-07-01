@@ -17,6 +17,7 @@ const PRESETS: { key: Exclude<DateRangePreset, 'custom'>; labelKey: string }[] =
   { key: '1w', labelKey: 'dateRange.1w' },
   { key: '1m', labelKey: 'dateRange.1m' },
   { key: '1y', labelKey: 'dateRange.1y' },
+  { key: '2y', labelKey: 'dateRange.2y' },
 ];
 
 function formatLabel(from: string, to: string): string {
@@ -128,6 +129,7 @@ export function DateRangePicker() {
           }}
         >
           <DayPicker
+            className="rdp-dark"
             mode="range"
             defaultMonth={new Date(range.from)}
             selected={{ from: new Date(range.from), to: new Date(range.to) }}

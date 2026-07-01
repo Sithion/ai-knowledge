@@ -34,7 +34,7 @@ const resources = {
         median: 'Median', distinctTags: 'tags',
         noData: 'No data yet', failedLoad: 'Failed to load', loading: 'Loading...',
         totalPlans: 'Total Plans', activePlans: 'Active', completedPlans: 'Completed', avgTasksPerPlan: 'Avg Tasks/Plan',
-        planStatus: 'Plan Status', taskStatus: 'Task Status', plansActivity15d: 'Plans Activity (15 days)',
+        planStatus: 'Plan Status', taskStatus: 'Task Status', plansActivity: 'Plans Activity',
         noPlanData: 'No plan data yet.',
       },
       tagSuggestions: {
@@ -145,7 +145,7 @@ const resources = {
         importParseError: 'Failed to parse file. Please select a valid JSON export.',
         knowledgeEntries: 'Knowledge entries', planEntries: 'Plans',
       },
-      dateRange: { '1d': '1D', '1w': '1W', '1m': '1M', '1y': '1Y', custom: 'Custom' },
+      dateRange: { '1d': '1D', '1w': '1W', '1m': '1M', '1y': '1Y', '2y': '2Y', custom: 'Custom' },
       tokens: {
         title: 'Token Consumption',
         subtitle: 'Tokens spent in AI coding tools',
@@ -216,7 +216,7 @@ const resources = {
         median: 'Mediana', distinctTags: 'etiquetas',
         noData: 'Sin datos aún', failedLoad: 'Error al cargar', loading: 'Cargando...',
         totalPlans: 'Total de Planes', activePlans: 'Activos', completedPlans: 'Completados', avgTasksPerPlan: 'Tareas/Plan Prom.',
-        planStatus: 'Estado de Planes', taskStatus: 'Estado de Tareas', plansActivity15d: 'Actividad de Planes (15 días)',
+        planStatus: 'Estado de Planes', taskStatus: 'Estado de Tareas', plansActivity: 'Actividad de Planes',
         noPlanData: 'Sin datos de planes aún.',
       },
       tagSuggestions: {
@@ -327,7 +327,7 @@ const resources = {
         importParseError: 'Error al leer el archivo. Selecciona un archivo JSON válido.',
         knowledgeEntries: 'Entradas de conocimiento', planEntries: 'Planes',
       },
-      dateRange: { '1d': '1D', '1w': '1S', '1m': '1M', '1y': '1A', custom: 'Personalizado' },
+      dateRange: { '1d': '1D', '1w': '1S', '1m': '1M', '1y': '1A', '2y': '2A', custom: 'Personalizado' },
       tokens: {
         title: 'Consumo de Tokens',
         subtitle: 'Tokens gastados en herramientas de IA',
@@ -398,7 +398,7 @@ const resources = {
         median: 'Mediana', distinctTags: 'tags',
         noData: 'Sem dados ainda', failedLoad: 'Erro ao carregar', loading: 'Carregando...',
         totalPlans: 'Total de Planos', activePlans: 'Ativos', completedPlans: 'Concluídos', avgTasksPerPlan: 'Tarefas/Plano Méd.',
-        planStatus: 'Status de Planos', taskStatus: 'Status de Tarefas', plansActivity15d: 'Atividade de Planos (15 dias)',
+        planStatus: 'Status de Planos', taskStatus: 'Status de Tarefas', plansActivity: 'Atividade de Planos',
         noPlanData: 'Sem dados de planos ainda.',
       },
       tagSuggestions: {
@@ -509,7 +509,7 @@ const resources = {
         importParseError: 'Erro ao ler o arquivo. Selecione um arquivo JSON válido.',
         knowledgeEntries: 'Entradas de conhecimento', planEntries: 'Planos',
       },
-      dateRange: { '1d': '1D', '1w': '1S', '1m': '1M', '1y': '1A', custom: 'Personalizado' },
+      dateRange: { '1d': '1D', '1w': '1S', '1m': '1M', '1y': '1A', '2y': '2A', custom: 'Personalizado' },
       tokens: {
         title: 'Consumo de Tokens',
         subtitle: 'Tokens gastos em ferramentas de IA',

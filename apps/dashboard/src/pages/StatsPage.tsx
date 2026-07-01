@@ -9,6 +9,7 @@ import {
 import { useAppDispatch, useAppSelector } from '../store/index.js';
 import { fetchStats, fetchMetrics } from '../store/statsSlice.js';
 import { DateRangePicker } from '../components/DateRangePicker.js';
+import { dateAxisProps } from '../utils/chartAxis.js';
 
 /* ── Constants ── */
 
@@ -610,7 +611,7 @@ export function StatsPage() {
                 <XAxis
                   dataKey="date"
                   tick={{ fill: 'var(--text-secondary)', fontSize: 10 }}
-                  tickFormatter={(v) => v.slice(5)}
+                  {...dateAxisProps(chartData.length)}
                 />
                 <YAxis hide />
                 <Tooltip
@@ -679,6 +680,7 @@ const TASK_STATUS_COLORS: Record<string, string> = {
 
 export function PlanStatsPage() {
   const { t } = useTranslation();
+  const { range } = useAppSelector((s) => s.dateRange);
   const [data, setData] = useState<{
     plans: { total: number; draft: number; active: number; completed: number; archived: number };
     tasks: { total: number; pending: number; inProgress: number; completed: number; avgPerPlan: number };
@@ -686,8 +688,8 @@ export function PlanStatsPage() {
   } | null>(null);
 
   useEffect(() => {
-    api.getPlanMetrics().then(setData).catch(() => {});
-  }, []);
+    api.getPlanMetrics(range.from, range.to).then(setData).catch(() => {});
+  }, [range.from, range.to]);
 
   if (!data) return <div style={{ color: 'var(--text-secondary)' }}>{t('stats.loading')}</div>;
   if (data.plans.total === 0) return <div style={{ color: 'var(--text-secondary)' }}>{t('stats.noPlanData')}</div>;
@@ -796,10 +798,10 @@ export function PlanStatsPage() {
 
       {/* Plans Activity Chart */}
       {data.plansByDay.some((d) => d.count > 0) && (
-        <WidgetCard title={t('stats.plansActivity15d')} state="loaded">
+        <WidgetCard title={t('stats.plansActivity')} state="loaded">
           <ResponsiveContainer width="100%" height={180}>
             <AreaChart data={data.plansByDay}>
-              <XAxis dataKey="date" tickFormatter={(v) => v.slice(5)} tick={{ fill: 'var(--text-secondary)', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <XAxis dataKey="date" {...dateAxisProps(data.plansByDay.length)} tick={{ fill: 'var(--text-secondary)', fontSize: 10 }} axisLine={false} tickLine={false} />
               <YAxis allowDecimals={false} tick={{ fill: 'var(--text-secondary)', fontSize: 10 }} axisLine={false} tickLine={false} width={30} />
               <Tooltip
                 contentStyle={{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-primary)' }}

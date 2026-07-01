@@ -1,6 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
-export type DateRangePreset = '1d' | '1w' | '1m' | '1y' | 'custom';
+export type DateRangePreset = '1d' | '1w' | '1m' | '1y' | '2y' | 'custom';
 
 export interface DateRange {
   from: string;
@@ -21,6 +21,7 @@ export function rangeForPreset(preset: Exclude<DateRangePreset, 'custom'>): Date
     case '1w': from.setDate(from.getDate() - 7); break;
     case '1m': from.setMonth(from.getMonth() - 1); break;
     case '1y': from.setFullYear(from.getFullYear() - 1); break;
+    case '2y': from.setFullYear(from.getFullYear() - 2); break;
   }
   return { from: from.toISOString(), to: to.toISOString() };
 }

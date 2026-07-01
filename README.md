@@ -268,8 +268,8 @@ The desktop app includes a full dashboard with seven pages:
 
 ### Stats
 
-- Knowledge stats: type and scope distribution (pie), **Knowledge by Agent** and **Knowledge by Platform** bar charts (clickable, deep-linking to the filtered knowledge list), 15-day activity trend, and a full-width **Top Tags** bar chart with a median reference line — each tag is clickable and filters the knowledge list
-- Plans stats sub-page: plan-status and task-status donut charts plus a 15-day plans activity chart
+- Knowledge stats: type and scope distribution (pie), **Knowledge by Agent** and **Knowledge by Platform** bar charts (clickable, deep-linking to the filtered knowledge list), an activity trend that follows the selected date range, and a full-width **Top Tags** bar chart with a median reference line — each tag is clickable and filters the knowledge list
+- Plans stats sub-page: plan-status and task-status donut charts plus a plans activity chart that follows the selected date range
 - Metric cards: total entries, recent activity, database size
 - Configurable auto-refresh interval (Off / 1s / 10s / 30s / 1m / 5m)
 

@@ -273,12 +273,12 @@ export const api = {
     request(`/api/plans/tasks/${taskId}`, { method: 'DELETE' }),
 
   // Plan Metrics
-  getPlanMetrics: () =>
+  getPlanMetrics: (from?: string, to?: string) =>
     request<{
       plans: { total: number; draft: number; active: number; completed: number; archived: number };
       tasks: { total: number; pending: number; inProgress: number; completed: number; avgPerPlan: number };
       plansByDay: { date: string; count: number }[];
-    }>('/api/metrics/plans'),
+    }>(`/api/metrics/plans${from && to ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : ''}`),
 
   // Maintenance
   cleanupDatabase: () => request<{ success: boolean; orphansRemoved: number; vacuumed: boolean; sizeAfter: string }>(
@@ -364,7 +364,7 @@ export interface TokenUsageAggregates {
 
 export interface AppSettings {
   autoUpdate: boolean;
-  dateRangePreset: '1d' | '1w' | '1m' | '1y' | 'custom';
+  dateRangePreset: '1d' | '1w' | '1m' | '1y' | '2y' | 'custom';
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: ProviderFilter;
   alwaysSearchExternalProviders: boolean;
