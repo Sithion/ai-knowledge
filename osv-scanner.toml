@@ -69,3 +69,15 @@ id = "RUSTSEC-2025-0100" # unic-ucd-ident — unmaintained, no fix
 id = "RUSTSEC-2024-0429" # glib < 0.20 — pinned by Tauri 2.x GTK stack (glib 0.18); fix needs an upstream Tauri upgrade
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0097" # rand — the 0.8.x line is bumped to 0.8.6; a transitive rand 0.7.3 remains with no in-major fix
+
+# quick-xml < 0.41.0 (RUSTSEC-2026-0194 / -0195, CVSS 7.5). quick-xml 0.38.4 is
+# pulled by plist, whose requirement is `^0.38`; even the latest plist (1.9.0)
+# only reaches quick-xml 0.39.4, so the 0.41.0 fix is unreachable until Tauri
+# bumps its plist dependency. In our tree quick-xml is used solely by plist to
+# parse local macOS `.plist` bundle/updater metadata (trusted files shipped in
+# the app), not untrusted network input — so the XML-parsing issues are not
+# reachable with attacker-controlled data here.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194" # quick-xml < 0.41 — transitive via plist (Tauri); fix needs an upstream Tauri/plist upgrade
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195" # quick-xml < 0.41 — transitive via plist (Tauri); fix needs an upstream Tauri/plist upgrade
