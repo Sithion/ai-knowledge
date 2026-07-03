@@ -359,24 +359,18 @@ export class ConfigManager {
   // Well-known path for Claude settings
   static readonly CLAUDE_SETTINGS = join(homedir(), '.claude', 'settings.json');
 
-  // CogniStore tools that should be auto-allowed (read + write)
-  static readonly COGNISTORE_AUTO_ALLOW_TOOLS = [
-    // Read
-    'mcp__cognistore__getKnowledge',
-    'mcp__cognistore__listTags',
-    'mcp__cognistore__healthCheck',
-    'mcp__cognistore__listPlanTasks',
-    // Write
-    'mcp__cognistore__addKnowledge',
-    'mcp__cognistore__updateKnowledge',
-    'mcp__cognistore__deleteKnowledge',
-    'mcp__cognistore__createPlan',
-    'mcp__cognistore__updatePlan',
-    'mcp__cognistore__addPlanTask',
-    'mcp__cognistore__updatePlanTask',
-    'mcp__cognistore__updatePlanTasks',
-    'mcp__cognistore__addPlanRelation',
-  ];
+  // Single server-scope allow rule that pre-approves EVERY CogniStore MCP tool
+  // (current and future) so users don't get a per-tool permission prompt. This is
+  // Claude Code's whole-server syntax — the bare `mcp__<server>` form. NOT a glob:
+  // `mcp__cognistore__*` is not accepted and would silently re-introduce prompts.
+  static readonly COGNISTORE_AUTO_ALLOW_TOOLS = ['mcp__cognistore'];
+
+  // Prefix that identifies the superseded per-tool allow rules (e.g.
+  // `mcp__cognistore__getKnowledge`). Note the trailing `__`: it matches every
+  // granular cognistore tool rule while sparing the bare server-scope rule
+  // `mcp__cognistore` and any non-cognistore or hyphenated-lookalike rule
+  // (`mcp__cognistore-plus__x`). Used to migrate legacy installs on re-inject.
+  static readonly COGNISTORE_LEGACY_ALLOW_PREFIX = 'mcp__cognistore__';
 
   // Global enforcement hooks. Script files live under ~/.cognistore/hooks/ (removed
   // on uninstall with the install dir); only JSON entries are injected into the
@@ -389,7 +383,16 @@ export class ConfigManager {
 
   /**
    * Inject permission allow rules for CogniStore tools into a settings.json file.
-   * Merge-only: never overwrites existing rules, never removes user entries.
+   * Merge-only: never overwrites user rules and touches ONLY `permissions.allow`
+   * (a user's `permissions.deny`/`permissions.ask` are never read or modified —
+   * deny/ask take precedence over allow in Claude Code, preserving user limits).
+   *
+   * Also migrates legacy installs: any superseded per-tool rule
+   * (`mcp__cognistore__*`) is stripped so the single server-scope rule replaces
+   * the old explicit list. Idempotent — returns `skipped` (no backup written)
+   * when there is nothing to add AND nothing to strip, so repeated
+   * upgrade/redeploy runs don't accumulate `.bak` copies of settings.json.
+   *
    * If the file doesn't exist, creates a minimal { permissions: { allow: [...] } } — Claude Code
    * will extend this with its own keys on next run. The format is compatible.
    */
@@ -415,22 +418,35 @@ export class ConfigManager {
       config.permissions.allow = [];
     }
 
+    const prefix = ConfigManager.COGNISTORE_LEGACY_ALLOW_PREFIX;
+    const legacy = config.permissions.allow.filter(
+      (rule: string) => typeof rule === 'string' && rule.startsWith(prefix)
+    );
     const existing = new Set(config.permissions.allow);
     const toAdd = allowRules.filter(rule => !existing.has(rule));
 
-    if (toAdd.length === 0) {
+    if (toAdd.length === 0 && legacy.length === 0) {
       return { action: 'skipped', path: settingsPath };
     }
 
     await copyFile(settingsPath, `${settingsPath}.bak.${Date.now()}`);
+    if (legacy.length > 0) {
+      config.permissions.allow = config.permissions.allow.filter(
+        (rule: string) => !(typeof rule === 'string' && rule.startsWith(prefix))
+      );
+    }
     config.permissions.allow.push(...toAdd);
     await writeFile(settingsPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
     return { action: 'updated', path: settingsPath };
   }
 
   /**
-   * Remove specific permission allow rules from a settings.json file.
-   * Only removes exact matches for the given rules.
+   * Remove CogniStore permission allow rules from a settings.json file.
+   * Removes exact matches for the given rules AND every legacy per-tool rule
+   * (`mcp__cognistore__*`), so uninstall clears both the current server-scope
+   * rule and any leftover granular rules from older installs. User rules and
+   * `permissions.deny`/`permissions.ask` are left untouched. No-op (no backup)
+   * when nothing matches.
    */
   async removePermissions(
     settingsPath: string,
@@ -448,9 +464,11 @@ export class ConfigManager {
     }
 
     const removeSet = new Set(rulesToRemove);
+    const prefix = ConfigManager.COGNISTORE_LEGACY_ALLOW_PREFIX;
     const before = config.permissions.allow.length;
     config.permissions.allow = config.permissions.allow.filter(
-      (rule: string) => !removeSet.has(rule)
+      (rule: string) =>
+        !(removeSet.has(rule) || (typeof rule === 'string' && rule.startsWith(prefix)))
     );
 
     if (config.permissions.allow.length === before) {

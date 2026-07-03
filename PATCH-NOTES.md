@@ -1,5 +1,16 @@
 # Patch Notes
 
+## v2.3.1
+
+Claude Code no longer prompts you tool-by-tool to approve CogniStore. Setup now injects a single **server-scope** permission rule that pre-approves every CogniStore MCP tool at once, and it migrates existing installs automatically on upgrade — no manual action needed.
+
+### Fixes
+- **No more per-tool permission prompts in Claude Code.** Setup used to inject a hardcoded list of 13 individual tool-allow rules into `~/.claude/settings.json`, but the CogniStore MCP server exposes 17 tools — so `listPlans`, `archivePlan`, `deletePlanTask`, and `getTokenUsage` still prompted on first use for every user, and any newly-added tool would prompt again. The setup now injects the single server-scope rule `mcp__cognistore`, which pre-approves **all** CogniStore tools, current and future. On upgrade/redeploy the old per-tool rules (`mcp__cognistore__*`) are stripped and replaced automatically; your own permission rules and your `permissions.deny`/`permissions.ask` entries are left untouched, and re-runs make no change once migrated (no `settings.json.bak` accumulation). Uninstall removes the rule plus any legacy leftovers.
+  - **Behavior change to be aware of:** the server-scope rule widens auto-approval to every tool the server exposes now and in the future — including the destructive `deleteKnowledge` / `deletePlanTask` (the former was already auto-approved before this change) — without a per-tool prompt. Also note that upgrade/redeploy re-injects this rule, so if you deliberately narrow CogniStore's permissions by hand, the full rule is restored on the next app update.
+
+### Internal
+- `ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS` is now the single `['mcp__cognistore']` rule; legacy per-tool rules are identified by the `mcp__cognistore__` prefix (`COGNISTORE_LEGACY_ALLOW_PREFIX`). `injectPermissions` strips those on re-inject and stays idempotent (skips — no backup — when there is nothing to add and nothing to strip); `removePermissions` clears the server-scope rule plus any `mcp__cognistore__*` leftovers. New `packages/tests/src/e2e/config-permissions.test.ts` covers fresh inject, migration, idempotency/backup-count, deny/ask preservation, hyphen-lookalike safety, and uninstall — the first tests for these two methods.
+
 ## v2.3.0
 
 Provenance tracking — every knowledge entry and plan now records **which platform** and **which agent** created it, with new dashboard charts and filters. The schema migration, MCP-config re-injection, and instruction/template updates all redeploy automatically on app upgrade — no manual action needed.

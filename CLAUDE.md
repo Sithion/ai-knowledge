@@ -31,7 +31,7 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 | Add `cognistore` to `~/.claude.json` | Remove entry via ConfigManager |
 | Add `cognistore` to `~/.copilot/mcp-config.json` | Remove entry via ConfigManager |
 | Add `cognistore` to `~/.config/opencode/opencode.json` | Remove entry via ConfigManager |
-| Inject read-only tool permissions in `~/.claude/settings.json` | Remove permission entries via ConfigManager |
+| Inject `mcp__cognistore` server-scope allow rule (all tools) in `~/.claude/settings.json` | Remove the rule + any legacy `mcp__cognistore__*` entries via ConfigManager |
 | Copy global hook scripts to `~/.cognistore/hooks/{claude-code,copilot}/` | Removed with `~/.cognistore` directory |
 | Inject hooks into `~/.claude/settings.json` (`hooks` key) | Remove cognistore hook entries via `ConfigManager.removeHooks` |
 | Write `~/.copilot/hooks/hooks.json` reminder hooks | Remove cognistore entries via `ConfigManager.removeCopilotHooks` |
