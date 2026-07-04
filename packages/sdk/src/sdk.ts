@@ -535,6 +535,11 @@ export class KnowledgeSDK {
     return this.service!.getPlansByDay(days);
   }
 
+  reconcileOperationsDaily() {
+    if (!this.initialized || !this.service) return 0;
+    return this.service!.reconcileOperationsDaily();
+  }
+
   cleanupOldOperations() {
     if (!this.initialized || !this.service) return 0;
     return this.service!.cleanupOldOperations();

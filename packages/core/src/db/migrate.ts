@@ -150,6 +150,24 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_platform ON knowledge_entries(platform)
 CREATE INDEX IF NOT EXISTS idx_plans_platform ON plans(platform);
 CREATE INDEX IF NOT EXISTS idx_plans_agent ON plans(agent_id);
 `,
+  // v2.3.2: permanent, never-pruned daily rollup for the Activity chart, so
+  // pruning operations_log can no longer erase chart history. Backfill from the
+  // raw rows that still survive. MUST stay in sync with migrations/2.3.2.sql.
+  '2.3.2': `
+CREATE TABLE IF NOT EXISTS operations_daily (
+  date   TEXT PRIMARY KEY,
+  reads  INTEGER NOT NULL DEFAULT 0,
+  writes INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO operations_daily (date, reads, writes)
+  SELECT date(created_at),
+         SUM(CASE WHEN operation = 'read'  THEN 1 ELSE 0 END),
+         SUM(CASE WHEN operation = 'write' THEN 1 ELSE 0 END)
+  FROM operations_log
+  WHERE date(created_at) IS NOT NULL
+  GROUP BY date(created_at)
+  ON CONFLICT(date) DO UPDATE SET reads = excluded.reads, writes = excluded.writes;
+`,
 };
 
 /**

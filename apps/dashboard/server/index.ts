@@ -267,9 +267,11 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // SDK initialization moved after app.listen() — see bottom of start()
 
-  // Periodic maintenance every 6 hours: cleanup old ops log + WAL checkpoint
+  // Periodic maintenance every 6 hours: self-heal the operations_daily rollup
+  // from the still-retained raw window (MAX-merge, catches any stale/other-process
+  // writer) BEFORE pruning the raw log, then cleanup + WAL checkpoint.
   setInterval(() => {
-    if (sdkReady) { try { sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(730); sdk.walCheckpoint(); } catch { /* silent */ } }
+    if (sdkReady) { try { sdk.reconcileOperationsDaily(); sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(730); sdk.walCheckpoint(); } catch { /* silent */ } }
   }, 6 * 60 * 60 * 1000);
 
   // Token usage scan every 5 minutes — incremental, idempotent.

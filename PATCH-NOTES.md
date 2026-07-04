@@ -1,5 +1,15 @@
 # Patch Notes
 
+## v2.3.2
+
+The dashboard **Activity chart no longer loses history** when the operations log is pruned. Daily read/write counts are now kept in a permanent, never-pruned rollup — the same keep-forever model as token usage — so a historical day can never silently drop to zero again. The schema migration runs automatically on app upgrade; no manual action needed.
+
+### Fixes
+- **Activity-chart data no longer vanishes.** The chart aggregated the raw `operations_log` table, which is hard-`DELETE`-pruned by a 6-hour maintenance job. Because the chart zero-fills every day in view, a pruned day rendered as **Total 0** instead of disappearing — so an older point (e.g. one exactly at the retention edge) could show 305 one day and 0 the next. Raising retention to 800 days (v2.3.0) only pushed the cliff out; it didn't remove it, and the value that actually prunes lives in the **running sidecar binary** — a process launched from an older build kept pruning at the old window regardless of the source fix. The chart now reads a new permanent `operations_daily` rollup that pruning the raw log can never affect. **Note:** days already deleted before this release are unrecoverable from the app itself (a pre-prune `~/.cognistore/knowledge.db` backup can be restored manually); durable history accrues from this release forward, and taking effect still requires rebuilding and fully restarting the app so the old pruning process is replaced.
+
+### Internal
+- **Migration `2.3.2`** creates `operations_daily(date PK, reads, writes)` and backfills it from the still-surviving `operations_log` rows, in both the disk and embedded migration paths (bundled MCP server stays in sync). `logOperation`/`logOperationBatch` now upsert the rollup (`reads = reads + excluded.reads`) atomically in the same transaction as the raw insert; `getOperationsByDay` reads the rollup with a date-only cutoff (a full-ISO cutoff sorted past a bare `YYYY-MM-DD` key and dropped the boundary day) and pure-UTC zero-fill stepping (DST-safe `length === days`; same hardening applied to `getPlansByDay`). A new `reconcileOperationsDaily()` **MAX-merges** the retained raw window into the rollup on the maintenance tick **before** pruning, self-healing any gap left by a stale/other-process writer without ever reducing an accumulated count. Retention stays at 800 days. Tests cover rollup upsert, prune-survival regression, migration backfill idempotency (disk + embedded), and the `730`-bucket boundary.
+
 ## v2.3.1
 
 Claude Code no longer prompts you tool-by-tool to approve CogniStore. Setup now injects a single **server-scope** permission rule that pre-approves every CogniStore MCP tool at once, and it migrates existing installs automatically on upgrade — no manual action needed.
