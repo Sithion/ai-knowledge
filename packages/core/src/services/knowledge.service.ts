@@ -847,6 +847,10 @@ export class KnowledgeService {
     return this.repository.getPlansByDay(days);
   }
 
+  reconcileOperationsDaily() {
+    return this.repository.reconcileOperationsDaily();
+  }
+
   cleanupOldOperations() {
     return this.repository.cleanupOldOperations();
   }

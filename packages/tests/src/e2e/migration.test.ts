@@ -97,6 +97,7 @@ test.describe('Migration system', () => {
       expect(tableExists(sqlite, 'plan_tasks')).toBe(true);
       expect(tableExists(sqlite, 'plan_relations')).toBe(true);
       expect(tableExists(sqlite, 'operations_log')).toBe(true);
+      expect(tableExists(sqlite, 'operations_daily')).toBe(true);
       expect(tableExists(sqlite, 'schema_version')).toBe(true);
       expect(tableExists(sqlite, 'knowledge_fts')).toBe(true);
 
@@ -174,10 +175,52 @@ test.describe('Migration system', () => {
       expect(tableExists(sqlite, 'plan_tasks')).toBe(true);
       expect(tableExists(sqlite, 'plan_relations')).toBe(true);
       expect(tableExists(sqlite, 'operations_log')).toBe(true);
+      expect(tableExists(sqlite, 'operations_daily')).toBe(true);
 
       const versions = getSchemaVersions(sqlite);
       expect(versions).toContain('0.8.0');
       expect(versions).toContain('0.9.0');
+
+      sqlite.close();
+    } finally {
+      cleanupDb(dbPath);
+    }
+  });
+
+  test('v2.3.2 backfills operations_daily from surviving operations_log rows (embedded/bundled mode + idempotent)', () => {
+    const dbPath = tmpDbPath();
+    try {
+      const sqlite = new BetterSqlite3(dbPath);
+      sqlite.pragma('journal_mode = WAL');
+      sqlite.pragma('foreign_keys = ON');
+      sqliteVec.load(sqlite);
+      const fakeDir = join(tmpdir(), `nonexistent-migrations-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+      // Apply all embedded migrations (operations_daily created, empty), then
+      // simulate a pre-2.3.2 DB that already holds raw operations_log history by
+      // dropping the rollup + un-recording 2.3.2 and seeding raw rows.
+      runMigrations(sqlite, fakeDir);
+      sqlite.exec('DROP TABLE IF EXISTS operations_daily');
+      sqlite.prepare('DELETE FROM schema_version WHERE version = ?').run('2.3.2');
+
+      const day = '2026-06-03';
+      const ins = sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)');
+      for (let i = 0; i < 273; i++) ins.run('read', `${day}T10:00:00.000Z`);
+      for (let i = 0; i < 32; i++) ins.run('write', `${day}T10:00:00.000Z`);
+
+      // Re-apply 2.3.2 → recreates + backfills the rollup from the raw rows.
+      runMigrations(sqlite, fakeDir);
+      expect(tableExists(sqlite, 'operations_daily')).toBe(true);
+      const row = sqlite.prepare('SELECT reads, writes FROM operations_daily WHERE date = ?').get(day) as { reads: number; writes: number };
+      expect(row.reads).toBe(273);
+      expect(row.writes).toBe(32);
+
+      // Idempotent: re-running the migration keeps counts stable (ON CONFLICT).
+      sqlite.prepare('DELETE FROM schema_version WHERE version = ?').run('2.3.2');
+      runMigrations(sqlite, fakeDir);
+      const again = sqlite.prepare('SELECT reads, writes FROM operations_daily WHERE date = ?').get(day) as { reads: number; writes: number };
+      expect(again.reads).toBe(273);
+      expect(again.writes).toBe(32);
 
       sqlite.close();
     } finally {
@@ -246,6 +289,7 @@ test.describe('Migration system', () => {
       expect(tableExists(sqlite2, 'plan_tasks')).toBe(true);
       expect(tableExists(sqlite2, 'plan_relations')).toBe(true);
       expect(tableExists(sqlite2, 'operations_log')).toBe(true);
+      expect(tableExists(sqlite2, 'operations_daily')).toBe(true);
 
       sqlite2.close();
     } finally {

@@ -895,10 +895,32 @@ export class KnowledgeRepository {
 
   // ─── Operations Log ────────────────────────────────────────────
 
-  logOperation(operation: 'read' | 'write'): void {
+  // operations_daily is a permanent, never-pruned daily rollup that backs the
+  // dashboard Activity chart. The raw operations_log is hard-DELETE-pruned, so
+  // the chart must NOT read it directly (see getOperationsByDay). Every logged
+  // operation accumulates into the rollup in the same transaction as the raw
+  // insert so a crash can't drift the two apart.
+  private bumpOperationsDaily(operation: 'read' | 'write', isoTs: string, count: number): void {
+    const day = isoTs.slice(0, 10); // UTC 'YYYY-MM-DD' — matches SQLite date(created_at)
+    const reads = operation === 'read' ? count : 0;
+    const writes = operation === 'write' ? count : 0;
     this.sqlite
-      .prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)')
-      .run(operation, new Date().toISOString());
+      .prepare(
+        `INSERT INTO operations_daily (date, reads, writes) VALUES (?, ?, ?)
+         ON CONFLICT(date) DO UPDATE SET reads = reads + excluded.reads, writes = writes + excluded.writes`
+      )
+      .run(day, reads, writes);
+  }
+
+  logOperation(operation: 'read' | 'write'): void {
+    const now = new Date().toISOString();
+    const insert = this.sqlite.transaction(() => {
+      this.sqlite
+        .prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)')
+        .run(operation, now);
+      this.bumpOperationsDaily(operation, now, 1);
+    });
+    insert();
   }
 
   logOperationBatch(operation: 'read' | 'write', count: number): void {
@@ -907,6 +929,7 @@ export class KnowledgeRepository {
     const stmt = this.sqlite.prepare('INSERT INTO operations_log (operation, created_at) VALUES (?, ?)');
     const insertMany = this.sqlite.transaction((n: number) => {
       for (let i = 0; i < n; i++) stmt.run(operation, now);
+      this.bumpOperationsDaily(operation, now, n);
     });
     insertMany(count);
   }
@@ -942,27 +965,31 @@ export class KnowledgeRepository {
   }
 
   getOperationsByDay(days: number = 15): { date: string; reads: number; writes: number }[] {
-    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const DAY = 24 * 60 * 60 * 1000;
+    // Read from the permanent operations_daily rollup, NOT the prunable
+    // operations_log — otherwise DELETE-pruned days would render as 0. The
+    // cutoff is the date-only oldest zero-fill key: a full 24-char ISO cutoff
+    // would sort GREATER than a bare 'YYYY-MM-DD' row and drop the boundary day.
+    const cutoff = new Date(Date.now() - (days - 1) * DAY).toISOString().slice(0, 10);
     const rows = this.sqlite.prepare(`
-      SELECT date(created_at) as date, operation, COUNT(*) as count
-      FROM operations_log
-      WHERE created_at >= ?
-      GROUP BY date(created_at), operation
-      ORDER BY date(created_at)
-    `).all(cutoff) as { date: string; operation: string; count: number }[];
+      SELECT date, reads, writes
+      FROM operations_daily
+      WHERE date >= ?
+      ORDER BY date
+    `).all(cutoff) as { date: string; reads: number; writes: number }[];
 
     const map: Record<string, { reads: number; writes: number }> = {};
-    const now = new Date();
+    const nowMs = Date.now();
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
+      // Pure-UTC stepping so the key count is exactly `days` regardless of the
+      // server's local timezone / DST (setDate arithmetic could shift ±1h).
+      const dateStr = new Date(nowMs - i * DAY).toISOString().split('T')[0];
       map[dateStr] = { reads: 0, writes: 0 };
     }
     for (const row of rows) {
       if (!map[row.date]) map[row.date] = { reads: 0, writes: 0 };
-      if (row.operation === 'read') map[row.date].reads = row.count;
-      else if (row.operation === 'write') map[row.date].writes = row.count;
+      map[row.date].reads = row.reads;
+      map[row.date].writes = row.writes;
     }
     return Object.entries(map).map(([date, counts]) => ({ date, ...counts }));
   }
@@ -979,16 +1006,39 @@ export class KnowledgeRepository {
     `).all(cutoff) as { date: string; count: number }[];
 
     const map: Record<string, number> = {};
-    const now = new Date();
+    const nowMs = Date.now();
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      map[d.toISOString().split('T')[0]] = 0;
+      // Pure-UTC stepping (see getOperationsByDay) so the key count is exactly `days`.
+      map[new Date(nowMs - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0]] = 0;
     }
     for (const row of rows) {
       map[row.date] = row.count;
     }
     return Object.entries(map).map(([date, count]) => ({ date, count }));
+  }
+
+  /**
+   * Self-heal operations_daily from the still-retained raw operations_log window.
+   * Uses MAX-merge (never overwrite): a stale/other process (e.g. an older MCP
+   * server) may INSERT raw rows without bumping the rollup, so the raw sum can be
+   * higher — take it; but a partially-pruned boundary day has a raw sum LOWER
+   * than the accumulated rollup — keep the rollup. MAX is correct both ways and
+   * survives the cross-process race with the live `reads + excluded` upsert.
+   * MUST run BEFORE cleanupOldOperations so about-to-be-pruned rows are captured.
+   */
+  reconcileOperationsDaily(): number {
+    return this.sqlite.prepare(`
+      INSERT INTO operations_daily (date, reads, writes)
+      SELECT date(created_at),
+             SUM(CASE WHEN operation = 'read'  THEN 1 ELSE 0 END),
+             SUM(CASE WHEN operation = 'write' THEN 1 ELSE 0 END)
+      FROM operations_log
+      WHERE date(created_at) IS NOT NULL
+      GROUP BY date(created_at)
+      ON CONFLICT(date) DO UPDATE SET
+        reads  = MAX(reads,  excluded.reads),
+        writes = MAX(writes, excluded.writes)
+    `).run().changes;
   }
 
   cleanupOldOperations(): number {
