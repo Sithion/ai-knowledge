@@ -1,5 +1,20 @@
 # Patch Notes
 
+## v2.3.3
+
+**macOS auto-update is reliable again, and the release pipeline can no longer ship a half-built update.** The v2.3.2 release went out missing its macOS updater manifest, so in-app updates from 2.3.1 silently found nothing. The publish workflow now builds each release as a **draft**, **verifies** the updater manifest is complete, and only then **promotes** it to public — and it produces that manifest deterministically instead of racing.
+
+### Fixes
+- **Auto-update no longer breaks on release.** Two independent races in the multi-platform publish could leave `latest.json` (the updater manifest) and the macOS `.app.tar.gz` missing or incomplete: a per-job "clean stale assets" step let one platform's job delete another platform's updater artifacts, and the two platform jobs wrote `latest.json` concurrently (last-writer-wins, dropping a platform). The cleanup now runs **once** before the builds, and the platform builds run **serially** (`max-parallel: 1`) so the manifest accumulates every platform deterministically. A new **verify-release** job asserts `latest.json` contains every expected platform + signature (and all installers exist) while the release is still a **draft**; a **promote-release** job publishes it only after that passes — so updater clients never see a partial release.
+- **Stuck Intel job no longer stalls every release.** The macOS Intel (`macos-13`) build hung in "queued" and got cancelled after ~24h on every recent release. `publish-tauri` now has a `timeout-minutes` and the Intel target is removed (see below).
+
+### Removed
+- **macOS is now Apple Silicon only.** The Intel (`x86_64-apple-darwin`) build is dropped. This is a documentation correction as much as a change: the Intel job never completed, so **no Intel `.dmg` has ever actually shipped** — the download tables just implied one existed. Apple Silicon (M1/M2/M3/M4) is unaffected.
+
+### Notes
+- **"App is damaged" on first install is expected** — the app isn't signed with an Apple Developer certificate, so macOS Gatekeeper blocks a freshly downloaded `.dmg`. Right-click the app → **Open** (or **System Settings → Privacy & Security → Open Anyway**), or run `xattr -dr com.apple.quarantine "/Applications/CogniStore.app"`. This is a **one-time** step for the initial install; **in-app updates need no workaround** (they replace the app without a download quarantine flag).
+- The auto-update reliability applies **from v2.3.3 forward**. If you're on v2.3.2, do the one-time un-quarantine to install v2.3.3; after that, updates arrive in-app automatically.
+
 ## v2.3.2
 
 The dashboard **Activity chart no longer loses history** when the operations log is pruned. Daily read/write counts are now kept in a permanent, never-pruned rollup — the same keep-forever model as token usage — so a historical day can never silently drop to zero again. The schema migration runs automatically on app upgrade; no manual action needed.

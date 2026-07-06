@@ -27,7 +27,9 @@ Steps:
 **File:** `.github/workflows/publish.yml`
 **Trigger:** Push to `main` affecting `apps/**`, `packages/**`, `.github/workflows/**`, or `pnpm-lock.yaml`. Also supports `workflow_dispatch` for manual runs.
 
-Three jobs run in sequence:
+The pipeline builds each release as a **draft**, verifies its updater manifest is complete, then promotes it to public — so updater clients never see a half-built release:
+
+`publish-mcp` → `create-release` (draft) → `build-web` → `publish-tauri` → `verify-release` → `promote-release`.
 
 ### Job 1: publish-mcp
 
@@ -45,26 +47,31 @@ The `--provenance` flag enables npm provenance attestation, linking the publishe
 
 ### Job 2: create-release
 
-Creates a GitHub Release with release notes.
+Creates a **draft** GitHub Release with release notes, then clears any stale updater assets once (before the build matrix).
 
 ```
 Steps:
 1. Read version from apps/dashboard/package.json
 2. Check if release v{version} already exists
-3. If not → create release with:
-   - Download table (macOS arm64, macOS x64, Linux)
+3. If not → create DRAFT release with:
+   - Download table (macOS Apple Silicon, Linux)
    - macOS gatekeeper workaround instructions
    - Feature highlights
+4. Clean stale release assets (*.tar.gz / *.sig / latest.json) — runs here,
+   once, so no build job deletes another platform's updater artifacts
 ```
 
-### Job 3: publish-tauri
+### Job 3: build-web
 
-Builds desktop binaries for 3 platform targets:
+Builds the platform-independent web/sidecar assets once and uploads them as an artifact the `publish-tauri` matrix downloads.
+
+### Job 4: publish-tauri
+
+Builds desktop binaries. macOS is **Apple Silicon only** — the Intel (`macos-13`, `x86_64-apple-darwin`) job never got a runner (hung in "queued" → 24h cancel every release) and no Intel `.dmg` ever shipped, so it was removed. The two targets run **serially** (`max-parallel: 1`) so `tauri-action`'s read-merge-write of `latest.json` accumulates both platforms deterministically instead of racing; a `timeout-minutes` guards against a stuck runner.
 
 | Platform | Runner | Target | Output |
 |----------|--------|--------|--------|
-| macOS (Apple Silicon) | `macos-14` | `aarch64-apple-darwin` | `.dmg` |
-| macOS (Intel) | `macos-14` | `x86_64-apple-darwin` | `.dmg` |
+| macOS (Apple Silicon) | `macos-latest` | `aarch64-apple-darwin` | `.dmg` |
 | Linux | `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | `.AppImage`, `.deb` |
 
 ```
@@ -73,12 +80,19 @@ Steps per platform:
 2. Install Rust stable toolchain
 3. Setup pnpm + Node.js 24
 4. pnpm install --frozen-lockfile
-5. pnpm turbo build --filter=@cognistore/dashboard
-6. Bundle sidecar (node scripts/bundle-sidecar.mjs) — includes instruction compilation and plugin bundling
-7. tauri-action → build + upload to GitHub Release
+5. Download the sidecar web assets, bundle native modules
+6. tauri-action → build + upload to the draft GitHub Release
 ```
 
-Binaries are signed with `TAURI_SIGNING_PRIVATE_KEY` for auto-update verification. The `tauri-action` generates `latest.json` automatically with `updaterJsonKeepUniversal: true` — there is no separate `generate-updater` job.
+Binaries are signed with `TAURI_SIGNING_PRIVATE_KEY` for auto-update verification. `tauri-action` generates `latest.json` automatically (`updaterJsonKeepUniversal: true` — now inert with a single macOS arch); there is no separate `generate-updater` job.
+
+### Job 5: verify-release
+
+Fetches the still-draft release by id and asserts `latest.json` is **complete** — it contains every expected platform (`darwin-aarch64`, `linux-x86_64`) with a non-empty signature and URL, and every installer asset exists. Fails the run otherwise, so an incomplete release can never be promoted.
+
+### Job 6: promote-release
+
+Flips the verified draft to a public (`--draft=false`) release, making it the "latest" that the updater endpoint serves.
 
 ## Secrets
 

@@ -13,6 +13,13 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Serialize publish runs per-branch. cancel-in-progress:false so a new push does
+# NOT kill an in-flight run mid-upload (which would leave a half-uploaded
+# release); the stuck-runner case is handled by timeout-minutes on publish-tauri.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ── MCP Server → npm ──────────────────────────────────────────
   publish-mcp:
@@ -131,19 +138,19 @@ jobs:
           | Platform | File | Architecture |
           |----------|------|-------------|
           | macOS (Apple Silicon) | \`.dmg\` | arm64 (M1/M2/M3/M4) |
-          | macOS (Intel) | \`.dmg\` | x86_64 |
           | Linux | \`.AppImage\` | x86_64 |
           | Linux (Debian/Ubuntu) | \`.deb\` | x86_64 |
 
           ### macOS: \"App is damaged\" warning
 
-          This app is not yet signed with an Apple Developer certificate. macOS Gatekeeper will block it by default.
+          This app is not signed with an Apple Developer certificate, so macOS Gatekeeper blocks it on first open. This only affects the **initial install** — in-app updates thereafter need no workaround.
 
-          **To fix**, open Terminal and run:
+          **Easiest:** right-click (or Control-click) the app in **Applications** and choose **Open**, then confirm — or go to **System Settings > Privacy & Security** and click **Open Anyway**.
+
+          **Or via Terminal** (removes the quarantine flag for this app only):
           \`\`\`bash
-          xattr -cr \"/Applications/CogniStore.app\"
+          xattr -dr com.apple.quarantine \"/Applications/CogniStore.app\"
           \`\`\`
-          Or go to **System Settings > Privacy & Security** and click **Open Anyway**.
 
           ### What's included
 
@@ -151,13 +158,32 @@ jobs:
           - Dashboard with hybrid (semantic + keyword) search, stats, and knowledge health
           - MCP server configuration for Claude Code and GitHub Copilot
           - One-click uninstall (removes all data and configurations)" \
-              -F draft=false \
+              -F draft=true \
               -F prerelease=false \
               --jq '.id')
-            echo "Created release $TAG (id: $RELEASE_ID)"
+            echo "Created draft release $TAG (id: $RELEASE_ID)"
           fi
 
           echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
+
+      - name: Clean stale release assets
+        # Runs ONCE here (before the publish-tauri matrix) instead of inside each
+        # matrix job — otherwise concurrent jobs delete each other's updater
+        # artifacts (a sibling Linux job would wipe the macOS .tar.gz/latest.json).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_ID="${{ steps.create.outputs.release_id }}"
+          ASSETS=$(gh api repos/${{ github.repository }}/releases/${RELEASE_ID}/assets --jq '.[] | "\(.id) \(.name)"')
+          echo "$ASSETS" | while read -r ASSET_ID ASSET_NAME; do
+            [ -z "$ASSET_ID" ] && continue
+            case "$ASSET_NAME" in
+              *.tar.gz|*.tar.gz.sig|latest.json)
+                echo "Deleting stale asset: $ASSET_NAME (id: $ASSET_ID)"
+                gh api -X DELETE repos/${{ github.repository }}/releases/assets/${ASSET_ID}
+                ;;
+            esac
+          done
 
   # ── Build web assets (runs once, platform-independent) ─────────
   build-web:
@@ -191,20 +217,22 @@ jobs:
     needs: [create-release, build-web]
     strategy:
       fail-fast: false
+      # Serialize the platform builds so tauri-action's read-merge-write of
+      # latest.json accumulates every platform deterministically. Running them
+      # concurrently races (last-writer-wins) and drops a platform entry.
+      # macOS is Apple-Silicon-only: the Intel (macos-13) job never got a runner
+      # (hung in "queued" -> 24h cancel every release) and no Intel .dmg ever
+      # shipped, so x86_64-apple-darwin is intentionally dropped.
+      max-parallel: 1
       matrix:
         include:
           - platform: macos-latest
             target: aarch64-apple-darwin
-          # Intel build MUST run on an Intel host (macos-13). macos-14/latest are
-          # Apple Silicon — building "x86_64" there still emitted aarch64-named
-          # artifacts, colliding with the arm64 job's updater asset (ReleaseAsset
-          # already_exists) and never producing a real Intel build / native module.
-          - platform: macos-13
-            target: x86_64-apple-darwin
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
     permissions:
       contents: write
 
@@ -246,22 +274,6 @@ jobs:
         working-directory: apps/dashboard
         run: node scripts/bundle-sidecar.mjs --phase=native
 
-      - name: Clean stale release assets
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASE_ID="${{ needs.create-release.outputs.release_id }}"
-          ASSETS=$(gh api repos/${{ github.repository }}/releases/${RELEASE_ID}/assets --jq '.[] | "\(.id) \(.name)"')
-          echo "$ASSETS" | while read -r ASSET_ID ASSET_NAME; do
-            [ -z "$ASSET_ID" ] && continue
-            case "$ASSET_NAME" in
-              *.tar.gz|*.tar.gz.sig|latest.json)
-                echo "Deleting stale asset: $ASSET_NAME (id: $ASSET_ID)"
-                gh api -X DELETE repos/${{ github.repository }}/releases/assets/${ASSET_ID}
-                ;;
-            esac
-          done
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
@@ -273,9 +285,71 @@ jobs:
           tagName: v${{ needs.create-release.outputs.version }}
           releaseName: 'CogniStore v${{ needs.create-release.outputs.version }}'
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           updaterJsonKeepUniversal: true
 
   # NOTE: latest.json is automatically generated by tauri-action with updaterJsonKeepUniversal: true
   # The generate-updater job was removed in v0.9.0 as it was redundant and could cause overwrites.
+  # updaterJsonKeepUniversal is inert now that macOS is single-arch (aarch64 only).
+
+  # ── Verify the (still-draft) release is complete before it goes public ──
+  verify-release:
+    needs: [create-release, publish-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Assert latest.json + updater assets are complete
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RELEASE_ID="${{ needs.create-release.outputs.release_id }}"
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          # Fetch THIS release's assets by id (not the /releases/latest/download
+          # alias, which excludes drafts and can lag/point elsewhere).
+          ASSETS_JSON=$(gh api "repos/${{ github.repository }}/releases/${RELEASE_ID}/assets" --paginate)
+          NAMES=$(echo "$ASSETS_JSON" | jq -r '.[].name')
+          echo "Assets on release:"; echo "$NAMES"
+
+          require_asset() {
+            echo "$NAMES" | grep -qx "$1" || { echo "::error::missing required asset: $1"; exit 1; }
+          }
+          require_asset "latest.json"
+          require_asset "CogniStore_aarch64.app.tar.gz"
+          require_asset "CogniStore_aarch64.app.tar.gz.sig"
+          require_asset "CogniStore_${VERSION}_amd64.AppImage"
+          require_asset "CogniStore_${VERSION}_amd64.AppImage.sig"
+          require_asset "CogniStore_${VERSION}_amd64.deb"
+          require_asset "CogniStore_${VERSION}_aarch64.dmg"
+
+          # Download latest.json by asset id and assert version + platform entries.
+          LATEST_ID=$(echo "$ASSETS_JSON" | jq -r '.[] | select(.name=="latest.json") | .id')
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${{ github.repository }}/releases/assets/${LATEST_ID}" > latest.json
+          echo "latest.json contents:"; cat latest.json
+
+          jq -e --arg v "$VERSION" '.version == $v' latest.json >/dev/null \
+            || { echo "::error::latest.json version != $VERSION"; exit 1; }
+          for p in darwin-aarch64 linux-x86_64; do
+            jq -e --arg p "$p" '.platforms[$p].signature != "" and (.platforms[$p].url != "")' latest.json >/dev/null \
+              || { echo "::error::latest.json missing/empty platform: $p"; exit 1; }
+          done
+          echo "verify-release: latest.json is complete for $VERSION (darwin-aarch64 + linux-x86_64)."
+
+  # ── Promote the verified draft to a public release ──
+  promote-release:
+    needs: [create-release, verify-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the verified release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "v${{ needs.create-release.outputs.version }}" \
+            --repo ${{ github.repository }} --draft=false
+          echo "Promoted v${{ needs.create-release.outputs.version }} to public (latest)."
