@@ -38,7 +38,7 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 - **Desktop dashboard** — Browse, search, filter, and manage your knowledge base and plans through the built-in UI with stats and charts. All destructive actions use modal confirmations.
 - **Auto-update** — The app checks for updates every 30 minutes and installs them automatically.
 - **Multi-language** — Dashboard available in English, Spanish, and Portuguese.
-- **Cross-platform** — macOS (`.dmg`) and Linux (`.AppImage`, `.deb`).
+- **Cross-platform** — macOS (Apple Silicon, `.dmg`) and Linux (`.AppImage`, `.deb`).
 
 ## Quick Start
 
@@ -48,18 +48,21 @@ Grab the latest release for your platform from [GitHub Releases](https://github.
 
 | Platform | Format |
 |----------|--------|
-| macOS (Apple Silicon) | `.dmg` (arm64) |
-| macOS (Intel) | `.dmg` (x64) |
+| macOS (Apple Silicon) | `.dmg` (arm64, M1/M2/M3/M4) |
 | Linux | `.AppImage`, `.deb` |
 
 ### 2. Install
 
 Open the downloaded file and drag the app to your Applications folder (macOS) or run the AppImage (Linux).
 
-> **macOS users:** The app is not yet code-signed. If macOS reports the app is damaged, run:
-> ```bash
-> xattr -cr "/Applications/CogniStore.app"
-> ```
+> **macOS users:** The app is not code-signed, so on the **first launch** macOS Gatekeeper may report it is "damaged." This is expected. Either:
+> - **Right-click** (or Control-click) the app in Applications → **Open** → confirm, or open **System Settings → Privacy & Security** and click **Open Anyway**; or
+> - remove the download quarantine flag from a terminal:
+>   ```bash
+>   xattr -dr com.apple.quarantine "/Applications/CogniStore.app"
+>   ```
+>
+> This is a **one-time** step for the initial install — in-app auto-updates thereafter need no workaround.
 
 ### 3. Run the Setup Wizard
 
