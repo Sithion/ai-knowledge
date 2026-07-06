@@ -105,6 +105,11 @@ jobs:
     outputs:
       release_id: ${{ steps.create.outputs.release_id }}
       version: ${{ steps.pkg-version.outputs.version }}
+      # "true" when this version is already a published (non-draft) release, so
+      # downstream build/verify/promote jobs skip — a workflow-only change must
+      # never rebuild (and momentarily delete the updater assets of) a shipped
+      # release. A brand-new version or an incomplete draft still builds.
+      published: ${{ steps.create.outputs.published }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
@@ -120,10 +125,18 @@ jobs:
           VERSION="${{ steps.pkg-version.outputs.version }}"
           TAG="v${VERSION}"
 
-          # Check if release already exists
+          # Check if release already exists. Use `gh release view` (not the
+          # releases/tags API, which 404s on drafts) so both draft and published
+          # releases are found.
           if gh release view "$TAG" &>/dev/null; then
-            RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/$TAG --jq '.id')
-            echo "Release $TAG already exists (id: $RELEASE_ID)"
+            META=$(gh release view "$TAG" --json databaseId,isDraft)
+            RELEASE_ID=$(echo "$META" | jq -r '.databaseId')
+            if [ "$(echo "$META" | jq -r '.isDraft')" = "false" ]; then
+              echo "Release $TAG is already published (id: $RELEASE_ID) — skipping rebuild."
+              echo "published=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Release $TAG exists as a draft (id: $RELEASE_ID) — will complete it."
+            fi
           else
             RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
               -f tag_name="$TAG" \
@@ -170,6 +183,8 @@ jobs:
         # Runs ONCE here (before the publish-tauri matrix) instead of inside each
         # matrix job — otherwise concurrent jobs delete each other's updater
         # artifacts (a sibling Linux job would wipe the macOS .tar.gz/latest.json).
+        # Skipped when the version is already published (nothing to rebuild).
+        if: steps.create.outputs.published != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -188,6 +203,7 @@ jobs:
   # ── Build web assets (runs once, platform-independent) ─────────
   build-web:
     needs: create-release
+    if: needs.create-release.outputs.published != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -215,6 +231,7 @@ jobs:
   # ── Tauri Desktop App → GitHub Releases ────────────────────────
   publish-tauri:
     needs: [create-release, build-web]
+    if: needs.create-release.outputs.published != 'true'
     strategy:
       fail-fast: false
       # Serialize the platform builds so tauri-action's read-merge-write of
@@ -296,9 +313,12 @@ jobs:
   # ── Verify the (still-draft) release is complete before it goes public ──
   verify-release:
     needs: [create-release, publish-tauri]
+    if: needs.create-release.outputs.published != 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # write (not read) because it reads a DRAFT release's assets, and draft
+      # releases are only visible to a token with push access.
+      contents: write
     steps:
       - name: Assert latest.json + updater assets are complete
         env:
@@ -342,6 +362,7 @@ jobs:
   # ── Promote the verified draft to a public release ──
   promote-release:
     needs: [create-release, verify-release]
+    if: needs.create-release.outputs.published != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
