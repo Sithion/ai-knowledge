@@ -1,5 +1,13 @@
 # Patch Notes
 
+## v2.3.4
+
+**Release-pipeline reliability — no application changes** (the app is identical to v2.3.3). Fixes the automated verification that was meant to gate v2.3.3 but couldn't run.
+
+### Fixes
+- **`verify-release` can now read the draft release it verifies.** The job that checks a release's `latest.json` is complete before promoting it ran with `contents: read`, but a *draft* release is only visible to a token with push access — so it failed with 403 and v2.3.3 got stuck as an unpublished draft (it was promoted manually). It now uses `contents: write`.
+- **Re-running a publish no longer disturbs an already-shipped release.** `create-release` detects a published (non-draft) version and skips the build/verify/promote jobs (and the stale-asset cleanup), so a workflow re-run can't momentarily delete a live release's `latest.json`/updater assets. A new version or an incomplete draft still builds normally.
+
 ## v2.3.3
 
 **macOS auto-update is reliable again, and the release pipeline can no longer ship a half-built update.** The v2.3.2 release went out missing its macOS updater manifest, so in-app updates from 2.3.1 silently found nothing. The publish workflow now builds each release as a **draft**, **verifies** the updater manifest is complete, and only then **promotes** it to public — and it produces that manifest deterministically instead of racing.
