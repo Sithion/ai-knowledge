@@ -1,5 +1,16 @@
 # Patch Notes
 
+## v2.3.5
+
+**Leaving plan mode no longer gets stuck re-running `createPlan()`.** The Claude Code hook that gates `ExitPlanMode` only recognised a plan persisted via `createPlan()` *with* a `planFilePath`, so once a plan already existed, calling `updatePlan()` (even to add that path) couldn't satisfy the gate — the agent was forced to re-run `createPlan()`, which dedups into the draft and produced duplicate/churned plans and deny loops. The gate now accepts **`createPlan()` OR `updatePlan()`**. The fix redeploys automatically on the next app upgrade — no manual action needed.
+
+### Fixes
+- **`updatePlan()` now satisfies the ExitPlanMode gate.** `post-update-plan-cleanup.sh` opens the plan-persistence gate on any successful `updatePlan` (a `updatePlan` always targets an existing plan), and `post-create-plan-marker.sh` now opens it whether or not a `planFilePath` was recorded — recording the path is recommended for local-file linkage but no longer required to leave plan mode.
+- **The gate no longer re-blocks on retry.** `pre-exit-plan-check.sh` used to consume (`rm -f`) its marker on success, so when a second `ExitPlanMode` denier (the review gate) forced a retry, the marker was gone and the agent had to persist again. The marker is now left in place; it is still reset per plan-mode cycle by `pre-enter-plan-check.sh`, so entering a new plan afresh correctly re-requires a persist.
+
+### Internal
+- New behavioral test `packages/tests/src/e2e/plan-gate-hooks.test.ts` exercises the marker handshake against the real hook scripts (deny → `updatePlan` opens the gate → allow without consuming → per-cycle reset → `createPlan` without `planFilePath` still opens).
+
 ## v2.3.4
 
 **Release-pipeline reliability — no application changes** (the app is identical to v2.3.3). Fixes the automated verification that was meant to gate v2.3.3 but couldn't run.
