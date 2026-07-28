@@ -68,6 +68,10 @@ The Rust shell passes configuration to the Fastify sidecar via environment:
 | `TEMPLATES_PATH` | Resource path | Skills + config templates |
 | `NODE_ENV` | `production` | Runtime mode |
 | `NODE_PATH` | Resource path | Node modules resolution |
+| `COGNISTORE_MANAGED` | `1` | Marks an app-launched sidecar; required for the startup artifact self-heal |
+
+`COGNISTORE_MANAGED` is set only by the Tauri shell. A sidecar started any other way (tests, `pnpm dev`)
+never re-deploys the developer's agent configs on launch.
 
 ## Port Allocation
 
@@ -81,6 +85,7 @@ Scans ports starting from 3210, testing each with a TCP bind. Returns the first 
 - **Health check:** Poll `GET /api/health` every 500ms for 15 seconds
 - **Cleanup:** On window `Destroyed` event, `SidecarState.kill()` terminates the child process
 - **Degraded mode:** If SDK initialization fails on startup, server enters degraded mode — endpoints return 503, retry every 10 seconds
+- **Artifact self-heal:** Right after `listen()`, the sidecar re-deploys agent instructions, MCP configs, skills and global hooks when the on-disk artifacts lag the running version — so an app that is never opened does not keep stale hooks/skills. See [API reference — Upgrade](./api-reference.md#upgrade).
 
 ## Auto-Update
 
@@ -117,5 +122,14 @@ The Tauri build includes these resources (defined in `tauri.conf.json`):
 | `../sidecar-bundle/dist-server` | `dist-server` | Compiled Fastify server |
 | `../sidecar-bundle/node_modules` | `node_modules` | Production dependencies |
 | `../templates` | `templates` | Skills, configs, instructions |
+| `../package.json` | `package.json` | Version fallback for the sidecar |
 
 The `bundle-sidecar.mjs` script (`apps/dashboard/scripts/`) prepares the sidecar bundle before `tauri build` by copying server output and pruning dev dependencies.
+
+## App version resolution
+
+The sidecar needs its own version to decide whether deployed artifacts are stale. It is **inlined at build
+time** by `tsup.sidecar.ts` (`define: { __APP_VERSION__ }`, read behind a `typeof` guard so the plain `tsc`
+build still works), with the bundled `Resources/package.json` as a runtime fallback. If neither resolves, the
+version is `0.0.0` and the sidecar logs an error, skips the startup self-heal, and refuses to write the
+version markers — a marker holding `0.0.0` would make every later upgrade check answer "already up to date".

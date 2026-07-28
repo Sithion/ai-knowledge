@@ -61,15 +61,30 @@ ELSE IF markers exist:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server"],
+      "args": ["-y", "@cognistore/mcp-server@2.3.6"],
       "env": {
         "SQLITE_PATH": "~/.cognistore/knowledge.db",
-        "OLLAMA_HOST": "http://localhost:11434"
+        "OLLAMA_HOST": "http://localhost:11434",
+        "npm_config_ignore_scripts": "false"
       }
     }
   }
 }
 ```
+
+Entries are built by `buildMcpEntry()` in `apps/dashboard/server/mcp-entry.ts` (the SoT for the
+generated shape). Two rules apply to every client:
+
+- **The package spec is always versioned.** `resolveMcpSpec()` emits `@cognistore/mcp-server@<app version>`
+  when that version is published, and falls back to `@latest` when it is not (source builds, or the
+  window before the npm publish job runs). It never emits the bare package name — `npm exec` would
+  resolve a globally installed copy from `PATH` instead of the registry.
+- **`npm_config_ignore_scripts=false`** is set on the entry so `npx` can compile `better-sqlite3` even
+  when the user's `~/.npmrc` has `ignore-scripts=true`.
+
+Setup and upgrade also run `detectGlobalMcpShadow()`. If a globally installed `@cognistore/mcp-server`
+with a different version is found, the step is reported as a **warning** suggesting
+`npm uninstall -g @cognistore/mcp-server`. The app never modifies global npm packages itself.
 
 The `setupMcpConfig(path, entry)` function:
 1. Reads existing JSON (or creates `{}`)
@@ -86,11 +101,12 @@ OpenCode uses a different JSON structure:
   "mcp": {
     "cognistore": {
       "type": "local",
-      "command": ["npx", "-y", "@cognistore/mcp-server"],
+      "command": ["npx", "-y", "@cognistore/mcp-server@2.3.6"],
       "enabled": true,
       "environment": {
         "SQLITE_PATH": "~/.cognistore/knowledge.db",
-        "OLLAMA_HOST": "http://localhost:11434"
+        "OLLAMA_HOST": "http://localhost:11434",
+        "npm_config_ignore_scripts": "false"
       }
     }
   }

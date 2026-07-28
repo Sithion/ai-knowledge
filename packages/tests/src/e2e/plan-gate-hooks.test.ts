@@ -116,3 +116,20 @@ test('createPlan without planFilePath still opens the gate with a non-blocking m
   // The old deadlock wording must be gone.
   expect(out).not.toContain('stays blocked');
 });
+
+test('a createPlan without planFilePath actually lets ExitPlanMode through', () => {
+  // The end-to-end shape of the v2.3.6 incident: an agent on an older MCP server
+  // whose createPlan schema has no planFilePath property (additionalProperties:
+  // false rejects it) must still be able to leave plan mode. Asserting the marker
+  // exists is not enough — run the gate itself.
+  expect(runHook('pre-exit-plan-check.sh', { session_id: sid })).toContain('"permissionDecision":"deny"');
+
+  runHook('post-create-plan-marker.sh', {
+    session_id: sid,
+    tool_name: 'mcp__cognistore__createPlan',
+    tool_input: { title: 'no path', content: '## Context' },
+    tool_response: { content: [{ type: 'text', text: JSON.stringify({ id: 'p3' }) }] },
+  });
+
+  expect(runHook('pre-exit-plan-check.sh', { session_id: sid }).trim()).toBe('{}');
+});

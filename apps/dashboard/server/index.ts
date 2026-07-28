@@ -21,6 +21,14 @@ import {
   createPlanTaskSchema,
   updatePlanTaskSchema,
 } from '@cognistore/shared';
+import {
+  UNKNOWN_VERSION,
+  buildMcpEntry as buildMcpEntryPure,
+  detectGlobalMcpShadow,
+  getDeployedVersion as readDeployedVersion,
+  resolveMcpSpec,
+  saveDeployedVersion as persistDeployedVersion,
+} from './mcp-entry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -31,25 +39,67 @@ const TEMPLATES_PATH = process.env.TEMPLATES_PATH || join(__dirname, '..', 'temp
 const INSTALL_DIR = resolve(homedir(), '.cognistore');
 const VERSION_FILE = resolve(INSTALL_DIR, '.version');
 
-// Read app version from package.json
+/** Injected by tsup (`define`) in the bundled sidecar. Absent in the tsc output
+ *  (`dist-server/`) and under tsx, hence the `typeof` guard. */
+declare const __APP_VERSION__: string;
+
+// Prefer the build-time constant; fall back to a package.json next to the bundle
+// for dev runs. NOTE: in the packaged app neither the constant nor the file used
+// to exist, which silently yielded UNKNOWN_VERSION forever — see VERSION_RESOLVED.
 const APP_VERSION = (() => {
+  if (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) return __APP_VERSION__;
   try {
     const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', 'package.json'), 'utf-8'));
-    return pkg.version as string;
-  } catch {
-    return '0.0.0';
-  }
+    if (pkg.version) return pkg.version as string;
+  } catch { /* not packaged next to a package.json */ }
+  return UNKNOWN_VERSION;
 })();
+
+/** False when the running build could not determine its own version. Everything
+ *  that persists or compares versions must check this first — a persisted
+ *  UNKNOWN_VERSION makes `needsUpgrade` false forever and freezes every deployed
+ *  artifact (hooks, skills, MCP configs) at whatever shipped first. */
+const VERSION_RESOLVED = APP_VERSION !== UNKNOWN_VERSION;
+
+/** One entry in a setup/upgrade/redeploy result list. */
+type DeployStep = {
+  step: string;
+  status: 'success' | 'error' | 'skipped' | 'warning';
+  message?: string;
+};
+
+/** Skills deployed to ~/.claude/skills and ~/.copilot/skills. */
+const COGNISTORE_SKILLS = ['cognistore-query', 'cognistore-capture', 'cognistore-plan'] as const;
 
 /** Get the last deployed version from ~/.cognistore/.version */
 function getDeployedVersion(): string | null {
-  try { return readFileSync(VERSION_FILE, 'utf-8').trim(); } catch { return null; }
+  return readDeployedVersion(INSTALL_DIR);
 }
 
-/** Save the current version as deployed */
-function saveDeployedVersion(): void {
+/**
+ * Persist the current version as deployed. No-op when the version is unknown or
+ * when any deploy step failed — see {@link persistDeployedVersion}.
+ */
+function saveDeployedVersion(steps: { status: string }[] = []): boolean {
+  return persistDeployedVersion(INSTALL_DIR, APP_VERSION, steps);
+}
+
+/**
+ * Marker for artifacts (hooks, skills, instructions, MCP configs) deployed by the
+ * startup self-heal. Kept SEPARATE from .version: /api/upgrade/run owns .version
+ * and is the only path that runs the embedding re-embed and integrity resync, and
+ * the UI only calls it while /api/upgrade/check still reports needsUpgrade. If the
+ * startup path wrote .version it would silently cancel those two steps.
+ */
+const ARTIFACTS_VERSION_FILE = resolve(INSTALL_DIR, '.artifacts-version');
+
+function getDeployedArtifactsVersion(): string | null {
+  try { return readFileSync(ARTIFACTS_VERSION_FILE, 'utf-8').trim(); } catch { return null; }
+}
+
+function saveDeployedArtifactsVersion(): void {
   mkdirSync(INSTALL_DIR, { recursive: true });
-  writeFileSync(VERSION_FILE, APP_VERSION);
+  writeFileSync(ARTIFACTS_VERSION_FILE, APP_VERSION);
 }
 
 // ─── Application Logging ──────────────────────────────────────
@@ -80,6 +130,13 @@ function log(level: 'info' | 'warn' | 'error', message: string): void {
 // Rotate on startup
 rotateLog();
 log('info', `CogniStore server starting (v${APP_VERSION})`);
+if (!VERSION_RESOLVED) {
+  log(
+    'error',
+    'Could not determine the app version (no build-time __APP_VERSION__ and no readable package.json). ' +
+      'Upgrades are disabled until this build is fixed: deployed artifacts (hooks, skills, MCP configs) will NOT be refreshed.'
+  );
+}
 
 // ─── User settings (survives upgrades) ────────────────────────
 const SETTINGS_FILE = resolve(INSTALL_DIR, 'settings.json');
@@ -450,40 +507,27 @@ Pass an array to addKnowledge to create multiple entries at once.
     } catch { /* best effort */ }
   }
 
-  /** Build the MCP server entry pinned to the required Node major's npx path.
-   *  When that Node is found via nvm, we:
-   *  1. Use its `npx` binary as the command
-   *  2. Prepend its bin dir to PATH so `node` also resolves to that major
-   *     (npx delegates to whatever `node` is in PATH, not its own binary)
-   *  better-sqlite3 is an external dep of @cognistore/mcp-server, so npx rebuilds
-   *  it against this Node — keeping the MCP child on the same major as the sidecar.
-   */
+  /** Build the MCP server entry. See ./mcp-entry.ts — kept there so it stays
+   *  unit-testable (importing this module boots the server). */
   function buildMcpEntry(platform: 'claude-code' | 'copilot' | 'opencode') {
-    const binDir = findNodeBinDir();
-    const env: Record<string, string> = {
-      SQLITE_PATH: resolve(INSTALL_DIR, 'knowledge.db'),
-      OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://localhost:11434',
-      OLLAMA_MODEL: process.env.OLLAMA_MODEL || 'nomic-embed-text',
-      EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS || '256',
-      // Provenance: stamps which host app created each entry/plan via this config.
-      COGNISTORE_PLATFORM: platform,
-    };
-    if (binDir) {
-      // Prepend the resolved Node bin dir so `node` resolves to the required major.
-      // Use a broad fallback PATH to cover common executable locations (mac + linux).
-      env.PATH = `${binDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
-    }
-    // Forward external-provider secrets (injected into the sidecar by the Tauri
-    // shell from the OS keychain) so the MCP subprocess can authenticate.
-    for (const [key, val] of Object.entries(process.env)) {
-      if (key.startsWith('COGNISTORE_PROVIDER_SECRET__') && val) env[key] = val;
-    }
-    return {
-      type: 'stdio',
-      command: binDir ? resolve(binDir, 'npx') : 'npx',
-      args: ['-y', '@cognistore/mcp-server'],
-      env,
-    };
+    return buildMcpEntryPure({
+      platform,
+      installDir: INSTALL_DIR,
+      binDir: findNodeBinDir(),
+      spec: resolveMcpSpec(APP_VERSION),
+    });
+  }
+
+  /** Warn (never mutate) when a global install of the MCP server shadows the
+   *  pinned spec by putting `cognistore-mcp` on PATH ahead of the registry. */
+  function checkGlobalMcpShadow(): { step: string; status: 'success' | 'warning'; message?: string } {
+    const shadowed = detectGlobalMcpShadow(APP_VERSION);
+    if (!shadowed) return { step: 'mcp-shadow-check', status: 'success' };
+    const message =
+      `A global ${'@cognistore/mcp-server'}@${shadowed} is installed and can shadow the app's ` +
+      `pinned v${APP_VERSION}. Remove it with: npm uninstall -g @cognistore/mcp-server`;
+    log('warn', message);
+    return { step: 'mcp-shadow-check', status: 'warning', message };
   }
 
   /**
@@ -505,6 +549,131 @@ Pass an array to addKnowledge to create multiple entries at once.
     } catch (e) {
       console.warn('[CogniStore] Copilot hooks setup failed (non-fatal):', e);
     }
+  }
+
+  /**
+   * Re-deploy every on-disk artifact the app owns: agent instructions, MCP configs
+   * + permissions, skills, and the global enforcement hooks.
+   *
+   * Scope is deliberately narrow. This is NOT the whole upgrade: DB re-init,
+   * seeding, the embedding-dimension re-embed and the integrity resync stay with
+   * /api/upgrade/run, which also owns the .version write. Callers differ in what
+   * they wrap around this, so they keep those steps themselves.
+   *
+   * `clearNpxCache` is opt-in: wiping the npx cache forces a full MCP re-download,
+   * which is right on an explicit upgrade but must never happen on every launch.
+   */
+  async function redeployArtifacts(opts: { clearNpxCache?: boolean } = {}): Promise<DeployStep[]> {
+    const results: DeployStep[] = [];
+    const configTemplateDir = resolve(TEMPLATES_PATH, 'configs');
+    const claudeT = resolve(configTemplateDir, 'claude-code-instructions.md');
+    const copilotT = resolve(configTemplateDir, 'copilot-instructions.md');
+    const opencodeT = resolve(configTemplateDir, 'opencode-instructions.md');
+
+    // 1. Agent instructions
+    try {
+      if (existsSync(claudeT)) {
+        await configManager.injectConfig(ConfigManager.CLAUDE_MD, claudeT, 'Claude Code');
+        results.push({ step: 'instructions-claude', status: 'success' });
+      } else {
+        console.warn(`[CogniStore] Redeploy: Claude template not found at: ${claudeT}`);
+        results.push({ step: 'instructions-claude', status: 'error', message: `Template not found: ${claudeT}` });
+      }
+    } catch (e: any) {
+      results.push({ step: 'instructions-claude', status: 'error', message: e.message });
+    }
+
+    try {
+      if (existsSync(copilotT)) {
+        await configManager.injectConfig(ConfigManager.COPILOT_MD, copilotT, 'GitHub Copilot');
+        await configManager.injectConfig(ConfigManager.COPILOT_INSTRUCTIONS, copilotT, 'Copilot CLI');
+        results.push({ step: 'instructions-copilot', status: 'success' });
+      } else {
+        console.warn(`[CogniStore] Redeploy: Copilot template not found at: ${copilotT}`);
+        results.push({ step: 'instructions-copilot', status: 'error', message: `Template not found: ${copilotT}` });
+      }
+    } catch (e: any) {
+      results.push({ step: 'instructions-copilot', status: 'error', message: e.message });
+    }
+
+    try {
+      if (existsSync(opencodeT)) {
+        await configManager.injectConfig(ConfigManager.OPENCODE_AGENTS_MD, opencodeT, 'OpenCode');
+      }
+      results.push({ step: 'instructions-opencode', status: 'success' });
+    } catch (e: any) {
+      results.push({ step: 'instructions-opencode', status: 'error', message: e.message });
+    }
+
+    // 2. MCP configs (one entry per platform so each stamps its own COGNISTORE_PLATFORM)
+    try {
+      if (opts.clearNpxCache) clearNpxMcpCache();
+      const claudeEntry = buildMcpEntry('claude-code');
+      const copilotEntry = buildMcpEntry('copilot');
+      const opencodeEntry = buildMcpEntry('opencode');
+      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
+      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); } catch { /* optional */ }
+      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
+      try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
+      try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
+      results.push({ step: 'mcp-configs', status: 'success' });
+    } catch (e: any) {
+      results.push({ step: 'mcp-configs', status: 'error', message: e.message });
+    }
+
+    results.push(checkGlobalMcpShadow());
+
+    // 3. Skills
+    try {
+      const skillsDir = resolve(TEMPLATES_PATH, 'skills');
+      const home = homedir();
+
+      for (const platform of ['claude-code', 'copilot'] as const) {
+        const destRoot = platform === 'claude-code' ? '.claude' : '.copilot';
+        for (const name of COGNISTORE_SKILLS) {
+          const srcDir = resolve(skillsDir, platform, name);
+          if (!existsSync(srcDir)) continue;
+          const destDir = resolve(home, destRoot, 'skills', name);
+          mkdirSync(destDir, { recursive: true });
+          cpSync(srcDir, destDir, { recursive: true });
+          const destHooks = resolve(destDir, 'hooks');
+          if (existsSync(resolve(srcDir, 'hooks'))) {
+            for (const file of readdirSync(destHooks)) {
+              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
+            }
+          } else if (existsSync(destHooks)) {
+            // Stale hooks/ from an older template version (current skills ship
+            // SKILL.md only) — they embed outdated tool names; remove so agents
+            // stop receiving stale instructions after upgrade.
+            rmSync(destHooks, { recursive: true, force: true });
+          }
+        }
+      }
+
+      // Clean up old flat Copilot skill files (pre-0.9.2 format)
+      for (const name of COGNISTORE_SKILLS) {
+        const oldFile = resolve(home, '.copilot', 'skills', `${name}.md`);
+        if (existsSync(oldFile)) unlinkSync(oldFile);
+      }
+
+      // OpenCode skills + plugins
+      try { await configManager.setupOpenCodeSkills(TEMPLATES_PATH); } catch { /* optional */ }
+      try { await configManager.setupOpenCodePlugins(TEMPLATES_PATH); } catch { /* optional */ }
+
+      results.push({ step: 'skills', status: 'success' });
+    } catch (e: any) {
+      results.push({ step: 'skills', status: 'error', message: e.message });
+    }
+
+    // 4. Global enforcement hooks (settings.json + ~/.copilot/hooks)
+    try {
+      await deployGlobalHooks();
+      results.push({ step: 'hooks', status: 'success' });
+    } catch (e: any) {
+      results.push({ step: 'hooks', status: 'error', message: e.message });
+    }
+
+    return results;
   }
 
   app.post('/api/setup/node', async () => {
@@ -893,296 +1062,199 @@ Pass an array to addKnowledge to create multiple entries at once.
     };
   });
 
+  /** Guards every path that writes deployed artifacts, so the startup self-heal,
+   *  /api/upgrade/run and /api/redeploy can never interleave on the same files. */
   let upgradeRunning = false;
+  /** Resolves when the in-flight deploy finishes; lets callers wait instead of 409. */
+  let inFlightDeploy: Promise<unknown> | null = null;
+
   app.post('/api/upgrade/run', async (request, reply) => {
+    // The UI auto-POSTs this on window load, which can land while the startup
+    // self-heal is still running. Wait it out rather than 409-ing, which the
+    // client would surface as a failed upgrade.
+    if (inFlightDeploy) { await inFlightDeploy.catch(() => {}); }
     if (upgradeRunning) { return sendError(reply, 409, 'Upgrade already in progress'); }
     upgradeRunning = true;
-    const results: { step: string; status: 'success' | 'error' | 'skipped'; message?: string }[] = [];
+    const results: DeployStep[] = [];
+    // Captured before Step 5 overwrites the marker.
+    const fromVersion = getDeployedVersion();
+    const run = (async () => {
 
-    // Step 1: Database migrations (handled automatically by createDbClient, but log it)
-    try {
-      if (sdkReady) { await sdk.close(); sdkReady = false; }
-      const ok = await tryInitSDK();
-      results.push({ step: 'database', status: ok ? 'success' : 'error', message: ok ? 'Schema up to date' : 'SDK init failed' });
-      if (ok) await seedSystemKnowledge();
-    } catch (e: any) {
-      results.push({ step: 'database', status: 'error', message: e.message });
-    }
+      // Step 1: Database migrations (handled automatically by createDbClient, but log it)
+      try {
+        if (sdkReady) { await sdk.close(); sdkReady = false; }
+        const ok = await tryInitSDK();
+        results.push({ step: 'database', status: ok ? 'success' : 'error', message: ok ? 'Schema up to date' : 'SDK init failed' });
+        if (ok) await seedSystemKnowledge();
+      } catch (e: any) {
+        results.push({ step: 'database', status: 'error', message: e.message });
+      }
 
-    // Step 1b: Re-embed if embedding dimensions changed (e.g. all-minilm 384d → nomic-embed-text 768d)
-    try {
-      if (sdkReady) {
-        const expectedDims = Number(process.env.EMBEDDING_DIMENSIONS) || 256;
-        const needsReembed = await (async () => {
-          try {
-            // Check if vec table has wrong dimensions by trying a dummy query
-            const sqliteRaw = getRawSqlite();
-            if (!sqliteRaw) return false;
-            const row = sqliteRaw.prepare('SELECT embedding FROM knowledge_embeddings LIMIT 1').get() as { embedding: Buffer } | undefined;
-            if (!row) return false; // No entries yet, nothing to re-embed
-            const currentDims = row.embedding.byteLength / 4; // float32 = 4 bytes
-            return currentDims !== expectedDims;
-          } catch { return false; }
-        })();
+      // Step 1b: Re-embed if embedding dimensions changed (e.g. all-minilm 384d → nomic-embed-text 768d)
+      try {
+        if (sdkReady) {
+          const expectedDims = Number(process.env.EMBEDDING_DIMENSIONS) || 256;
+          const needsReembed = await (async () => {
+            try {
+              // Check if vec table has wrong dimensions by trying a dummy query
+              const sqliteRaw = getRawSqlite();
+              if (!sqliteRaw) return false;
+              const row = sqliteRaw.prepare('SELECT embedding FROM knowledge_embeddings LIMIT 1').get() as { embedding: Buffer } | undefined;
+              if (!row) return false; // No entries yet, nothing to re-embed
+              const currentDims = row.embedding.byteLength / 4; // float32 = 4 bytes
+              return currentDims !== expectedDims;
+            } catch { return false; }
+          })();
 
-        if (needsReembed) {
-          console.log(`[CogniStore] Upgrade: embedding dimension mismatch detected, re-embedding all entries...`);
+          if (needsReembed) {
+            console.log(`[CogniStore] Upgrade: embedding dimension mismatch detected, re-embedding all entries...`);
 
-          // 1. Pull new model first
-          const model = process.env.OLLAMA_MODEL || 'nomic-embed-text';
-          const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
-          try {
-            const tagsRes = await fetch(`${host}/api/tags`);
-            let modelAvailable = false;
-            if (tagsRes.ok) {
-              const data = (await tagsRes.json()) as { models: { name: string }[] };
-              modelAvailable = data.models.some(m => m.name === model || m.name.startsWith(`${model}:`));
+            // 1. Pull new model first
+            const model = process.env.OLLAMA_MODEL || 'nomic-embed-text';
+            const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
+            try {
+              const tagsRes = await fetch(`${host}/api/tags`);
+              let modelAvailable = false;
+              if (tagsRes.ok) {
+                const data = (await tagsRes.json()) as { models: { name: string }[] };
+                modelAvailable = data.models.some(m => m.name === model || m.name.startsWith(`${model}:`));
+              }
+              if (!modelAvailable) {
+                console.log(`[CogniStore] Pulling model ${model}...`);
+                const pullRes = await fetch(`${host}/api/pull`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: model }),
+                });
+                if (pullRes.ok) {
+                  const reader = pullRes.body?.getReader();
+                  if (reader) { while (!(await reader.read()).done) {} }
+                }
+              }
+            } catch (e) {
+              console.warn('[CogniStore] Model pull failed during upgrade:', e);
             }
-            if (!modelAvailable) {
-              console.log(`[CogniStore] Pulling model ${model}...`);
-              const pullRes = await fetch(`${host}/api/pull`, {
+
+            // Pre-flight: only drop the vec tables if Ollama can actually produce
+            // an embedding NOW. Dropping first and re-embedding second means a
+            // failed re-embed (Ollama down) would leave the DB with NO embeddings
+            // and degraded search until a later upgrade. The dimension mismatch is
+            // harmless — search keeps working with the existing embeddings — so if
+            // the probe fails we keep them and retry on the next upgrade.
+            let canEmbed = false;
+            try {
+              const probe = await fetch(`${host}/api/embeddings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: model }),
+                body: JSON.stringify({ model, prompt: 'probe' }),
+                signal: AbortSignal.timeout(15000),
               });
-              if (pullRes.ok) {
-                const reader = pullRes.body?.getReader();
-                if (reader) { while (!(await reader.read()).done) {} }
+              if (probe.ok) {
+                const pj = (await probe.json()) as { embedding?: number[] };
+                canEmbed = Array.isArray(pj.embedding) && pj.embedding.length > 0;
+              }
+            } catch { canEmbed = false; }
+
+            if (!canEmbed) {
+              results.push({ step: 'reembed', status: 'skipped', message: 'Ollama unavailable — kept existing embeddings, will re-embed on next upgrade' });
+              console.warn('[CogniStore] Upgrade: skipping re-embed (Ollama cannot embed); existing embeddings preserved');
+            } else {
+              // 2. Drop old vec tables and re-init SDK (recreates with new dimensions)
+              try {
+                const sqliteRaw = getRawSqlite();
+                if (sqliteRaw) {
+                  sqliteRaw.exec('DROP TABLE IF EXISTS knowledge_embeddings');
+                  sqliteRaw.exec('DROP TABLE IF EXISTS plans_embeddings');
+                }
+              } catch (e) { console.warn('[CogniStore] Drop vec tables failed:', e); }
+
+              await sdk.close();
+              sdkReady = false;
+              const reinitOk = await tryInitSDK();
+
+              // 3. Re-embed all knowledge entries
+              if (reinitOk) {
+                try {
+                  const reembedded = await sdk.reembedAll();
+                  results.push({ step: 'reembed', status: 'success', message: `Re-embedded ${reembedded} entries with new model` });
+                  console.log(`[CogniStore] Re-embedded ${reembedded} entries`);
+                } catch (e: any) {
+                  results.push({ step: 'reembed', status: 'error', message: e.message });
+                }
+              } else {
+                results.push({ step: 'reembed', status: 'error', message: 'SDK re-init failed after dropping vec tables' });
               }
             }
-          } catch (e) {
-            console.warn('[CogniStore] Model pull failed during upgrade:', e);
           }
+        }
+      } catch (e: any) {
+        results.push({ step: 'reembed', status: 'error', message: e.message });
+      }
 
-          // Pre-flight: only drop the vec tables if Ollama can actually produce
-          // an embedding NOW. Dropping first and re-embedding second means a
-          // failed re-embed (Ollama down) would leave the DB with NO embeddings
-          // and degraded search until a later upgrade. The dimension mismatch is
-          // harmless — search keeps working with the existing embeddings — so if
-          // the probe fails we keep them and retry on the next upgrade.
-          let canEmbed = false;
-          try {
-            const probe = await fetch(`${host}/api/embeddings`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model, prompt: 'probe' }),
-              signal: AbortSignal.timeout(15000),
-            });
-            if (probe.ok) {
-              const pj = (await probe.json()) as { embedding?: number[] };
-              canEmbed = Array.isArray(pj.embedding) && pj.embedding.length > 0;
-            }
-          } catch { canEmbed = false; }
+      // Step 1c: Embedding integrity check — detect entries without embeddings
+      try {
+        if (sdkReady) {
+          const sqliteRaw = getRawSqlite();
+          if (sqliteRaw) {
+            const entryCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_entries').get() as { c: number }).c;
+            const embeddingCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_embeddings_rowids').get() as { c: number }).c;
 
-          if (!canEmbed) {
-            results.push({ step: 'reembed', status: 'skipped', message: 'Ollama unavailable — kept existing embeddings, will re-embed on next upgrade' });
-            console.warn('[CogniStore] Upgrade: skipping re-embed (Ollama cannot embed); existing embeddings preserved');
-          } else {
-            // 2. Drop old vec tables and re-init SDK (recreates with new dimensions)
-            try {
-              const sqliteRaw = getRawSqlite();
-              if (sqliteRaw) {
+            if (entryCount > 0 && embeddingCount < entryCount) {
+              console.log(`[CogniStore] Upgrade: embedding integrity mismatch — ${entryCount} entries but only ${embeddingCount} embeddings. Resyncing...`);
+
+              try {
                 sqliteRaw.exec('DROP TABLE IF EXISTS knowledge_embeddings');
                 sqliteRaw.exec('DROP TABLE IF EXISTS plans_embeddings');
+              } catch (e) { console.warn('[CogniStore] Drop vec tables failed:', e); }
+
+              await sdk.close();
+              sdkReady = false;
+              const reinitOk = await tryInitSDK();
+
+              if (reinitOk) {
+                try {
+                  const reembedded = await sdk.reembedAll();
+                  results.push({ step: 'integrity', status: 'success', message: `Re-embedded ${reembedded} entries (${entryCount - embeddingCount} were missing)` });
+                } catch (e: any) {
+                  results.push({ step: 'integrity', status: 'error', message: e.message });
+                }
+              } else {
+                results.push({ step: 'integrity', status: 'error', message: 'SDK re-init failed after integrity resync' });
               }
-            } catch (e) { console.warn('[CogniStore] Drop vec tables failed:', e); }
-
-            await sdk.close();
-            sdkReady = false;
-            const reinitOk = await tryInitSDK();
-
-            // 3. Re-embed all knowledge entries
-            if (reinitOk) {
-              try {
-                const reembedded = await sdk.reembedAll();
-                results.push({ step: 'reembed', status: 'success', message: `Re-embedded ${reembedded} entries with new model` });
-                console.log(`[CogniStore] Re-embedded ${reembedded} entries`);
-              } catch (e: any) {
-                results.push({ step: 'reembed', status: 'error', message: e.message });
-              }
-            } else {
-              results.push({ step: 'reembed', status: 'error', message: 'SDK re-init failed after dropping vec tables' });
             }
           }
         }
-      }
-    } catch (e: any) {
-      results.push({ step: 'reembed', status: 'error', message: e.message });
-    }
-
-    // Step 1c: Embedding integrity check — detect entries without embeddings
-    try {
-      if (sdkReady) {
-        const sqliteRaw = getRawSqlite();
-        if (sqliteRaw) {
-          const entryCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_entries').get() as { c: number }).c;
-          const embeddingCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_embeddings_rowids').get() as { c: number }).c;
-
-          if (entryCount > 0 && embeddingCount < entryCount) {
-            console.log(`[CogniStore] Upgrade: embedding integrity mismatch — ${entryCount} entries but only ${embeddingCount} embeddings. Resyncing...`);
-
-            try {
-              sqliteRaw.exec('DROP TABLE IF EXISTS knowledge_embeddings');
-              sqliteRaw.exec('DROP TABLE IF EXISTS plans_embeddings');
-            } catch (e) { console.warn('[CogniStore] Drop vec tables failed:', e); }
-
-            await sdk.close();
-            sdkReady = false;
-            const reinitOk = await tryInitSDK();
-
-            if (reinitOk) {
-              try {
-                const reembedded = await sdk.reembedAll();
-                results.push({ step: 'integrity', status: 'success', message: `Re-embedded ${reembedded} entries (${entryCount - embeddingCount} were missing)` });
-              } catch (e: any) {
-                results.push({ step: 'integrity', status: 'error', message: e.message });
-              }
-            } else {
-              results.push({ step: 'integrity', status: 'error', message: 'SDK re-init failed after integrity resync' });
-            }
-          }
-        }
-      }
-    } catch (e: any) {
-      results.push({ step: 'integrity', status: 'error', message: e.message });
-    }
-
-    // Step 2: Re-inject agent instructions
-    const configTemplateDir = resolve(TEMPLATES_PATH, 'configs');
-    const claudeT = resolve(configTemplateDir, 'claude-code-instructions.md');
-    const copilotT = resolve(configTemplateDir, 'copilot-instructions.md');
-
-    try {
-      if (existsSync(claudeT)) {
-        await configManager.injectConfig(ConfigManager.CLAUDE_MD, claudeT, 'Claude Code');
-        results.push({ step: 'instructions-claude', status: 'success' });
-      } else {
-        console.warn(`[CogniStore] Upgrade: Claude template not found at: ${claudeT}`);
-        results.push({ step: 'instructions-claude', status: 'error', message: `Template not found: ${claudeT}` });
-      }
-    } catch (e: any) {
-      results.push({ step: 'instructions-claude', status: 'error', message: e.message });
-    }
-
-    try {
-      if (existsSync(copilotT)) {
-        await configManager.injectConfig(ConfigManager.COPILOT_MD, copilotT, 'GitHub Copilot');
-        await configManager.injectConfig(ConfigManager.COPILOT_INSTRUCTIONS, copilotT, 'Copilot CLI');
-        results.push({ step: 'instructions-copilot', status: 'success' });
-      } else {
-        console.warn(`[CogniStore] Upgrade: Copilot template not found at: ${copilotT}`);
-        results.push({ step: 'instructions-copilot', status: 'error', message: `Template not found: ${copilotT}` });
-      }
-    } catch (e: any) {
-      results.push({ step: 'instructions-copilot', status: 'error', message: e.message });
-    }
-
-    try {
-      const opencodeT = resolve(configTemplateDir, 'opencode-instructions.md');
-      if (existsSync(opencodeT)) {
-        await configManager.injectConfig(ConfigManager.OPENCODE_AGENTS_MD, opencodeT, 'OpenCode');
-        results.push({ step: 'instructions-opencode', status: 'success' });
-      }
-    } catch (e: any) {
-      results.push({ step: 'instructions-opencode', status: 'error', message: e.message });
-    }
-
-    // Step 3: Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
-    try {
-      clearNpxMcpCache();
-      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
-      const claudeEntry = buildMcpEntry('claude-code');
-      const copilotEntry = buildMcpEntry('copilot');
-      const opencodeEntry = buildMcpEntry('opencode');
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
-      try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
-      results.push({ step: 'mcp-configs', status: 'success' });
-    } catch (e: any) {
-      results.push({ step: 'mcp-configs', status: 'error', message: e.message });
-    }
-
-    // Step 4: Re-deploy skills and hooks
-    try {
-      const skillsDir = resolve(TEMPLATES_PATH, 'skills');
-      const home = homedir();
-
-      for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
-        const srcDir = resolve(skillsDir, 'claude-code', name);
-        if (existsSync(srcDir)) {
-          const destDir = resolve(home, '.claude', 'skills', name);
-          mkdirSync(destDir, { recursive: true });
-          cpSync(srcDir, destDir, { recursive: true });
-          const destHooks = resolve(destDir, 'hooks');
-          if (existsSync(resolve(srcDir, 'hooks'))) {
-            for (const file of readdirSync(destHooks)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
-            }
-          } else if (existsSync(destHooks)) {
-            // Stale hooks/ from an older template version (current skills ship
-            // SKILL.md only) — they embed outdated tool names; remove so agents
-            // stop receiving stale instructions after upgrade.
-            rmSync(destHooks, { recursive: true, force: true });
-          }
-        }
+      } catch (e: any) {
+        results.push({ step: 'integrity', status: 'error', message: e.message });
       }
 
-      for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
-        const srcDir = resolve(skillsDir, 'copilot', name);
-        if (existsSync(srcDir)) {
-          const destDir = resolve(home, '.copilot', 'skills', name);
-          mkdirSync(destDir, { recursive: true });
-          cpSync(srcDir, destDir, { recursive: true });
-          const destHooks = resolve(destDir, 'hooks');
-          if (existsSync(resolve(srcDir, 'hooks'))) {
-            for (const file of readdirSync(destHooks)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
-            }
-          } else if (existsSync(destHooks)) {
-            // Stale hooks/ from an older template version (current skills ship
-            // SKILL.md only) — they embed outdated tool names; remove so agents
-            // stop receiving stale instructions after upgrade.
-            rmSync(destHooks, { recursive: true, force: true });
-          }
-        }
+      // Steps 2-4b: re-deploy every on-disk artifact (shared with /api/redeploy).
+      results.push(...(await redeployArtifacts({ clearNpxCache: true })));
+
+      // Step 5: Save new version. saveDeployedVersion() refuses to record a
+      // version when any step above errored, so a partial upgrade re-runs.
+      try {
+        const wrote = saveDeployedVersion(results);
+        results.push({
+          step: 'version',
+          status: wrote ? 'success' : 'skipped',
+          message: wrote ? `v${APP_VERSION}` : 'Not recorded (unknown version or a step failed)',
+        });
+      } catch (e: any) {
+        results.push({ step: 'version', status: 'error', message: e.message });
       }
+    })();
 
-      // Clean up old flat Copilot skill files (pre-0.9.2 format)
-      for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
-        const oldFile = resolve(home, '.copilot', 'skills', `${name}.md`);
-        if (existsSync(oldFile)) unlinkSync(oldFile);
-      }
-
-      // OpenCode skills + plugins
-      try { await configManager.setupOpenCodeSkills(TEMPLATES_PATH); } catch { /* optional */ }
-      try { await configManager.setupOpenCodePlugins(TEMPLATES_PATH); } catch { /* optional */ }
-
-      results.push({ step: 'skills', status: 'success' });
-    } catch (e: any) {
-      results.push({ step: 'skills', status: 'error', message: e.message });
-    }
-
-    // Step 4b: Re-deploy global enforcement hooks (settings.json + ~/.copilot/hooks)
+    inFlightDeploy = run;
     try {
-      await deployGlobalHooks();
-      results.push({ step: 'hooks', status: 'success' });
-    } catch (e: any) {
-      results.push({ step: 'hooks', status: 'error', message: e.message });
+      await run;
+    } finally {
+      upgradeRunning = false;
+      inFlightDeploy = null;
     }
 
-    // Step 5: Save new version
-    try {
-      saveDeployedVersion();
-      results.push({ step: 'version', status: 'success', message: `v${APP_VERSION}` });
-    } catch (e: any) {
-      results.push({ step: 'version', status: 'error', message: e.message });
-    }
-
-    upgradeRunning = false;
-    const allSuccess = results.every((r) => r.status === 'success');
-    return { success: allSuccess, fromVersion: getDeployedVersion(), toVersion: APP_VERSION, results };
+    const allSuccess = results.every((r) => r.status === 'success' || r.status === 'warning');
+    return { success: allSuccess, fromVersion, toVersion: APP_VERSION, results };
   });
 
   // ─── Re-deploy configurations (no migration, no version bump) ──
@@ -1190,107 +1262,17 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post('/api/redeploy', async (_request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
+    if (upgradeRunning) return sendError(reply, 409, 'A deploy is already in progress');
 
-    const results: { step: string; status: 'success' | 'error' | 'skipped'; message?: string }[] = [];
-    const configTemplateDir = resolve(TEMPLATES_PATH, 'configs');
-    const skillsDir = resolve(TEMPLATES_PATH, 'skills');
-    const home = homedir();
-
-    // 1. Re-inject agent instructions
+    upgradeRunning = true;
+    let results: DeployStep[];
     try {
-      const claudeTemplate = resolve(configTemplateDir, 'claude-code-instructions.md');
-      if (existsSync(claudeTemplate)) await configManager.injectConfig(ConfigManager.CLAUDE_MD, claudeTemplate, 'Claude Code');
-      results.push({ step: 'instructions-claude', status: 'success' });
-    } catch (e: any) { results.push({ step: 'instructions-claude', status: 'error', message: e.message }); }
+      results = await redeployArtifacts();
+    } finally {
+      upgradeRunning = false;
+    }
 
-    try {
-      const copilotTemplate = resolve(configTemplateDir, 'copilot-instructions.md');
-      if (existsSync(copilotTemplate)) {
-        await configManager.injectConfig(ConfigManager.COPILOT_MD, copilotTemplate, 'GitHub Copilot');
-        await configManager.injectConfig(ConfigManager.COPILOT_INSTRUCTIONS, copilotTemplate, 'Copilot CLI');
-      }
-      results.push({ step: 'instructions-copilot', status: 'success' });
-    } catch (e: any) { results.push({ step: 'instructions-copilot', status: 'error', message: e.message }); }
-
-    try {
-      const opencodeTemplate = resolve(configTemplateDir, 'opencode-instructions.md');
-      if (existsSync(opencodeTemplate)) await configManager.injectConfig(ConfigManager.OPENCODE_AGENTS_MD, opencodeTemplate, 'OpenCode');
-      results.push({ step: 'instructions-opencode', status: 'success' });
-    } catch (e: any) { results.push({ step: 'instructions-opencode', status: 'error', message: e.message }); }
-
-    // 2. Clear stale npx caches + re-setup MCP configs (uses the pinned Node npx path)
-    try {
-      clearNpxMcpCache();
-      // One entry per platform so each config stamps its own COGNISTORE_PLATFORM.
-      const claudeEntry = buildMcpEntry('claude-code');
-      const copilotEntry = buildMcpEntry('copilot');
-      const opencodeEntry = buildMcpEntry('opencode');
-      await configManager.setupMcpConfig(ConfigManager.MCP_CONFIG, claudeEntry);
-      try { await configManager.setupMcpConfig(ConfigManager.CLAUDE_JSON, claudeEntry); } catch { /* optional */ }
-      try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
-      try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
-      try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
-      results.push({ step: 'mcp-configs', status: 'success' });
-    } catch (e: any) { results.push({ step: 'mcp-configs', status: 'error', message: e.message }); }
-
-    // 3. Re-deploy skills and hooks
-    try {
-      for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
-        const srcDir = resolve(skillsDir, 'claude-code', name);
-        if (existsSync(srcDir)) {
-          const destDir = resolve(home, '.claude', 'skills', name);
-          mkdirSync(destDir, { recursive: true });
-          cpSync(srcDir, destDir, { recursive: true });
-          const destHooks = resolve(destDir, 'hooks');
-          if (existsSync(resolve(srcDir, 'hooks'))) {
-            for (const file of readdirSync(destHooks)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
-            }
-          } else if (existsSync(destHooks)) {
-            // Stale hooks/ from an older template version (current skills ship
-            // SKILL.md only) — they embed outdated tool names; remove so agents
-            // stop receiving stale instructions after upgrade.
-            rmSync(destHooks, { recursive: true, force: true });
-          }
-        }
-      }
-      for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
-        const srcDir = resolve(skillsDir, 'copilot', name);
-        if (existsSync(srcDir)) {
-          const destDir = resolve(home, '.copilot', 'skills', name);
-          mkdirSync(destDir, { recursive: true });
-          cpSync(srcDir, destDir, { recursive: true });
-          const destHooks = resolve(destDir, 'hooks');
-          if (existsSync(resolve(srcDir, 'hooks'))) {
-            for (const file of readdirSync(destHooks)) {
-              if (file.endsWith('.sh')) chmodSync(resolve(destHooks, file), 0o755);
-            }
-          } else if (existsSync(destHooks)) {
-            // Stale hooks/ from an older template version (current skills ship
-            // SKILL.md only) — they embed outdated tool names; remove so agents
-            // stop receiving stale instructions after upgrade.
-            rmSync(destHooks, { recursive: true, force: true });
-          }
-        }
-      }
-      // Clean up old flat Copilot skill files
-      for (const name of ['cognistore-query', 'cognistore-capture', 'cognistore-plan']) {
-        const oldFile = resolve(home, '.copilot', 'skills', `${name}.md`);
-        if (existsSync(oldFile)) unlinkSync(oldFile);
-      }
-      // OpenCode skills + plugins
-      try { await configManager.setupOpenCodeSkills(TEMPLATES_PATH); } catch { /* optional */ }
-      try { await configManager.setupOpenCodePlugins(TEMPLATES_PATH); } catch { /* optional */ }
-      results.push({ step: 'skills', status: 'success' });
-    } catch (e: any) { results.push({ step: 'skills', status: 'error', message: e.message }); }
-
-    // 4. Re-deploy global enforcement hooks (settings.json + ~/.copilot/hooks)
-    try {
-      await deployGlobalHooks();
-      results.push({ step: 'hooks', status: 'success' });
-    } catch (e: any) { results.push({ step: 'hooks', status: 'error', message: e.message }); }
-
-    const allSuccess = results.every((r) => r.status === 'success');
+    const allSuccess = results.every((r) => r.status === 'success' || r.status === 'warning');
     return { success: allSuccess, results };
   });
 
@@ -2334,6 +2316,52 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   log('info', `Server listening on http://localhost:${PORT}`);
+
+  /**
+   * Self-heal deployed artifacts when this build is newer than what is on disk.
+   *
+   * Until now the redeploy only ran when the user opened the dashboard and the UI
+   * called /api/upgrade/run, so an app that never got opened kept running hooks and
+   * skills from an older release — which is how a hook and an MCP server from two
+   * different versions ended up deadlocking agents.
+   *
+   * Deliberately NOT gated on sdkReady: this only touches the filesystem, and a
+   * machine with a broken Ollama/DB is exactly the one stuck with stale artifacts.
+   */
+  void (async () => {
+    // Only when launched by the Tauri shell. The e2e suite spawns this same server
+    // with the developer's real HOME, so an unguarded redeploy would rewrite their
+    // ~/.claude.json, ~/.claude/settings.json and ~/.claude/skills on every test run.
+    if (process.env.COGNISTORE_MANAGED !== '1') return;
+    if (!VERSION_RESOLVED) return;
+
+    // A first install (no marker) belongs to the setup wizard: Node may not be
+    // installed yet, and /api/setup/complete owns the first .version write.
+    const deployedArtifacts = getDeployedArtifactsVersion();
+    if (deployedArtifacts === null && getDeployedVersion() === null) return;
+    if (deployedArtifacts === APP_VERSION) return;
+    if (upgradeRunning) return;
+
+    upgradeRunning = true;
+    const run = redeployArtifacts();
+    inFlightDeploy = run;
+    try {
+      const results = await run;
+      const failed = results.filter((r) => r.status === 'error');
+      for (const r of failed) log('error', `Startup redeploy step "${r.step}" failed: ${r.message}`);
+      if (failed.length === 0) {
+        // Marker is separate from .version on purpose: /api/upgrade/run owns that
+        // one and is the only path that re-embeds and resyncs embedding integrity.
+        saveDeployedArtifactsVersion();
+        log('info', `Artifacts re-deployed for v${APP_VERSION} (was ${deployedArtifacts ?? 'unknown'})`);
+      }
+    } catch (e: any) {
+      log('error', `Startup redeploy failed: ${e?.message ?? e}`);
+    } finally {
+      upgradeRunning = false;
+      inFlightDeploy = null;
+    }
+  })();
 
   // Initialize SDK in background — don't block server startup.
   // On fresh installs, ensureModel() pulls the Ollama model (streaming download)

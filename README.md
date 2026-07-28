@@ -103,11 +103,16 @@ If you prefer to configure the MCP server manually:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server"]
+      "args": ["-y", "@cognistore/mcp-server@latest"]
     }
   }
 }
 ```
+
+> Pin the version (or at least `@latest`). With a bare `@cognistore/mcp-server`,
+> `npm exec` runs an already-installed **global** copy from `PATH` instead of
+> fetching from the registry, which silently keeps agents on an old tool schema.
+> See [documentation/mcp-server.md](documentation/mcp-server.md#client-configuration).
 
 ### Available Tools
 

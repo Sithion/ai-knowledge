@@ -44,7 +44,8 @@
       "../sidecar-bundle/dist": "dist",
       "../sidecar-bundle/dist-server": "dist-server",
       "../sidecar-bundle/node_modules": "node_modules",
-      "../templates": "templates"
+      "../templates": "templates",
+      "../package.json": "package.json"
     },
     "macOS": {
       "minimumSystemVersion": "10.15"

@@ -276,6 +276,18 @@ The MCP server reads configuration from environment variables:
 
 ## Client Configuration
 
+> **Always pin the version.** An unversioned `@cognistore/mcp-server` is not
+> equivalent: `npm exec` resolves an already-installed **global** copy from `PATH`
+> before consulting the registry, so a stale global install silently keeps serving
+> an old tool schema. The desktop app writes a pinned spec for this reason; if you
+> hand-write a config, pin it too (`@2.3.6` or at least `@latest`), and remove any
+> global install with `npm uninstall -g @cognistore/mcp-server`.
+>
+> The app also sets `npm_config_ignore_scripts=false` on the entry. A pinned spec
+> makes `npx` populate a fresh cache entry, which has to compile `better-sqlite3`;
+> if your `~/.npmrc` sets `ignore-scripts=true`, that build is skipped and the
+> server starts but cannot open the database.
+
 ### Claude Code
 
 ```json
@@ -285,7 +297,7 @@ The MCP server reads configuration from environment variables:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server"]
+      "args": ["-y", "@cognistore/mcp-server@2.3.6"]
     }
   }
 }
@@ -300,7 +312,7 @@ The MCP server reads configuration from environment variables:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server"]
+      "args": ["-y", "@cognistore/mcp-server@2.3.6"]
     }
   }
 }
@@ -314,7 +326,7 @@ The MCP server reads configuration from environment variables:
   "mcp": {
     "cognistore": {
       "type": "local",
-      "command": ["npx", "-y", "@cognistore/mcp-server"],
+      "command": ["npx", "-y", "@cognistore/mcp-server@2.3.6"],
       "enabled": true
     }
   }

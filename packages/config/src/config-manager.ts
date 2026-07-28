@@ -283,9 +283,18 @@ export class ConfigManager {
     const configPath = ConfigManager.OPENCODE_CONFIG;
     await mkdir(dirname(configPath), { recursive: true });
 
+    // Derive the command from the caller's entry rather than hardcoding it: the
+    // caller resolves both the pinned npx path (so the MCP child runs on the same
+    // Node major as the sidecar) and the pinned package spec (so a stale global
+    // install cannot shadow it). Hardcoding silently discarded both.
+    const command =
+      typeof mcpEntry.command === 'string' && Array.isArray(mcpEntry.args)
+        ? [mcpEntry.command, ...(mcpEntry.args as string[])]
+        : ['npx', '-y', '@cognistore/mcp-server@latest'];
+
     const openCodeEntry = {
       type: 'local',
-      command: ['npx', '-y', '@cognistore/mcp-server'],
+      command,
       enabled: true,
       environment: mcpEntry.env || {},
     };
