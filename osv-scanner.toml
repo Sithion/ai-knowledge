@@ -23,6 +23,20 @@ id = "GHSA-67mh-4wv8-2f99"
 [[IgnoredVulns]]
 id = "GHSA-v2v4-37r5-5v8g"
 
+# GHSA-qwww-vcr4-c8h2 — React Router RSC Mode CSRF bypass (CVSS 7.1)
+# Affects react-router >=7.12.0, fixed in 8.3.0. Not reachable by a version bump:
+# react-router-dom's latest is 7.18.1 and pins react-router at 7.18.1 exactly, so
+# 8.3.0 requires migrating off react-router-dom (v8 merged it into react-router)
+# plus a react/react-dom bump to >=19.2.7. The advisory is specific to RSC mode —
+# server actions executing before the CSRF check returns 400. The dashboard is a
+# client-only SPA in a Tauri webview: it uses only the declarative router
+# (BrowserRouter/Routes/Route/Link/useNavigate/useLocation/useSearchParams), with
+# no createBrowserRouter, no RouterProvider, no data-router actions or loaders,
+# and no RSC. Re-evaluate when react-router-dom ships a 7.x patch or the app
+# migrates to react-router v8.
+[[IgnoredVulns]]
+id = "GHSA-qwww-vcr4-c8h2"
+
 # ── Tauri 2.x Linux GTK stack: "unmaintained" advisories, no fixed version ──
 # These crates are pulled transitively by Tauri 2.x's GTK3 bindings on Linux.
 # gtk-rs deprecated them; there is no fixed release and no app-level remediation
