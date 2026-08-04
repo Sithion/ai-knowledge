@@ -50,6 +50,10 @@ export const searchOptionsSchema = z.object({
   threshold: z.number().min(0).max(1).optional().default(DEFAULT_SIMILARITY_THRESHOLD),
   includePlanContext: z.boolean().optional().default(false),
   queryText: z.string().optional(),
+  // Must be declared here as well as on SearchOptions: this schema is a plain
+  // z.object, so any key it does not know is silently STRIPPED at the SDK
+  // boundary — an undeclared trackRead would vanish before reaching the service.
+  trackRead: z.boolean().optional(),
 });
 
 // ─── Plans ────────────────────────────────────────────────────

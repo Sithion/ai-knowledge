@@ -40,8 +40,8 @@ The system consists of three runtime subsystems:
            ▼                                  ▼
 ┌──────────────────────┐          ┌────────────────────────────────┐
 │  @cognistore/core  │          │  @cognistore/embeddings      │
-│  SQLite + sqlite-vec │          │  Ollama HTTP client             │
-│  Drizzle ORM         │          │  nomic-embed-text model (768-dim) │
+│  SQLite + sqlite-vec │          │  Ollama HTTP client (the only  │
+│  Drizzle ORM         │          │  one): embeddings + chat       │
 └──────────┬───────────┘          └──────────┬─────────────────────┘
            │                                 │
            ▼                                 ▼
@@ -63,12 +63,29 @@ The system consists of three runtime subsystems:
                     ▼               ▼               ▼
             @cognistore/shared  @cognistore/shared  @cognistore/shared
 
-@cognistore/dashboard ──→ @cognistore/sdk
+@cognistore/dashboard ──→ @cognistore/sdk        (the normal path: all DB access)
                          ──→ @cognistore/config
                          ──→ @cognistore/providers
+                         ──→ @cognistore/core       (policy helpers only, see below)
+                         ──→ @cognistore/embeddings (Ollama chat transport)
 ```
 
 All cross-package dependencies use `workspace:*` protocol via pnpm.
+
+The sidecar reaches knowledge data **only** through `@cognistore/sdk`, which owns the single lazily
+initialised `KnowledgeService` instance for the process. Its direct edges to `core` and `embeddings`
+are deliberately narrow and must stay that way:
+
+- `core` — only the **pure, LLM-free merge policy** (`services/cleanup-merge.ts`). Never the
+  repository or a second `KnowledgeService`.
+- `embeddings` — only the Ollama **transport** (`OllamaChatClient`). `@cognistore/embeddings` is the
+  product's single Ollama boundary (host resolution, model availability, the streaming pull); a second
+  HTTP client in the sidecar would drift from it and would be unreachable from the MCP server, which
+  only ever sees the SDK.
+
+**Ollama is a single boundary, two capabilities:** `OllamaEmbeddingClient` (embeddings, used on every
+read and write) and `OllamaChatClient` (JSON-constrained chat completions). The chat client is
+generation-only — it knows nothing about knowledge entries or merge rules.
 
 `@cognistore/providers` is the external-knowledge federation layer (HTTP-contract and MCP-client
 providers, `ProviderManager` fan-out, secret resolution). It depends only on `@cognistore/shared`;
@@ -173,6 +190,64 @@ Batch: addKnowledge (array) / updatePlanTasks
   - updatePlanTasks: update multiple tasks at once (batch status changes)
 ```
 
+### Knowledge Retention & Cleanup (groundwork)
+
+> **Status:** schema, read tracking, detection and merge policy only. There are no HTTP routes, no
+> scheduler and no UI yet, so the cleanup cycle is not reachable from the app. The only behaviour that
+> changes today is that two call sites record reads.
+
+The knowledge base previously only ever grew. The retention model adds three layers, each placed
+deliberately:
+
+**1. Read tracking (signal).** `knowledge_entries.last_read_at` / `read_count` are written by
+`KnowledgeRepository.markRead()` and by nothing else — never by `update()`, so a read can never be
+confused with an edit and cannot perturb `updated_at`, `version`, staleness detection or
+duplicate-group canonical ordering. Tracking is **opt-in per call** through `SearchOptions.trackRead`
+(declared on the interface *and* in `searchOptionsSchema`, since the Zod object strips unknown keys at
+the SDK boundary). Exactly two call sites opt in: the MCP `getKnowledge` tool and the dashboard's
+`POST /api/knowledge/search` (forced server-side, so a client can neither forge nor suppress it).
+Browsing endpoints, the MCP knowledge-context resource, internal scans and re-embeds must not opt in —
+if everything counted as a read, nothing would ever be unread. The mark is dispatched off the response
+path (`setImmediate`, best-effort) because `better-sqlite3` is synchronous and the sidecar and MCP
+server contend for the same file.
+
+**2. Detection (`packages/core`).** `KnowledgeService.generateCleanupReport()` proposes three
+categories — `deprecated` (tag), `unread` (window, with the `keep` tag as an escape hatch) and
+`duplicate_group` (high-threshold KNN). It only *describes*; it deletes nothing and calls no model.
+Unread detection is double-gated on a domain fact stored in the `cleanup_meta` table
+(`read_tracking_since`, written by the migration) rather than on `schema_version` — migration
+bookkeeping is not a business fact — plus a liveness check, because a user still running a pre-2.4.0
+MCP server records no reads at all and would otherwise see every heavily-used entry flagged.
+
+**3. Policy (`packages/core/src/services/cleanup-merge.ts`).** Pure and LLM-free. It lives in core for
+a **trust-boundary** reason, not a testing one: consolidation is applied through an HTTP route, so any
+rule enforced only in the producing module can be bypassed by a hand-made request. The merged entry's
+tags are always **derived** from the re-fetched members at apply time (union minus the `deprecated` /
+`keep` control tags), so a client can never choose them and rig the next cycle. A model only ever
+proposes a title and a body.
+
+Layer 3 is why the generative-LLM dependency does not leak downward:
+
+```
+apps/dashboard/server/llm-merge.ts     prompt construction + fallback orchestration only
+        │
+        ├──→ @cognistore/embeddings    OllamaChatClient.chatJson()  (transport)
+        └──→ @cognistore/core          validateMergeDraft / deterministicMergeDraft (policy)
+
+packages/core                          no Ollama, no settings, no HTTP — ever
+```
+
+The deterministic fallback (canonical entry verbatim + the others appended) is a first-class path, not
+a degraded one: the non-canonical members are deleted on approval, so the fallback must lose no
+information. Ollama being unavailable degrades the *prose*, never the *safety*.
+
+The queue itself (`cleanup_reports`, `cleanup_candidates`) is accessed through raw prepared statements
+rather than Drizzle, mirroring the `operations_daily` precedent: queue-shaped tables with JSON payload
+columns. `knowledge_entries` stays on Drizzle. A unique partial index on `status = 'open'` enforces at
+most one open report, so two concurrent generators collide on a constraint instead of producing two
+competing reports, and a conditional `UPDATE ... WHERE status = 'pending'` makes the state transition
+itself the lock for apply.
+
 ### Instruction Compilation System
 
 Agent instruction templates are compiled from a single source of truth:
@@ -207,11 +282,28 @@ packages/core/src/db/migrations/
 ├── 0.8.0.sql    # Base schema (knowledge_entries, operations_log)
 ├── 0.9.0.sql    # Plans table, plan_tasks, plan_relations, title column
 ├── 1.0.0.sql    # System knowledge type support
+├── ...
+├── 2.4.0.sql    # Read-tracking columns + cleanup report/candidate queue
 └── meta/
     └── _journal.json
 ```
 
 A `schema_version` table tracks which migrations have been applied. On startup, `createDbClient()` runs `runMigrations()` which detects the current version and applies pending migrations. Pre-migration databases (no `schema_version` table) are bootstrapped automatically.
+
+**Every migration exists twice, and that is structural.** Two independent processes open the same
+`~/.cognistore/knowledge.db`: the Fastify sidecar, which ships the `migrations/` directory, and the
+bundled MCP server (`npx`), which does not and therefore runs the `EMBEDDED_MIGRATIONS` string map in
+`db/migrate.ts`. Both stamp the same `schema_version`, so a drift between the two copies means one
+machine ends up with two different schemas under one version number, and whichever process runs second
+skips the migration it actually needed. Consequences to respect when adding a migration:
+
+- Add the `.sql` file **and** the embedded string, with identical statements (comments may differ).
+  `packages/tests/src/e2e/migration-parity.test.ts` locks the two together.
+- The runner strips only whole comment lines and then splits on `;`. A semicolon inside a trailing
+  comment or a string literal cuts a statement in half and aborts DB open for *both* processes.
+- `EMBEDDED_MIGRATIONS` is re-exported from `@cognistore/core` solely so that parity test can see it.
+  It is internal: `@cognistore/core` is a private workspace package with a single barrel export, so
+  there is no published contract here — but nothing outside the test should consume it.
 
 ## Key Design Decisions
 
@@ -226,6 +318,12 @@ A `schema_version` table tracks which migrations have been applied. On startup, 
 | MCP distribution | npm (tsup bundle) | Workspace packages inlined, only native deps external |
 | Sidecar model | Fastify as child process | Tauri WebView connects to localhost; avoids Tauri IPC complexity |
 | State management | Redux Toolkit | Centralized stats/metrics state with async thunks |
+| Generative LLM | Local Ollama chat (`llama3.2:3b`), pulled on demand | First generative dependency in the product (v2.4.0). Local-only, so the "nothing leaves the laptop" guarantee is unchanged. Small model + JSON-constrained output; used **only** to make a merged duplicate read better, never to decide what is deleted |
+| LLM failure mode | Deterministic fallback, always available | The merge's inputs are deleted on approval, so the no-model path must lose no information. The model is an enhancement, never a dependency |
+| LLM transport placement | `@cognistore/embeddings` | Single Ollama boundary (host, model availability, streaming pull); a sidecar-local client would drift and be invisible to the MCP server |
+| Merge policy placement | `@cognistore/core`, pure | Apply happens over HTTP; rules enforced only in the producer are bypassable. Tags are derived at apply time so a client cannot inject the `deprecated`/`keep` control tags |
+| Read tracking | Opt-in per call, two call sites | A retention signal, not an audit log. If browsing and internal scans counted, nothing would ever be unread |
+| Cleanup queue storage | Raw prepared statements | Queue-shaped tables with JSON payloads, mirroring `operations_daily`; `knowledge_entries` stays on Drizzle |
 
 ## Directory Structure
 
@@ -264,10 +362,12 @@ cognistore/
 │   │       ├── db/client.ts    # createDbClient(), migration runner, sqlite-vec loader
 │   │       ├── db/schema/      # Drizzle table definitions + sqlite-vec virtual tables
 │   │       ├── db/migrations/  # Versioned SQL migrations (0.8.0.sql, 0.9.0.sql)
-│   │       ├── repositories/   # KnowledgeRepository (CRUD + vector search)
+│   │       ├── repositories/   # KnowledgeRepository (CRUD + vector search + cleanup queue)
 │   │       └── services/       # KnowledgeService (embedding + persistence orchestration)
-│   ├── embeddings/             # Ollama client
-│   │   └── src/client.ts       # OllamaEmbeddingClient (embed, ensureModel, healthCheck)
+│   │           └── cleanup-merge.ts  # Pure, LLM-free merge policy (shared by producer + apply path)
+│   ├── embeddings/             # Ollama client (the product's single Ollama boundary)
+│   │   ├── src/client.ts       # OllamaEmbeddingClient (embed, ensureModel, healthCheck)
+│   │   └── src/chat.ts         # OllamaChatClient (JSON-constrained chat completions)
 │   ├── sdk/                    # Public SDK
 │   │   └── src/sdk.ts          # KnowledgeSDK class (initialize, add, search, update, delete)
 │   └── config/                 # Config injection

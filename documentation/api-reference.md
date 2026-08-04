@@ -68,6 +68,11 @@ Semantic search across knowledge entries.
 
 All fields except `query` are optional.
 
+This endpoint counts as real usage: every returned local entry has its `last_read_at` / `read_count`
+updated (see [Database Layer](./database.md#knowledge_entries-relational-table)). The flag is forced
+server-side and cannot be set or suppressed from the body. Browsing endpoints
+(`GET /api/knowledge/recent`, `GET /api/knowledge/:id`) do not count as reads.
+
 **Response (local only):** `{ entry: KnowledgeEntry, similarity: number }[]`
 
 **Federated:** add `"includeExternal": true` (or `"providers": ["id", ...]`) to also query external

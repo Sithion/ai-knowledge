@@ -1,5 +1,28 @@
 # Patch Notes
 
+## v2.4.0 (in progress — not yet released)
+
+**The knowledge base never shrank.** Nothing expired, nothing was ever retired, and near-duplicates could only be found manually in Settings — so a base that grows by a few hundred entries a month only ever got noisier. This introduces a periodic **cleanup report**, designed to run every 10 days and propose what could go — entries tagged `deprecated`, entries nobody has retrieved in six months, and groups of near-duplicates to consolidate into their newest member. **Nothing is deleted automatically.** The report is a proposal; you approve each item.
+
+> This section covers the groundwork only: the database schema, read tracking, detection and the merge policy. The 10-day scheduler, the HTTP routes and the dashboard UI land in a following change, so nothing below is reachable from the app yet. Two things do change today: agent retrieval and dashboard searches start recording reads, and every entry in an MCP `getKnowledge` response carries two extra fields (`lastReadAt`, `readCount`). Tagging an entry `deprecated` or `keep` has no effect until the cycle can run.
+
+### Features
+- **Per-entry read tracking.** New `last_read_at` / `read_count` columns record when an entry is actually retrieved. Tracking is **opt-in per call**: agent retrieval through the MCP `getKnowledge` tool and explicit dashboard searches count; browsing, internal scans and re-embeds deliberately do not, or the signal would say everything is in use. Marking never touches `updated_at` or `version` — a read is not an edit.
+- **Cleanup detection.** Deprecated (tag `deprecated`), unread (180-day window, adjustable when the settings UI ships, with tag `keep` as an escape hatch), and near-duplicate groups above a deliberately high similarity threshold (0.92, since the non-survivors get deleted).
+- **Consolidation merge via a local model.** Duplicate groups are merged by a small Ollama chat model (`llama3.2:3b`, pulled on demand), with a deterministic concatenation fallback that loses no information when Ollama is unavailable. The model only ever proposes a title and body — **it never chooses tags**, which are recomputed server-side.
+
+### Notes on safety
+- **Unread detection stays silent for its first six months.** The migration starts every existing entry's clock at install time (there is no read history to mine), so the window only becomes meaningful once tracking has existed that long. The report says so explicitly instead of showing a misleading empty bucket.
+- It also suppresses itself if no read has been recorded recently — an outdated MCP server records nothing, and without this guard every heavily-used entry would look abandoned.
+- Approving re-checks the entry still qualifies, so un-tagging or re-reading something after the report was generated is honoured rather than overridden by the stale queue.
+- Each deleted entry is snapshotted into the candidate record *before* deletion, so nothing is lost irrecoverably. The restore path ships with the dashboard UI; until then, recovering means querying the database by hand.
+
+### Internal
+- Migration `2.4.0` (in both `migrations/2.4.0.sql` and the embedded copy) adds the read-tracking columns, a `cleanup_meta` table and the `cleanup_reports` / `cleanup_candidates` queue. A unique partial index enforces one open report at a time.
+- Merge policy lives in `packages/core/src/services/cleanup-merge.ts` and is re-applied at apply time, so a hand-made request cannot bypass rules enforced only on the producing side.
+- The Ollama chat client lives in `@cognistore/embeddings` (the product's single Ollama boundary) rather than in the sidecar, reusing the existing model-pull logic.
+- 45 new tests in `cleanup-report.test.ts`, `cleanup-merge.test.ts`, `read-tracking.test.ts` and `migration-parity.test.ts` — the last one locks the two copies of every migration (the `.sql` files the sidecar runs and the strings the bundled MCP server runs) to the same statements, since a drift would give one machine two different schemas under one `schema_version`.
+
 ## v2.3.6
 
 **The app stopped upgrading itself — silently — and agents ended up talking to a years-old MCP server.** Every installed build reported its version as `0.0.0`, which made the upgrade check permanently answer "nothing to do", so hooks, skills, agent instructions and MCP configs were frozen at whatever first shipped. Meanwhile the generated MCP config used an *unversioned* `npx -y @cognistore/mcp-server`, which `npm exec` happily satisfied from a stale globally-installed copy on `PATH` instead of the registry. Together those produced an unsolvable deadlock: a hook from one release demanding a `planFilePath` argument that an old server's `createPlan` schema rejected, leaving agents unable to leave plan mode at all.

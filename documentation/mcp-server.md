@@ -57,9 +57,16 @@ Search knowledge entries using semantic similarity. The response includes active
 | `includeExternal` | boolean | No | — | Also query enabled external knowledge providers |
 | `providers` | string[] | No | — | Restrict external search to these provider ids (implies external) |
 
+**Read tracking:** agent retrieval is treated as real usage — every entry returned by this tool has
+its `last_read_at` / `read_count` updated (see [Database Layer](./database.md#knowledge_entries-relational-table)).
+This is not exposed as a parameter and cannot be turned off from the client. The
+`cognistore://context/{scope}` resource below deliberately does **not** count as a read.
+
 **Backward compatibility:** with neither `includeExternal` nor `providers` (and the global
-`alwaysSearchExternalProviders` setting `false`), the response is **byte-identical** to before — a
-local `{ results }` (plus active-plan reminder). External search is otherwise opt-in.
+`alwaysSearchExternalProviders` setting `false`), the response keeps its original **shape** — a
+local `{ results }` (plus active-plan reminder). External search is otherwise opt-in. Note that
+since v2.4.0 each entry additionally carries `lastReadAt` and `readCount`, so the payload is no
+longer byte-identical to pre-2.4.0 responses; the change is purely additive.
 
 **Federated response:** when external search is active, the response gains `external` (an array of
 sections, one per provider) and an `externalNote`:
@@ -216,7 +223,7 @@ Tools are annotated with hints for MCP clients:
 
 | Annotation | Tools | Purpose |
 |------------|-------|---------|
-| `readOnlyHint: true` | `getKnowledge`, `listTags`, `healthCheck`, `listPlanTasks` | Signals the tool does not modify state |
+| `readOnlyHint: true` | `getKnowledge`, `listTags`, `healthCheck`, `listPlanTasks` | Signals the tool does not modify knowledge content. `getKnowledge` still updates the `last_read_at` / `read_count` retention counters of the entries it returns — it never modifies an entry's content, tags or `version` |
 | `destructiveHint: true` | `deleteKnowledge`, `deletePlanTask` | Signals the tool permanently removes data |
 
 ## MCP Resources

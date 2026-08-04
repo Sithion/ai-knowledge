@@ -129,6 +129,33 @@ export class KnowledgeRepository {
     return entry ?? null;
   }
 
+  /**
+   * Record that these entries were actually retrieved. Feeds the cleanup cycle's
+   * "unread" detection.
+   *
+   * Deliberately touches ONLY last_read_at / read_count — never updated_at or
+   * version. A read is not an edit: bumping updated_at here would corrupt
+   * findStaleEntries and silently reorder duplicate-group canonicals.
+   *
+   * Chunked because SQLite caps bound variables per statement.
+   */
+  markRead(ids: string[]): void {
+    if (ids.length === 0) return;
+    const now = new Date().toISOString();
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(',');
+      this.sqlite
+        .prepare(
+          `UPDATE knowledge_entries
+              SET last_read_at = ?, read_count = read_count + 1
+            WHERE id IN (${placeholders})`
+        )
+        .run(now, ...chunk);
+    }
+  }
+
   async delete(id: string) {
     const [entry] = await this.db
       .delete(knowledgeEntries)
@@ -380,6 +407,106 @@ export class KnowledgeRepository {
       confidenceScore: number; updatedAt: string; expiresAt: string | null;
     }[];
     return rows;
+  }
+
+  // ─── Cleanup cycle: detection ───────────────────────────────
+  //
+  // `tags` is a JSON text array, so tag predicates go through json_each — the
+  // same shape renameTag already uses. Tags are normalised to lowercase on
+  // write, so the control tags are matched lowercase.
+
+  /** Entries an agent or the user explicitly marked as superseded. */
+  findDeprecatedEntries(limit = 500) {
+    return this.sqlite.prepare(
+      `SELECT id, title, type, scope, updated_at AS updatedAt, last_read_at AS lastReadAt
+         FROM knowledge_entries
+        WHERE type != 'system'
+          AND EXISTS (SELECT 1 FROM json_each(knowledge_entries.tags) WHERE value = 'deprecated')
+        ORDER BY updated_at ASC
+        LIMIT @limit`
+    ).all({ limit }) as CleanupEntryRow[];
+  }
+
+  /**
+   * Entries not retrieved within `days`.
+   *
+   * COALESCE(last_read_at, created_at) is load-bearing: `create()` never sets
+   * last_read_at, so post-migration rows carry NULL, and `NULL < cutoff` is NULL
+   * (never true) — a bare comparison would make this category permanently blind
+   * to exactly the new entries it exists to catch.
+   *
+   * `created_at < cutoff` keeps a recently created but never-read entry out of
+   * the bucket: it cannot have been unread for six months if it is younger.
+   */
+  findUnreadEntries(days: number, limit = 500) {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    return this.sqlite.prepare(
+      `SELECT id, title, type, scope, updated_at AS updatedAt, last_read_at AS lastReadAt
+         FROM knowledge_entries
+        WHERE type != 'system'
+          AND created_at < @cutoff
+          AND COALESCE(last_read_at, created_at) < @cutoff
+          AND NOT EXISTS (SELECT 1 FROM json_each(knowledge_entries.tags) WHERE value = 'keep')
+        ORDER BY COALESCE(last_read_at, created_at) ASC
+        LIMIT @limit`
+    ).all({ cutoff, limit }) as CleanupEntryRow[];
+  }
+
+  /**
+   * Re-check at APPLY time that an entry still qualifies for removal.
+   *
+   * Approval approves a predicate, not a snapshot: between report generation and
+   * the user clicking approve, an entry may have been read, un-tagged, or given
+   * the `keep` escape hatch. Deleting it anyway would silently bypass the user's
+   * own later decision.
+   */
+  qualifiesForRemoval(id: string, category: 'deprecated' | 'unread', unreadDays: number): boolean {
+    if (category === 'deprecated') {
+      const row = this.sqlite.prepare(
+        `SELECT 1 AS ok FROM knowledge_entries
+          WHERE id = @id AND type != 'system'
+            AND EXISTS (SELECT 1 FROM json_each(knowledge_entries.tags) WHERE value = 'deprecated')`
+      ).get({ id }) as { ok: number } | undefined;
+      return row?.ok === 1;
+    }
+    const cutoff = new Date(Date.now() - unreadDays * 24 * 60 * 60 * 1000).toISOString();
+    const row = this.sqlite.prepare(
+      `SELECT 1 AS ok FROM knowledge_entries
+        WHERE id = @id AND type != 'system'
+          AND created_at < @cutoff
+          AND COALESCE(last_read_at, created_at) < @cutoff
+          AND NOT EXISTS (SELECT 1 FROM json_each(knowledge_entries.tags) WHERE value = 'keep')`
+    ).get({ id, cutoff }) as { ok: number } | undefined;
+    return row?.ok === 1;
+  }
+
+  /** Full rows for the entries in a candidate, for snapshotting and merging. */
+  getEntriesByIds(ids: string[]): any[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    return this.sqlite.prepare(
+      `SELECT id, title, content, tags, type, scope, source, version,
+              related_ids AS relatedIds, agent_id AS agentId, platform,
+              created_at AS createdAt, updated_at AS updatedAt,
+              last_read_at AS lastReadAt, read_count AS readCount
+         FROM knowledge_entries WHERE id IN (${placeholders})`
+    ).all(...ids);
+  }
+
+  /** Domain fact written by migration 2.4.0 — never read schema_version for this. */
+  getCleanupMeta(key: string): string | null {
+    const row = this.sqlite
+      .prepare('SELECT value FROM cleanup_meta WHERE key = ?')
+      .get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  /** Most recent read across the whole base — liveness probe for read tracking. */
+  maxLastReadAt(): string | null {
+    const row = this.sqlite
+      .prepare('SELECT MAX(last_read_at) AS maxRead FROM knowledge_entries')
+      .get() as { maxRead: string | null } | undefined;
+    return row?.maxRead ?? null;
   }
 
   /**
@@ -1066,6 +1193,192 @@ export class KnowledgeRepository {
     }
     return removed;
   }
+
+  // ─── Cleanup cycle: report + candidate queue ────────────────
+  //
+  // Raw prepared statements rather than drizzle, deliberately: these are
+  // queue-shaped tables with JSON payload columns, mirroring how
+  // operations_daily is handled.
+
+  /** Insert a report and its candidates atomically. Throws on a second open report. */
+  createCleanupReport(
+    report: { id: string; createdAt: string; stats: Record<string, unknown> },
+    candidates: {
+      id: string; category: string; entryIds: string[]; payload: Record<string, unknown>;
+    }[],
+  ): void {
+    const insertReport = this.sqlite.prepare(
+      `INSERT INTO cleanup_reports (id, created_at, status, stats) VALUES (?, ?, 'open', ?)`
+    );
+    const insertCandidate = this.sqlite.prepare(
+      `INSERT INTO cleanup_candidates (id, report_id, category, entry_ids, payload, status, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`
+    );
+    const now = new Date().toISOString();
+    this.sqlite.transaction(() => {
+      insertReport.run(report.id, report.createdAt, JSON.stringify(report.stats));
+      for (const c of candidates) {
+        insertCandidate.run(c.id, report.id, c.category, JSON.stringify(c.entryIds), JSON.stringify(c.payload), now);
+      }
+    })();
+  }
+
+  getOpenCleanupReport(): CleanupReportRow | null {
+    const row = this.sqlite
+      .prepare(`SELECT id, created_at AS createdAt, status, stats FROM cleanup_reports WHERE status = 'open'`)
+      .get() as CleanupReportRow | undefined;
+    return row ?? null;
+  }
+
+  getLatestCleanupReport(): CleanupReportRow | null {
+    const row = this.sqlite
+      .prepare(
+        `SELECT id, created_at AS createdAt, status, stats FROM cleanup_reports
+          ORDER BY status = 'open' DESC, created_at DESC LIMIT 1`
+      )
+      .get() as CleanupReportRow | undefined;
+    return row ?? null;
+  }
+
+  getCleanupReportById(id: string): CleanupReportRow | null {
+    const row = this.sqlite
+      .prepare(`SELECT id, created_at AS createdAt, status, stats FROM cleanup_reports WHERE id = ?`)
+      .get(id) as CleanupReportRow | undefined;
+    return row ?? null;
+  }
+
+  listCleanupCandidates(reportId: string): CleanupCandidateRow[] {
+    return this.sqlite
+      .prepare(
+        `SELECT id, report_id AS reportId, category, entry_ids AS entryIds, payload, status,
+                resolution, updated_at AS updatedAt
+           FROM cleanup_candidates WHERE report_id = ? ORDER BY category, updated_at`
+      )
+      .all(reportId) as CleanupCandidateRow[];
+  }
+
+  getCleanupCandidate(id: string): CleanupCandidateRow | null {
+    const row = this.sqlite
+      .prepare(
+        `SELECT id, report_id AS reportId, category, entry_ids AS entryIds, payload, status,
+                resolution, updated_at AS updatedAt
+           FROM cleanup_candidates WHERE id = ?`
+      )
+      .get(id) as CleanupCandidateRow | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Atomically take ownership of a pending candidate.
+   *
+   * Two dashboard windows (or the sidecar and a second process) can both read a
+   * candidate as `pending` and both apply it — deleting twice, or merging twice.
+   * The conditional UPDATE makes the transition itself the lock: exactly one
+   * caller sees changes === 1.
+   *
+   * The resolution written here already carries the pre-delete snapshot, so the
+   * only recovery data for an irreversible delete exists BEFORE anything is
+   * destroyed rather than after.
+   */
+  claimCleanupCandidate(id: string, resolution: Record<string, unknown>): boolean {
+    const res = this.sqlite
+      .prepare(
+        `UPDATE cleanup_candidates SET status = 'applying', resolution = ?, updated_at = ?
+          WHERE id = ? AND status = 'pending'`
+      )
+      .run(JSON.stringify(resolution), new Date().toISOString(), id);
+    return res.changes === 1;
+  }
+
+  /**
+   * Patch a candidate. Returns whether a row actually changed.
+   *
+   * `expectedStatus` makes the write conditional, which matters because
+   * `resolution` holds the pre-delete snapshot of entries that are already gone:
+   * an unguarded write from a stale caller (a double-clicked approve, a dismiss
+   * arriving after an apply) would replace the only recovery data with an error
+   * string. Every caller that is not already holding the claim must pass it.
+   */
+  updateCleanupCandidate(
+    id: string,
+    patch: { status?: string; resolution?: Record<string, unknown>; expectedStatus?: string },
+  ): boolean {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (patch.status !== undefined) { sets.push('status = ?'); params.push(patch.status); }
+    if (patch.resolution !== undefined) { sets.push('resolution = ?'); params.push(JSON.stringify(patch.resolution)); }
+    if (sets.length === 0) return false;
+    sets.push('updated_at = ?');
+    params.push(new Date().toISOString(), id);
+    let where = 'id = ?';
+    if (patch.expectedStatus !== undefined) { where += ' AND status = ?'; params.push(patch.expectedStatus); }
+    const res = this.sqlite
+      .prepare(`UPDATE cleanup_candidates SET ${sets.join(', ')} WHERE ${where}`)
+      .run(...params);
+    return res.changes === 1;
+  }
+
+  /**
+   * Close a report: untouched candidates are dismissed and the report is sealed.
+   *
+   * Only `pending` rows are dismissed. An `applying` row belongs to an apply
+   * that already took the claim — stealing it would let that apply's terminal
+   * write fail, losing the record of entries it is in the middle of deleting.
+   * A row orphaned in `applying` by a dead process is inert once its report is
+   * closed (nothing reads it, and the report tally counts only `applied`).
+   */
+  closeCleanupReport(id: string, stats: Record<string, unknown>): void {
+    const now = new Date().toISOString();
+    this.sqlite.transaction(() => {
+      this.sqlite
+        .prepare(
+          `UPDATE cleanup_candidates SET status = 'dismissed', updated_at = ?
+            WHERE report_id = ? AND status = 'pending'`
+        )
+        .run(now, id);
+      this.sqlite
+        .prepare(`UPDATE cleanup_reports SET status = 'closed', stats = ? WHERE id = ?`)
+        .run(JSON.stringify(stats), id);
+    })();
+  }
+
+  countPendingCleanupCandidates(): number {
+    const row = this.sqlite
+      .prepare(
+        `SELECT COUNT(*) AS n FROM cleanup_candidates c
+           JOIN cleanup_reports r ON r.id = c.report_id
+          WHERE r.status = 'open' AND c.status = 'pending'`
+      )
+      .get() as { n: number };
+    return row.n;
+  }
+}
+
+export interface CleanupEntryRow {
+  id: string;
+  title: string;
+  type: string;
+  scope: string;
+  updatedAt: string;
+  lastReadAt: string | null;
+}
+
+export interface CleanupReportRow {
+  id: string;
+  createdAt: string;
+  status: string;
+  stats: string;
+}
+
+export interface CleanupCandidateRow {
+  id: string;
+  reportId: string;
+  category: string;
+  entryIds: string;
+  payload: string;
+  status: string;
+  resolution: string | null;
+  updatedAt: string;
 }
 
 /**

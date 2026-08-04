@@ -1732,9 +1732,14 @@ Pass an array to addKnowledge to create multiple entries at once.
     // only treat a non-empty array as an explicit external-search request.
     const providerFilter = Array.isArray(providers) && providers.length > 0 ? providers : undefined;
     const wantExternal = includeExternal === true || providerFilter != null || readSettings().alwaysSearchExternalProviders;
+    // An explicit user search is real usage, so it feeds the cleanup cycle's
+    // retention signal. Forced server-side rather than read from the body: the
+    // client must not be able to suppress (or forge) read tracking. Browsing
+    // routes (/api/knowledge/recent, /api/knowledge/:id) deliberately do not.
+    const searchOptions = { ...(options as Partial<SearchOptions>), trackRead: true };
     return wantExternal
-      ? sdk.getKnowledgeFederated(query, options as Partial<SearchOptions>, { providers: providerFilter })
-      : sdk.getKnowledge(query, options as Partial<SearchOptions>);
+      ? sdk.getKnowledgeFederated(query, searchOptions, { providers: providerFilter })
+      : sdk.getKnowledge(query, searchOptions);
   });
 
   app.get<{ Params: { id: string } }>('/api/knowledge/:id', async (request, reply) => {

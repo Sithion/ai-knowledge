@@ -41,6 +41,9 @@ importers:
       '@cognistore/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cognistore/embeddings':
+        specifier: workspace:*
+        version: link:../../packages/embeddings
       '@cognistore/providers':
         specifier: workspace:*
         version: link:../../packages/providers

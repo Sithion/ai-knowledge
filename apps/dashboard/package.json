@@ -21,6 +21,7 @@
   "dependencies": {
     "@cognistore/config": "workspace:*",
     "@cognistore/core": "workspace:*",
+    "@cognistore/embeddings": "workspace:*",
     "@cognistore/providers": "workspace:*",
     "@cognistore/sdk": "workspace:*",
     "@cognistore/shared": "workspace:*",

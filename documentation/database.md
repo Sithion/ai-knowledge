@@ -24,6 +24,9 @@ The knowledge base uses **SQLite** with the **sqlite-vec** extension for vector 
 | `confidence_score` | REAL NOT NULL | `1.0` | 0.0–1.0 confidence rating |
 | `related_ids` | TEXT | NULL | JSON array of related entry IDs |
 | `agent_id` | TEXT | NULL | ID of the agent that created this entry |
+| `platform` | TEXT | NULL | Auto-detected host platform: `claude-code`, `copilot`, `opencode` or `unknown` |
+| `last_read_at` | TEXT | NULL | ISO timestamp of the last tracked retrieval. Written only by read tracking (`SearchOptions.trackRead`), never by edits — see below |
+| `read_count` | INTEGER NOT NULL | `0` | Number of tracked retrievals since read tracking began |
 | `created_at` | TEXT NOT NULL | — | ISO timestamp |
 | `updated_at` | TEXT NOT NULL | — | ISO timestamp |
 
@@ -38,6 +41,8 @@ The knowledge base uses **SQLite** with the **sqlite-vec** extension for vector 
 - `addPlanRelation` silently skips system entries (no error, no relation created)
 - The dashboard frontend filters them out of all views and search results
 - `UserPromptSubmit` hooks read system entries and inject them as `[COGNISTORE-PROTOCOL]` system messages
+
+**Read tracking (`last_read_at` / `read_count`):** These columns are a retention signal, not an audit log. They are updated only when a search explicitly opts in via `SearchOptions.trackRead`, which today happens at exactly two call sites: agent retrieval through the MCP `getKnowledge` tool, and the dashboard's explicit search endpoint (`POST /api/knowledge/search`, which forces the flag server-side so a client cannot suppress or forge it). Browsing endpoints (`/api/knowledge/recent`, `/api/knowledge/:id`), the MCP knowledge-context resource, internal scans and re-embeds deliberately do **not** opt in. Marking a read never changes `updated_at` or `version` — a read is not an edit.
 
 ### knowledge_embeddings (virtual table)
 

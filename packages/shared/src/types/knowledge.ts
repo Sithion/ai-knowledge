@@ -43,6 +43,14 @@ export interface KnowledgeEntry {
   agentId: string | null;
   /** Auto-detected host platform: "claude-code" | "copilot" | "opencode" | "unknown". */
   platform: string | null;
+  /**
+   * Last time this entry was actually retrieved (opt-in `trackRead` searches and
+   * nothing else). Drives the cleanup cycle's "unread" detection. Never touched
+   * by edits, so it is a pure retention signal.
+   */
+  lastReadAt: Date | null;
+  /** How many times this entry has been retrieved since read tracking began. */
+  readCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -187,6 +195,14 @@ export interface SearchOptions {
    * repository falls back to pure semantic ranking (e.g. plan-context path).
    */
   queryText?: string;
+  /**
+   * Record this search's hits as reads (`last_read_at` / `read_count`), feeding
+   * the cleanup cycle's unread detection. Opt-IN: only retrieval that reflects
+   * real usage should set it — the MCP getKnowledge tool and the dashboard's
+   * explicit search. Internal scans, re-embeds and browsing must leave it off,
+   * otherwise the retention signal is polluted and nothing is ever "unread".
+   */
+  trackRead?: boolean;
 }
 
 export interface SearchResult {

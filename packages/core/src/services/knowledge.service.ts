@@ -21,10 +21,27 @@ import {
   PLAN_CONTEXT_LIMIT,
   PLAN_CONTEXT_EXTRA,
 } from '@cognistore/shared';
+import { computeMergedTags, validateMergeDraft } from './cleanup-merge.js';
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
 }
+
+/** Default window for "nobody has retrieved this" (days). */
+export const CLEANUP_UNREAD_DAYS = 180;
+/**
+ * Similarity above which two entries are proposed for consolidation. High on
+ * purpose: the non-canonical members are deleted, so a false positive costs
+ * real knowledge.
+ */
+export const CLEANUP_DUP_THRESHOLD = 0.92;
+/**
+ * If no read has been recorded in this many days, treat read tracking as not
+ * running and suppress unread detection entirely.
+ */
+export const CLEANUP_READ_LIVENESS_DAYS = 14;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Levenshtein edit distance (two-row DP). No external dependency. */
 function levenshtein(a: string, b: string): number {
@@ -123,6 +140,21 @@ export class KnowledgeService {
     // string lives in this method, so pass it straight through to the repository.
     const results = await this.repository.searchBySimilarity(queryEmbedding, { ...options, queryText: query });
     this.logOp('read', results.length);
+    // Retention signal for the cleanup cycle. Opt-IN by design: only callers that
+    // represent real usage (the MCP getKnowledge tool, the dashboard's explicit
+    // search) pass trackRead. Internal scans and browsing must not mark, or
+    // nothing would ever qualify as unread.
+    //
+    // Deferred off the response path on purpose: better-sqlite3 is synchronous
+    // and a contended write (the MCP server and the sidecar share this DB) would
+    // otherwise stall the caller for up to busy_timeout. Do NOT "fix" this into
+    // an inline await. Best-effort: a lost mark only delays a cleanup candidate.
+    if (options?.trackRead && results.length > 0) {
+      const readIds = results.map((r) => r.entry.id);
+      setImmediate(() => {
+        try { this.repository.markRead(readIds); } catch { /* best-effort */ }
+      });
+    }
     const direct: SearchResult[] = results.map((r) => ({
       entry: this.toKnowledgeEntry(r.entry),
       similarity: r.similarity,
@@ -512,6 +544,374 @@ export class KnowledgeService {
     return this.repository.findDuplicateGroups(opts);
   }
 
+  // ─── Cleanup cycle ──────────────────────────────────────────
+
+  /**
+   * Build the periodic cleanup report: deprecated entries, entries unread for
+   * `unreadDays`, and near-duplicate groups to consolidate.
+   *
+   * Detection only — nothing is deleted or merged here, and no model is called.
+   * The user approves each candidate individually; these methods just describe
+   * what could be removed.
+   */
+  async generateCleanupReport(opts: { unreadDays?: number; dupThreshold?: number } = {}) {
+    const unreadDays = opts.unreadDays ?? CLEANUP_UNREAD_DAYS;
+    const dupThreshold = opts.dupThreshold ?? CLEANUP_DUP_THRESHOLD;
+
+    // Idempotent: one open report at a time. A second call while a report is
+    // still open returns it rather than piling up duplicates.
+    const existing = this.repository.getOpenCleanupReport();
+    if (existing) return { report: existing, created: false as const };
+
+    const candidates: { id: string; category: string; entryIds: string[]; payload: Record<string, unknown> }[] = [];
+    const claimed = new Set<string>();
+
+    // (a) explicitly deprecated
+    const deprecated = this.repository.findDeprecatedEntries();
+    for (const e of deprecated) {
+      claimed.add(e.id);
+      candidates.push({
+        id: crypto.randomUUID(),
+        category: 'deprecated',
+        entryIds: [e.id],
+        payload: { title: e.title, scope: e.scope, type: e.type, updatedAt: e.updatedAt, lastReadAt: e.lastReadAt },
+      });
+    }
+
+    // (b) unread — double-gated, see unreadGateReason.
+    const unreadGate = this.unreadGateReason(unreadDays);
+    let unreadCount = 0;
+    if (!unreadGate) {
+      for (const e of this.repository.findUnreadEntries(unreadDays)) {
+        if (claimed.has(e.id)) continue;
+        claimed.add(e.id);
+        unreadCount++;
+        candidates.push({
+          id: crypto.randomUUID(),
+          category: 'unread',
+          entryIds: [e.id],
+          payload: { title: e.title, scope: e.scope, type: e.type, updatedAt: e.updatedAt, lastReadAt: e.lastReadAt },
+        });
+      }
+    }
+
+    // (c) near-duplicate groups to consolidate into the newest member.
+    let groupCount = 0;
+    let groupMemberTotal = 0;
+    const groups = await this.repository.findDuplicateGroups({ threshold: dupThreshold });
+    for (const g of groups) {
+      // An entry already queued for deletion must not also be merged. Drop it
+      // from the group; a group that falls below two members is not a group.
+      const members = g.members.filter((m) => !claimed.has(m.id));
+      if (members.length < 2) continue;
+      // The repository sorts members by version DESC first, so members[0] is the
+      // most-EDITED entry, not the newest. The user's rule is "newest wins", and
+      // the losers are deleted — so re-sort here rather than trusting that order.
+      members.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const [canonical, ...rest] = members;
+      for (const m of members) claimed.add(m.id);
+      groupCount++;
+      groupMemberTotal += rest.length;
+      candidates.push({
+        id: crypto.randomUUID(),
+        category: 'duplicate_group',
+        entryIds: [canonical.id, ...rest.map((m) => m.id)],
+        payload: {
+          maxSimilarity: g.maxSimilarity,
+          // Pinned so apply can detect the canonical changing under the user.
+          canonicalUpdatedAt: canonical.updatedAt,
+          members: members.map((m) => ({ id: m.id, title: m.title, scope: m.scope, updatedAt: m.updatedAt })),
+        },
+      });
+    }
+
+    const stats: Record<string, unknown> = {
+      // Pin the parameters the user is reviewing: apply re-validates against
+      // THESE, not against whatever the settings say later.
+      unreadDays,
+      dupThreshold,
+      generatedAt: new Date().toISOString(),
+      counts: {
+        deprecated: deprecated.length,
+        unread: unreadCount,
+        duplicateGroups: groupCount,
+        removableEntries: deprecated.length + unreadCount + groupMemberTotal,
+      },
+    };
+    if (unreadGate) stats.unreadGate = unreadGate;
+
+    const report = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), stats };
+    try {
+      this.repository.createCleanupReport(report, candidates);
+    } catch (err: any) {
+      // Lost the race against another generator: the unique partial index on
+      // status='open' rejected us. Return theirs.
+      const open = this.repository.getOpenCleanupReport();
+      if (open) return { report: open, created: false as const };
+      throw err;
+    }
+    this.logOp('write');
+    return { report: this.repository.getCleanupReportById(report.id)!, created: true as const };
+  }
+
+  /**
+   * Why unread detection is suppressed, or null when it may run.
+   *
+   * Two independent gates, both necessary:
+   *  - AGE: at install the backfill sets last_read_at = now for every entry, so
+   *    "unread for 180 days" is only meaningful once tracking has existed that
+   *    long. Reading it from cleanup_meta (written by the migration) rather than
+   *    schema_version keeps this a domain fact, not migration bookkeeping.
+   *  - LIVENESS: reads mostly arrive through the npx-published MCP server. A
+   *    user still on a pre-2.4.0 build reads constantly and records nothing —
+   *    after which every heavily-used entry looks abandoned. If no read has been
+   *    recorded recently, the signal is not trustworthy and we stay silent.
+   */
+  private unreadGateReason(unreadDays: number): string | null {
+    const since = this.repository.getCleanupMeta('read_tracking_since');
+    if (!since) return 'read tracking has not been initialised yet';
+    const elapsedDays = (Date.now() - Date.parse(since)) / 86_400_000;
+    if (!Number.isFinite(elapsedDays)) return 'read tracking start timestamp is unreadable';
+    if (elapsedDays < unreadDays) {
+      const activatesAt = new Date(Date.parse(since) + unreadDays * 86_400_000).toISOString();
+      return `read tracking started ${Math.floor(elapsedDays)}d ago; unread detection activates ${activatesAt.slice(0, 10)}`;
+    }
+    const lastRead = this.repository.maxLastReadAt();
+    if (!lastRead) return 'no reads have ever been recorded — read tracking may not be active';
+    const staleDays = (Date.now() - Date.parse(lastRead)) / 86_400_000;
+    if (staleDays > CLEANUP_READ_LIVENESS_DAYS) {
+      return `no read recorded in ${Math.floor(staleDays)}d — read tracking appears inactive (outdated MCP server?)`;
+    }
+    return null;
+  }
+
+  getLatestCleanupReport() {
+    const report = this.repository.getLatestCleanupReport();
+    if (!report) return null;
+    return {
+      report,
+      candidates: this.repository.listCleanupCandidates(report.id),
+    };
+  }
+
+  countPendingCleanupCandidates(): number {
+    return this.repository.countPendingCleanupCandidates();
+  }
+
+  /**
+   * Delete the entries behind a `deprecated` / `unread` candidate.
+   *
+   * Rejects duplicate_group on purpose: that category's entry_ids start with the
+   * CANONICAL, so treating it as a removal would delete the very entry meant to
+   * survive, along with the whole group.
+   */
+  async applyRemovalCandidate(candidateId: string) {
+    const candidate = this.repository.getCleanupCandidate(candidateId);
+    if (!candidate) throw new Error('Cleanup candidate not found');
+    if (candidate.category !== 'deprecated' && candidate.category !== 'unread') {
+      throw new Error(`applyRemovalCandidate cannot handle category "${candidate.category}"`);
+    }
+    const unreadDays = this.reportUnreadDays(candidate.reportId);
+    const ids: string[] = JSON.parse(candidate.entryIds);
+
+    // Re-validate NOW: the user approved a predicate, and between generation and
+    // this click an entry may have been read, un-tagged, or marked `keep`.
+    const qualifying = ids.filter((id) =>
+      this.repository.qualifiesForRemoval(id, candidate.category as 'deprecated' | 'unread', unreadDays)
+    );
+    const skipped = ids.filter((id) => !qualifying.includes(id));
+
+    // Snapshot BEFORE deleting and inside the claim, so the only recovery data
+    // for an irreversible delete exists even if the process dies mid-apply.
+    const snapshot = this.repository.getEntriesByIds(qualifying);
+    if (!this.repository.claimCleanupCandidate(candidateId, {
+      intendedIds: qualifying, skipped, deletedSnapshot: snapshot,
+    })) {
+      throw new Error('Cleanup candidate is not pending (already applied or dismissed)');
+    }
+
+    try {
+      const result = qualifying.length > 0
+        ? await this.bulkDelete(qualifying)
+        : { deleted: 0, errors: [] as string[] };
+      // expectedStatus pins this to the claim we took. Without it, a terminal
+      // write could land on a candidate whose report was sealed meanwhile,
+      // recording deletions the closed report's tally never counted.
+      this.repository.updateCleanupCandidate(candidateId, {
+        status: 'applied',
+        expectedStatus: 'applying',
+        resolution: {
+          deletedIds: qualifying, deleted: result.deleted, skipped,
+          errors: result.errors, deletedSnapshot: snapshot,
+        },
+      });
+      return { deleted: result.deleted, skipped: skipped.length, errors: result.errors };
+    } catch (err: any) {
+      this.repository.updateCleanupCandidate(candidateId, {
+        status: 'failed',
+        expectedStatus: 'applying',
+        resolution: { error: err?.message ?? String(err), intendedIds: qualifying, deletedSnapshot: snapshot },
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Consolidate a duplicate group into its canonical entry.
+   *
+   * The caller supplies only title + content (from the LLM or the deterministic
+   * fallback, always after the user has seen it). Tags are recomputed HERE from
+   * the re-fetched members — a client cannot choose them, so it cannot inject
+   * the `deprecated`/`keep` control tags and rig the next cycle.
+   */
+  async applyConsolidationCandidate(candidateId: string, draft: unknown, usedLlm = false) {
+    const candidate = this.repository.getCleanupCandidate(candidateId);
+    if (!candidate) throw new Error('Cleanup candidate not found');
+    if (candidate.category !== 'duplicate_group') {
+      throw new Error(`applyConsolidationCandidate cannot handle category "${candidate.category}"`);
+    }
+    // Bail out BEFORE the stale-check below, which writes to the candidate. A
+    // second approval of an already-applied group always looks "stale" (its
+    // members are gone), and an unguarded failure write would replace the
+    // resolution — including the pre-delete snapshot of the entries it just
+    // destroyed — with an error string.
+    if (candidate.status !== 'pending') {
+      throw new Error('Cleanup candidate is not pending (already applied or dismissed)');
+    }
+    const validated = validateMergeDraft(draft);
+    const ids: string[] = JSON.parse(candidate.entryIds);
+    const payload = JSON.parse(candidate.payload ?? '{}');
+
+    const rows = this.repository.getEntriesByIds(ids);
+    const byId = new Map(rows.map((r: any) => [r.id, r]));
+    const canonical = byId.get(ids[0]);
+    const survivors = ids.filter((id) => byId.has(id));
+
+    // Abort rather than half-merge if the world moved: the canonical vanished,
+    // it was edited since the report (so the user reviewed stale text), or the
+    // group no longer has anything to merge.
+    const stale =
+      !canonical ? 'canonical entry no longer exists'
+      : survivors.length < 2 ? 'fewer than two members still exist'
+      : payload.canonicalUpdatedAt && canonical.updatedAt !== payload.canonicalUpdatedAt
+        ? 'canonical entry was modified after the report was generated'
+        : null;
+    if (stale) {
+      // Conditional: another process may have claimed it since the read above.
+      this.repository.updateCleanupCandidate(candidateId, {
+        status: 'failed', resolution: { error: stale }, expectedStatus: 'pending',
+      });
+      throw new Error(`Consolidation aborted: ${stale}`);
+    }
+
+    const members = survivors.map((id) => {
+      const r: any = byId.get(id);
+      return {
+        id: r.id, title: r.title, content: r.content,
+        tags: Array.isArray(r.tags) ? r.tags : JSON.parse(r.tags ?? '[]'),
+        updatedAt: r.updatedAt,
+      };
+    });
+    const toDelete = survivors.slice(1);
+    const mergedTags = computeMergedTags(members);
+    // Union of every member's relations, minus the ids about to disappear and
+    // the canonical itself — a member pointing at the survivor would otherwise
+    // leave the merged entry related to itself.
+    const relatedIds = Array.from(new Set(
+      members.flatMap((m) => {
+        const r: any = byId.get(m.id);
+        const rel = r.relatedIds ? (Array.isArray(r.relatedIds) ? r.relatedIds : JSON.parse(r.relatedIds)) : [];
+        return Array.isArray(rel) ? rel : [];
+      })
+    ))
+      .filter((id: string) => UUID_RE.test(id) && !toDelete.includes(id) && id !== canonical.id)
+      .slice(0, 50);
+
+    const snapshot = this.repository.getEntriesByIds(toDelete);
+    if (!this.repository.claimCleanupCandidate(candidateId, {
+      canonicalId: canonical.id, intendedIds: toDelete, deletedSnapshot: snapshot, usedLlm,
+    })) {
+      throw new Error('Cleanup candidate is not pending (already applied or dismissed)');
+    }
+
+    try {
+      // Only these four fields. Passing agentId/platform/confidenceScore here
+      // would null-wipe them (the update schema defaults them to null), and
+      // `version` is not accepted at all — repository.update bumps it itself.
+      const updated = await this.update(canonical.id, {
+        title: validated.title,
+        content: validated.content,
+        tags: mergedTags,
+        relatedIds: relatedIds.length > 0 ? relatedIds : null,
+      });
+      if (!updated) throw new Error('Failed to update the canonical entry');
+
+      // Delete members only AFTER the canonical survives the update. A crash
+      // between the two leaves the merged canonical plus its duplicates, which
+      // the next cycle simply re-detects — never content loss.
+      const result = await this.bulkDelete(toDelete);
+      // See applyRemovalCandidate: the terminal write is pinned to our claim.
+      this.repository.updateCleanupCandidate(candidateId, {
+        status: 'applied',
+        expectedStatus: 'applying',
+        resolution: {
+          canonicalId: canonical.id, deletedIds: toDelete, deleted: result.deleted,
+          errors: result.errors, usedLlm, deletedSnapshot: snapshot,
+        },
+      });
+      return { canonicalId: canonical.id, deleted: result.deleted, errors: result.errors };
+    } catch (err: any) {
+      this.repository.updateCleanupCandidate(candidateId, {
+        status: 'failed',
+        expectedStatus: 'applying',
+        resolution: { error: err?.message ?? String(err), canonicalId: canonical.id, deletedSnapshot: snapshot },
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Decline a candidate. Only a pending one can be dismissed: dismissing an
+   * applied candidate would erase it from the report's removal tally and hide
+   * that entries were in fact deleted.
+   */
+  dismissCleanupCandidate(candidateId: string): void {
+    const candidate = this.repository.getCleanupCandidate(candidateId);
+    if (!candidate) throw new Error('Cleanup candidate not found');
+    if (!this.repository.updateCleanupCandidate(candidateId, {
+      status: 'dismissed', expectedStatus: 'pending',
+    })) {
+      throw new Error('Cleanup candidate is not pending (already applied or dismissed)');
+    }
+  }
+
+  /** Seal a report, tallying what was actually removed while it was open. */
+  closeCleanupReport(reportId: string, extraStats: Record<string, unknown> = {}) {
+    const report = this.repository.getCleanupReportById(reportId);
+    if (!report) throw new Error('Cleanup report not found');
+    const candidates = this.repository.listCleanupCandidates(reportId);
+    let removed = 0;
+    for (const c of candidates) {
+      if (c.status !== 'applied' || !c.resolution) continue;
+      try { removed += JSON.parse(c.resolution).deleted ?? 0; } catch { /* ignore */ }
+    }
+    const stats = { ...JSON.parse(report.stats || '{}'), ...extraStats, removed, closedAt: new Date().toISOString() };
+    this.repository.closeCleanupReport(reportId, stats);
+    return { removed };
+  }
+
+  /** The unreadDays the report was generated with — never the live setting. */
+  private reportUnreadDays(reportId: string): number {
+    const report = this.repository.getCleanupReportById(reportId);
+    if (!report) return CLEANUP_UNREAD_DAYS;
+    try {
+      const stats = JSON.parse(report.stats || '{}');
+      return typeof stats.unreadDays === 'number' ? stats.unreadDays : CLEANUP_UNREAD_DAYS;
+    } catch {
+      return CLEANUP_UNREAD_DAYS;
+    }
+  }
+
   /** (Re)populate the FTS5 index if it's empty but entries exist. Returns rows indexed. */
   backfillFtsIfNeeded(): number {
     return this.repository.backfillFtsIfNeeded();
@@ -881,6 +1281,10 @@ export class KnowledgeService {
         : null,
       agentId: row.agentId ?? row.agent_id ?? null,
       platform: row.platform ?? null,
+      lastReadAt: row.lastReadAt ?? row.last_read_at
+        ? new Date(row.lastReadAt ?? row.last_read_at)
+        : null,
+      readCount: row.readCount ?? row.read_count ?? 0,
       createdAt: new Date(row.createdAt ?? row.created_at),
       updatedAt: new Date(row.updatedAt ?? row.updated_at),
     };

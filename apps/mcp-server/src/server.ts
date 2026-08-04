@@ -150,6 +150,11 @@ export function createServer(sdk: KnowledgeSDK): McpServer {
         threshold: params.threshold,
         // Default ON for agents: pull in knowledge proven relevant to similar plans.
         includePlanContext: params.includePlanContext ?? true,
+        // Agent retrieval is the primary real usage of the knowledge base, so it
+        // is one of only two call sites that feed the retention signal. The
+        // knowledge-context RESOURCE below deliberately does not opt in: it pulls
+        // 10 arbitrary entries every session and would reset their clocks.
+        trackRead: true,
       };
       // Federate only when explicitly requested or the global setting is on — keeps
       // the default getKnowledge response shape unchanged (backward-compatible).
