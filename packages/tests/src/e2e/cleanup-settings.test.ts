@@ -127,6 +127,36 @@ test.describe('@e2e cleanup scheduling predicate', () => {
     expect(result.action).toBe('generated');
   });
 
+  test('does not generate while the interval has not elapsed', async () => {
+    // The timestamp must gate generation, or every 6h tick would produce a report.
+    const sdk = fakeSdk({ generateCleanupReport: async () => { throw new Error('must not generate'); } });
+    const s = fakeSettings({ lastCleanupReportAt: new Date(Date.now() - 2 * 86_400_000).toISOString() });
+    const before = s.current.lastCleanupReportAt;
+    const result = await maybeGenerateReport({ sdk, log: noopLog, ...s });
+    expect(result.action).toBe('not-due');
+    // …and the timestamp must not creep forward on a no-op tick.
+    expect(s.current.lastCleanupReportAt).toBe(before);
+  });
+
+  test('generates once the interval has elapsed, and advances the timestamp', async () => {
+    const s = fakeSettings({ lastCleanupReportAt: new Date(Date.now() - 30 * 86_400_000).toISOString() });
+    const before = s.current.lastCleanupReportAt;
+    const result = await maybeGenerateReport({ sdk: fakeSdk(), log: noopLog, ...s });
+    expect(result.action).toBe('generated');
+    expect(s.current.lastCleanupReportAt).not.toBe(before);
+  });
+
+  test('does nothing at all when the cycle is disabled', async () => {
+    const sdk = fakeSdk({
+      getLatestCleanupReport: () => { throw new Error('must not even look'); },
+      generateCleanupReport: async () => { throw new Error('must not generate'); },
+    });
+    const s = fakeSettings({ cleanupEnabled: false });
+    const result = await maybeGenerateReport({ sdk, log: noopLog, ...s });
+    expect(result.action).toBe('disabled');
+    expect(s.current.lastCleanupReportAt).toBeNull();
+  });
+
   test('never throws when generation fails', async () => {
     // It runs from a setInterval: an escaping rejection would take down the sidecar.
     const sdk = fakeSdk({ generateCleanupReport: async () => { throw new Error('db is gone'); } });

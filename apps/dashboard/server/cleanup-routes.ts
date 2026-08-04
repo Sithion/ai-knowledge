@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { MergeDraftError } from '@cognistore/core';
 import { buildMergeDraft } from './llm-merge.js';
 import { readSettings, writeSettings, type AppSettings } from './settings.js';
 
@@ -140,6 +141,13 @@ export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDe
     }
     const members = membersOf(candidate);
     if (members.length < 2) return sendError(reply, 409, 'Fewer than two members still exist');
+    // membersOf preserves entryIds order and drops what no longer exists, so a
+    // deleted canonical silently promotes another member to members[0] — and the
+    // draft would be built around an entry apply will never keep. Apply aborts on
+    // exactly this, so refuse here rather than draft a merge that cannot land.
+    if (members[0].id !== candidate.entryIds[0]) {
+      return sendError(reply, 409, 'Canonical entry no longer exists');
+    }
 
     const settings = readSettings();
     const { draft, usedLlm } = await buildMergeDraft(members, {
@@ -171,6 +179,11 @@ export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDe
         return await sdk.applyRemovalCandidate(candidate.id);
       } catch (e: any) {
         const msg = e?.message ?? String(e);
+        // A malformed draft is the caller's fault, not the server's: apply
+        // re-validates it, and an unmapped MergeDraftError would surface as 500.
+        // (The message test is a fallback: `instanceof` would fail if core were
+        // ever resolved as two module instances by the bundler.)
+        if (e instanceof MergeDraftError || /^Draft /.test(msg)) return sendError(reply, 400, msg);
         // Lost the claim race, or the world moved under the report.
         if (/not pending|aborted/i.test(msg)) return sendError(reply, 409, msg);
         throw e;

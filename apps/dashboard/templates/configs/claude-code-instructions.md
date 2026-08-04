@@ -71,17 +71,20 @@ mcp__cognistore__addKnowledge({
   type: "pattern|decision|fix|constraint|gotcha",
   scope: "global" or "workspace:<project-name>",
   source: "<where this knowledge came from>",
+  agentId: "<your-agent-name, if you are a named/custom agent>",
   planId: "<your-plan-id>"
 })
 ```
 
 - **ALWAYS pass planId** if you have an active plan — this links knowledge as output
+- **If you are a named/custom agent (e.g. `documentation`, `code-reviewer`), ALWAYS pass `agentId` with your agent name** on `addKnowledge` and `createPlan`. The platform (Claude Code / Copilot / OpenCode) is detected automatically; `agentId` is the only way to attribute knowledge to a specific agent so it can be summarized per agent in the dashboard.
 - **Dedup is automatic** — if a similar entry exists in the same scope+type, it will be updated instead of duplicated
 - **Prefer global scope** for language/framework/tool knowledge — workspace scope is for project-specific decisions only
 - **Actively look for patterns** — if you discovered a reusable approach about a language, framework, library, or tool, store it as `type: "pattern"` with `scope: "global"`. Patterns are the highest-value knowledge type — they compound across every future project
 - If you learn something about a language, library, or pattern that applies beyond this project, save it with `scope: "global"`
 - Pass an array to `addKnowledge` to create multiple entries at once
 - All entries in English
+- **When knowledge is superseded or turns out to be wrong, tag it `deprecated`** via `updateKnowledge` instead of deleting it. The periodic cleanup cycle collects deprecated entries into a report the user reviews, so nothing is lost to a hasty judgement — and the entry stays searchable until they decide. Use the `keep` tag for reference material that is rarely read but must never be proposed for removal.
 
 ### After Delegation
 

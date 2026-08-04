@@ -45,6 +45,11 @@ const __dirname = dirname(__filename);
 
 const PORT = Number(process.env.DASHBOARD_PORT) || 3210;
 const TEMPLATES_PATH = process.env.TEMPLATES_PATH || join(__dirname, '..', 'templates');
+// NOTE: ./settings.ts has its own INSTALL_DIR that honours COGNISTORE_HOME. That
+// override is deliberately scoped to settings.json — everything below (logs,
+// providers.json, the database fallback, and the uninstall `rmSync`) still
+// resolves from the real home directory, so a test that sets COGNISTORE_HOME
+// sandboxes its settings only. Production never sets it, and the two agree.
 const INSTALL_DIR = resolve(homedir(), '.cognistore');
 const VERSION_FILE = resolve(INSTALL_DIR, '.version');
 
@@ -1315,11 +1320,21 @@ Pass an array to addKnowledge to create multiple entries at once.
         } catch { return DEFAULT_CLEANUP_MODEL; }
       })();
       const embeddingModel = process.env.OLLAMA_MODEL || 'nomic-embed-text';
-      for (const model of [embeddingModel, cleanupModel]) {
-        if (!isValidOllamaModelName(model)) continue;
-        await step(`Ollama model removed (${model})`, () => {
-          execFileSync('ollama', ['rm', model], { stdio: 'pipe', timeout: 30000 });
+      if (isValidOllamaModelName(embeddingModel)) {
+        // Setup always pulls this one, so a failure here is worth reporting.
+        await step(`Ollama model removed (${embeddingModel})`, () => {
+          execFileSync('ollama', ['rm', embeddingModel], { stdio: 'pipe', timeout: 30000 });
         }, results, errors);
+      }
+      // The merge model is pulled lazily, on the first consolidation preview, so
+      // most uninstalls never had it. `ollama rm` on a model that was never
+      // pulled is the normal case, not an error — reporting it would tell the
+      // user their uninstall partly failed when nothing did.
+      if (isValidOllamaModelName(cleanupModel) && cleanupModel !== embeddingModel) {
+        try {
+          execFileSync('ollama', ['rm', cleanupModel], { stdio: 'pipe', timeout: 30000 });
+          results.push(`Ollama model removed (${cleanupModel})`);
+        } catch { /* never pulled, or Ollama already gone */ }
       }
 
       // 5. Uninstall Ollama

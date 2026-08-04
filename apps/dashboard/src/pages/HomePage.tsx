@@ -696,8 +696,10 @@ export function HomePage() {
 /**
  * Nudge to the cleanup report when candidates are waiting.
  *
- * Polls the dedicated count endpoint rather than the full report: this renders
- * on the home page, and pulling every candidate on a poll would be wasteful.
+ * Reads the dedicated count endpoint rather than the full report: this renders
+ * on the home page, and pulling every candidate just to show a number would be
+ * wasteful. Fetched once per mount — the count only changes when the user acts
+ * on the report in Settings, which unmounts this page.
  * Dismissal is per-session only — the report itself is the durable state.
  */
 function CleanupBanner() {

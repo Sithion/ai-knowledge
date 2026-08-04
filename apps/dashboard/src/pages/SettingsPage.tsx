@@ -1192,8 +1192,10 @@ function CleanupReportSection() {
     if (!p) return; // guarded by the UI: apply only appears after a preview
     setBusyId(candidate.id);
     try {
-      await api.approveCleanupCandidate(candidate.id, { draft: p.draft, usedLlm: p.usedLlm });
-      flash(t('cleanup.applied', { count: candidate.entryIds.length - 1 }));
+      // Report what the server actually deleted, not the group size: members can
+      // disappear between generation and approval.
+      const res = await api.approveCleanupCandidate(candidate.id, { draft: p.draft, usedLlm: p.usedLlm });
+      flash(t('cleanup.applied', { count: res.deleted ?? 0 }));
       setPreviews((prev) => { const next = { ...prev }; delete next[candidate.id]; return next; });
       await reload();
     } catch (e: any) {
@@ -1295,7 +1297,11 @@ function CleanupReportSection() {
                 })}`}
               </span>
             )}
-            {data?.report?.status === 'open' && pending.length > 0 && (
+            {/* Offered for ANY open report, including one whose candidates have
+                all been resolved: only one report may be open at a time, so an
+                un-closable empty report would stall the cycle until the
+                auto-close at twice the interval. */}
+            {data?.report?.status === 'open' && (
               <button onClick={closeReport} disabled={busy} style={smallButton}>{t('cleanup.closeReport')}</button>
             )}
           </div>

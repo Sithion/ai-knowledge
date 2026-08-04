@@ -87,6 +87,7 @@ mcp__cognistore__addKnowledge({
 - If you learn something about a language, library, or pattern that applies beyond this project, save it with `scope: "global"`
 - Pass an array to `addKnowledge` to create multiple entries at once
 - All entries in English
+- **When knowledge is superseded or turns out to be wrong, tag it `deprecated`** via `updateKnowledge` instead of deleting it. The periodic cleanup cycle collects deprecated entries into a report the user reviews, so nothing is lost to a hasty judgement — and the entry stays searchable until they decide. Use the `keep` tag for reference material that is rarely read but must never be proposed for removal.
 
 ### After Delegation
 

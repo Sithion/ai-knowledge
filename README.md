@@ -307,6 +307,7 @@ The desktop app includes a full dashboard with seven pages:
 - Language selection (English, Spanish, Portuguese)
 - **Tag Suggestions with batch merge** — near-duplicate tags are clustered into groups; pick which tag to keep per group (usage counts shown) and apply all merges in one shot
 - **Knowledge Health** — stale-entry report plus **duplicate groups**: near-identical entries are clustered into cards where you keep one and delete the rest in one click
+- **Cleanup Report** — the periodic proposal of what could be removed: entries tagged `deprecated`, entries unread beyond the configured window, and near-duplicate groups to consolidate into their newest member. Each item is approved individually; consolidations must be previewed before they can be applied. The interval, unread window, similarity threshold and merge model are settings (`~/.cognistore/settings.json` / `PUT /api/settings`); this release has no editor for them in the UI
 - Unified data export/import — single JSON file with selectable knowledge and plans via modal
 - Maintenance: re-deploy configurations, remove unused embeddings
 - Uninstall wizard with confirmation (removes all data, configs, and dependencies)
@@ -331,7 +332,6 @@ cognistore/
     ├── check-release-version.mjs # Assert all release-driving versions agree
     └── security-check.sh         # Local secret/security scan
 ```
-- **Cleanup Report** — the periodic proposal of what could be removed: entries tagged `deprecated`, entries unread beyond the configured window, and near-duplicate groups to consolidate into their newest member. Each item is approved individually; consolidations must be previewed before they can be applied. The interval, unread window, similarity threshold and merge model are configurable here.
 
 ### Tech Stack
 
