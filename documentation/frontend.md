@@ -27,6 +27,7 @@ Knowledge management interface with search, filters, and CRUD.
 - Search bar with natural language query input
 - Bulk select toggle (SVG checkbox icon) for multi-delete with floating action bar
 - Filter dropdowns: type (decision/pattern/fix/constraint/gotcha), scope, tags
+- Cleanup banner when a report has pending proposals (polls `/api/cleanup/pending-count`, dismissible per session)
 - Knowledge cards grid with title, tag chips, type badges, related plans, and similarity scores
 - Inline icon buttons: pencil (amber) for edit, trash (red) for delete
 - Floating action button (FAB) → add knowledge modal (confidence score step: 0.01 for fine granularity)
@@ -72,6 +73,7 @@ System health monitoring, updates, data management, maintenance, and uninstall.
 - Language selection (English, Spanish, Portuguese)
 - Maintenance: re-deploy configurations, remove unused embeddings
 - Data Management: unified Export/Import with modal-based flows (checkboxes for knowledge/plans selection, single JSON file)
+- Cleanup Report: the periodic proposal of removable entries. Three groups — deprecated, unread, and duplicate groups to consolidate. Removals are approved per item or per group (never across groups); a consolidation shows its members with the canonical starred and can only be applied *after* its merged text has been previewed, so nothing unseen is ever applied. Renders the unread-detection gate (including the date it activates) instead of a silently empty list, and the settings that drive the cycle.
 - Danger Zone: uninstall button with confirmation dialog
 
 ### SetupPage (conditional, first launch)

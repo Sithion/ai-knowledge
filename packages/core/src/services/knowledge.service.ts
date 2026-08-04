@@ -43,6 +43,56 @@ export const CLEANUP_READ_LIVENESS_DAYS = 14;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Domain shapes for the cleanup queue.
+ *
+ * The repository stores `stats` / `entry_ids` / `payload` / `resolution` as JSON
+ * text. Callers get them parsed, so HTTP routes and the UI never re-implement
+ * the same `JSON.parse` — the raw row types stay a repository detail.
+ */
+export interface CleanupReport {
+  id: string;
+  createdAt: string;
+  status: string;
+  stats: Record<string, any>;
+}
+
+export interface CleanupCandidate {
+  id: string;
+  reportId: string;
+  category: 'deprecated' | 'unread' | 'duplicate_group' | string;
+  entryIds: string[];
+  payload: Record<string, any>;
+  status: string;
+  resolution: Record<string, any> | null;
+  updatedAt: string;
+}
+
+const parseJson = <T>(raw: string | null | undefined, fallback: T): T => {
+  if (!raw) return fallback;
+  try { return JSON.parse(raw) as T; } catch { return fallback; }
+};
+
+function toCleanupReport(row: { id: string; createdAt: string; status: string; stats: string }): CleanupReport {
+  return { id: row.id, createdAt: row.createdAt, status: row.status, stats: parseJson(row.stats, {}) };
+}
+
+function toCleanupCandidate(row: {
+  id: string; reportId: string; category: string; entryIds: string;
+  payload: string; status: string; resolution: string | null; updatedAt: string;
+}): CleanupCandidate {
+  return {
+    id: row.id,
+    reportId: row.reportId,
+    category: row.category,
+    entryIds: parseJson<string[]>(row.entryIds, []),
+    payload: parseJson(row.payload, {}),
+    status: row.status,
+    resolution: row.resolution ? parseJson<Record<string, any>>(row.resolution, {}) : null,
+    updatedAt: row.updatedAt,
+  };
+}
+
 /** Levenshtein edit distance (two-row DP). No external dependency. */
 function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
@@ -561,7 +611,7 @@ export class KnowledgeService {
     // Idempotent: one open report at a time. A second call while a report is
     // still open returns it rather than piling up duplicates.
     const existing = this.repository.getOpenCleanupReport();
-    if (existing) return { report: existing, created: false as const };
+    if (existing) return { report: toCleanupReport(existing), created: false as const };
 
     const candidates: { id: string; category: string; entryIds: string[]; payload: Record<string, unknown> }[] = [];
     const claimed = new Set<string>();
@@ -647,11 +697,11 @@ export class KnowledgeService {
       // Lost the race against another generator: the unique partial index on
       // status='open' rejected us. Return theirs.
       const open = this.repository.getOpenCleanupReport();
-      if (open) return { report: open, created: false as const };
+      if (open) return { report: toCleanupReport(open), created: false as const };
       throw err;
     }
     this.logOp('write');
-    return { report: this.repository.getCleanupReportById(report.id)!, created: true as const };
+    return { report: toCleanupReport(this.repository.getCleanupReportById(report.id)!), created: true as const };
   }
 
   /**
@@ -685,13 +735,36 @@ export class KnowledgeService {
     return null;
   }
 
-  getLatestCleanupReport() {
+  getLatestCleanupReport(): { report: CleanupReport; candidates: CleanupCandidate[] } | null {
     const report = this.repository.getLatestCleanupReport();
     if (!report) return null;
     return {
-      report,
-      candidates: this.repository.listCleanupCandidates(report.id),
+      report: toCleanupReport(report),
+      candidates: this.repository.listCleanupCandidates(report.id).map(toCleanupCandidate),
     };
+  }
+
+  getCleanupCandidate(id: string): CleanupCandidate | null {
+    const row = this.repository.getCleanupCandidate(id);
+    return row ? toCleanupCandidate(row) : null;
+  }
+
+  /**
+   * The entries still backing a candidate, for previewing a merge. Rows may be
+   * missing: entries can be deleted between report generation and review.
+   */
+  getEntriesForCleanupCandidate(candidateId: string): any[] {
+    const candidate = this.repository.getCleanupCandidate(candidateId);
+    if (!candidate) return [];
+    return this.repository.getEntriesByIds(parseJson<string[]>(candidate.entryIds, []));
+  }
+
+  /**
+   * The tags a merge WOULD produce, so the preview shows the real outcome.
+   * Advisory only — apply recomputes them from freshly-read members.
+   */
+  previewMergedTags(members: { tags: string[] }[]): string[] {
+    return computeMergedTags(members as any);
   }
 
   countPendingCleanupCandidates(): number {

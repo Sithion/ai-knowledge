@@ -151,6 +151,119 @@ Delete an entry and its embedding. Returns `403 Forbidden` if the entry has `typ
 }
 ```
 
+## Cleanup Reports
+
+The periodic cleanup cycle proposes entries for removal and near-duplicate groups
+for consolidation. **Nothing is deleted without an explicit approval call.**
+
+Approving re-checks the entry still qualifies at that moment, so an entry that
+was read, un-tagged or marked `keep` after the report was generated is skipped
+rather than deleted. All mutating routes below reject requests from a foreign
+`Origin`.
+
+### GET /api/cleanup/report
+
+The latest report with its candidates, plus the cleanup settings the UI renders.
+
+**Response:**
+```json
+{
+  "report": {
+    "id": "uuid",
+    "createdAt": "2026-08-04T16:15:11.180Z",
+    "status": "open",
+    "stats": {
+      "unreadDays": 180,
+      "dupThreshold": 0.92,
+      "counts": { "deprecated": 1, "unread": 0, "duplicateGroups": 2, "removableEntries": 4 },
+      "unreadGate": "read tracking started 0d ago; unread detection activates 2027-01-31"
+    }
+  },
+  "candidates": [
+    { "id": "uuid", "category": "deprecated", "entryIds": ["uuid"], "payload": { "title": "…" }, "status": "pending" }
+  ],
+  "settings": { "cleanupEnabled": true, "cleanupIntervalDays": 10, "cleanupUnreadDays": 180 }
+}
+```
+
+`stats.unreadGate` is present when unread detection suppressed itself — either
+read tracking is younger than the unread window, or no read has been recorded
+recently (which is what an outdated MCP server looks like). `report` is `null`
+when no report has ever been generated.
+
+### GET /api/cleanup/pending-count
+
+Just the number of pending candidates, for the dashboard banner to poll.
+
+**Response:** `{ "pendingCount": 3 }`
+
+### POST /api/cleanup/report/run
+
+Generate a report now instead of waiting for the cycle. Idempotent: while a
+report is open it is returned rather than duplicated.
+
+**Response:** `{ "created": true, "report": { … } }`
+
+### POST /api/cleanup/candidates/:id/preview
+
+Draft the merged entry for a `duplicate_group` candidate so it can be reviewed.
+Uses the local Ollama chat model, falling back to a deterministic concatenation
+when the model is unavailable.
+
+**The first call may download the model** (~2GB), so allow a long timeout.
+
+**Response:**
+```json
+{
+  "draft": { "title": "Merged title", "content": "Merged body" },
+  "usedLlm": true,
+  "tags": ["alpha", "beta"]
+}
+```
+
+`tags` is advisory — the apply route recomputes them server-side from the
+entries themselves, so a client cannot choose the merged entry's tags.
+
+**Errors:** `400` for a non-duplicate candidate, `409` when fewer than two
+members still exist.
+
+### POST /api/cleanup/candidates/:id/approve
+
+Apply a candidate: delete the entries (`deprecated` / `unread`), or merge the
+group into its newest member and delete the rest (`duplicate_group`).
+
+**Body — required for `duplicate_group` only:**
+```json
+{ "draft": { "title": "…", "content": "…" }, "usedLlm": true }
+```
+
+A consolidation **cannot** be approved without a draft: the merged text must be
+one the user actually saw, since approving deletes the other members.
+
+**Response:** `{ "deleted": 2, "skipped": 0, "errors": [] }` for removals,
+`{ "canonicalId": "uuid", "deleted": 1, "errors": [] }` for consolidations.
+
+**Errors:** `400` when a consolidation has no draft, `404` unknown candidate,
+`409` when the candidate is no longer pending (already applied or dismissed by
+another window) or the canonical entry changed since the report was generated.
+
+### POST /api/cleanup/candidates/:id/dismiss
+
+Decline a candidate. Only a pending candidate can be dismissed — dismissing an
+applied one would erase it from the report's removal tally.
+
+**Response:** `{ "dismissed": true }` · **Errors:** `404`, `409`
+
+### POST /api/cleanup/report/:id/close
+
+Seal a report. Remaining pending candidates are dismissed and the number of
+entries actually removed while it was open is recorded.
+
+**Response:** `{ "removed": 3 }`
+
+A report left open for more than twice the configured interval is closed
+automatically on the next cycle, so an ignored report cannot block future ones.
+
 ## Statistics & Metrics
 
 ### GET /api/stats

@@ -10,6 +10,8 @@ import {
   type TokenUsageAggregates,
   type TokenUsageFilter,
   type ScanResult,
+  type CleanupReport,
+  type CleanupCandidate,
 } from '@cognistore/core';
 import { OllamaEmbeddingClient, checkOllamaHealth } from '@cognistore/embeddings';
 import {
@@ -303,6 +305,100 @@ export class KnowledgeSDK {
       return await this.service!.findDuplicatePairs(opts);
     } catch (error) {
       throw this.wrapError(error, 'Failed to find duplicate pairs');
+    }
+  }
+
+  // ─── Cleanup cycle ──────────────────────────────────────────
+  //
+  // The SDK owns the process's single KnowledgeService instance, so every
+  // consumer must come through here — a route constructing its own service
+  // would give the sidecar two instances on one database file.
+
+  async generateCleanupReport(
+    opts: { unreadDays?: number; dupThreshold?: number } = {},
+  ): Promise<{ report: CleanupReport; created: boolean }> {
+    this.ensureInitialized();
+    try {
+      return await this.service!.generateCleanupReport(opts);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to generate cleanup report');
+    }
+  }
+
+  getLatestCleanupReport(): { report: CleanupReport; candidates: CleanupCandidate[] } | null {
+    this.ensureInitialized();
+    try {
+      return this.service!.getLatestCleanupReport();
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to read cleanup report');
+    }
+  }
+
+  countPendingCleanupCandidates(): number {
+    this.ensureInitialized();
+    try {
+      return this.service!.countPendingCleanupCandidates();
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to count pending cleanup candidates');
+    }
+  }
+
+  getCleanupCandidate(id: string): CleanupCandidate | null {
+    this.ensureInitialized();
+    try {
+      return this.service!.getCleanupCandidate(id);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to read cleanup candidate');
+    }
+  }
+
+  getEntriesForCleanupCandidate(candidateId: string) {
+    this.ensureInitialized();
+    try {
+      return this.service!.getEntriesForCleanupCandidate(candidateId);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to read cleanup candidate entries');
+    }
+  }
+
+  previewMergedTags(members: { tags: string[] }[]): string[] {
+    this.ensureInitialized();
+    return this.service!.previewMergedTags(members);
+  }
+
+  async applyRemovalCandidate(candidateId: string) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.applyRemovalCandidate(candidateId);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to apply cleanup removal');
+    }
+  }
+
+  async applyConsolidationCandidate(candidateId: string, draft: unknown, usedLlm = false) {
+    this.ensureInitialized();
+    try {
+      return await this.service!.applyConsolidationCandidate(candidateId, draft, usedLlm);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to apply cleanup consolidation');
+    }
+  }
+
+  dismissCleanupCandidate(candidateId: string): void {
+    this.ensureInitialized();
+    try {
+      this.service!.dismissCleanupCandidate(candidateId);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to dismiss cleanup candidate');
+    }
+  }
+
+  closeCleanupReport(reportId: string, extraStats: Record<string, unknown> = {}) {
+    this.ensureInitialized();
+    try {
+      return this.service!.closeCleanupReport(reportId, extraStats);
+    } catch (error) {
+      throw this.wrapError(error, 'Failed to close cleanup report');
     }
   }
 

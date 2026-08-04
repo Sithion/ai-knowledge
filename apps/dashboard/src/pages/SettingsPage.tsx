@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api/client.js';
+import { api, type CleanupCandidate, type CleanupReportResponse } from '../api/client.js';
 import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, useAutoUpdateSetting } from '../components/UpdateChecker.js';
 import { ConfirmModal } from '../components/ConfirmModal.js';
 
@@ -254,6 +254,9 @@ export function SettingsPage() {
 
       {/* ── Tag Suggestions Section ── */}
       <TagSuggestionsSection />
+
+      {/* ── Cleanup Report Section ── */}
+      <CleanupReportSection />
 
       {/* ── Knowledge Health Section ── */}
       <KnowledgeHealthSection />
@@ -1092,3 +1095,344 @@ function KnowledgeHealthSection() {
     </div>
   );
 }
+
+// ─── Cleanup Report ────────────────────────────────────────────
+
+/**
+ * The user-facing half of the cleanup cycle: review what the periodic scan
+ * proposed and approve it item by item.
+ *
+ * Deletions here are irreversible, so the flow is deliberately unhurried —
+ * removals need a confirmation, and a consolidation cannot be approved at all
+ * until its merged text has been previewed. There is no bulk action that spans
+ * categories.
+ */
+function CleanupReportSection() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [data, setData] = useState<CleanupReportResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [previews, setPreviews] = useState<Record<string, { draft: { title: string; content: string }; usedLlm: boolean; tags: string[] }>>({});
+  const [confirm, setConfirm] = useState<
+    | { kind: 'one'; candidate: CleanupCandidate }
+    | { kind: 'all'; candidates: CleanupCandidate[]; label: string }
+    | { kind: 'merge'; candidate: CleanupCandidate }
+    | null
+  >(null);
+
+  const reload = useCallback(
+    () => api.getCleanupReport().then(setData).catch(() => setData(null)),
+    [],
+  );
+
+  useEffect(() => { reload().finally(() => setLoading(false)); }, [reload]);
+
+  const flash = (msg: string) => { setMessage(msg); setTimeout(() => setMessage(null), 6000); };
+
+  const pending = (data?.candidates ?? []).filter((c) => c.status === 'pending');
+  const byCategory = (cat: string) => pending.filter((c) => c.category === cat);
+
+  const runNow = async () => {
+    setRunning(true);
+    try { await api.runCleanupReport(); await reload(); }
+    catch (e: any) { flash(t('cleanup.failed', { error: e?.message ?? '' })); }
+    setRunning(false);
+  };
+
+  const approveOne = async (candidate: CleanupCandidate) => {
+    setBusyId(candidate.id);
+    try {
+      const res = await api.approveCleanupCandidate(candidate.id);
+      flash(
+        (res.skipped ?? 0) > 0
+          ? `${t('cleanup.applied', { count: res.deleted ?? 0 })} · ${t('cleanup.skipped', { count: res.skipped })}`
+          : t('cleanup.applied', { count: res.deleted ?? 0 }),
+      );
+      await reload();
+    } catch (e: any) {
+      flash(t('cleanup.failed', { error: e?.message ?? '' }));
+    }
+    setBusyId(null);
+  };
+
+  const approveMany = async (candidates: CleanupCandidate[]) => {
+    let deleted = 0; let skipped = 0; let failed = 0;
+    setBusyId('bulk');
+    for (const c of candidates) {
+      try {
+        const res = await api.approveCleanupCandidate(c.id);
+        deleted += res.deleted ?? 0;
+        skipped += res.skipped ?? 0;
+      } catch { failed++; }
+    }
+    setBusyId(null);
+    const parts = [t('cleanup.applied', { count: deleted })];
+    if (skipped > 0) parts.push(t('cleanup.skipped', { count: skipped }));
+    if (failed > 0) parts.push(t('cleanup.failed', { error: String(failed) }));
+    flash(parts.join(' · '));
+    await reload();
+  };
+
+  const preview = async (candidate: CleanupCandidate) => {
+    setBusyId(candidate.id);
+    try {
+      const result = await api.previewCleanupCandidate(candidate.id);
+      setPreviews((prev) => ({ ...prev, [candidate.id]: result }));
+    } catch (e: any) {
+      flash(t('cleanup.failed', { error: e?.message ?? '' }));
+    }
+    setBusyId(null);
+  };
+
+  const applyMerge = async (candidate: CleanupCandidate) => {
+    const p = previews[candidate.id];
+    if (!p) return; // guarded by the UI: apply only appears after a preview
+    setBusyId(candidate.id);
+    try {
+      await api.approveCleanupCandidate(candidate.id, { draft: p.draft, usedLlm: p.usedLlm });
+      flash(t('cleanup.applied', { count: candidate.entryIds.length - 1 }));
+      setPreviews((prev) => { const next = { ...prev }; delete next[candidate.id]; return next; });
+      await reload();
+    } catch (e: any) {
+      flash(t('cleanup.failed', { error: e?.message ?? '' }));
+    }
+    setBusyId(null);
+  };
+
+  const dismiss = async (candidate: CleanupCandidate) => {
+    setBusyId(candidate.id);
+    try { await api.dismissCleanupCandidate(candidate.id); await reload(); }
+    catch (e: any) { flash(t('cleanup.failed', { error: e?.message ?? '' })); }
+    setBusyId(null);
+  };
+
+  const closeReport = async () => {
+    if (!data?.report) return;
+    setBusyId('close');
+    try {
+      const res = await api.closeCleanupReport(data.report.id);
+      flash(t('cleanup.closed', { count: res.removed }));
+      await reload();
+    } catch (e: any) { flash(t('cleanup.failed', { error: e?.message ?? '' })); }
+    setBusyId(null);
+  };
+
+  const openEntry = (id: string) => navigate('/?edit=' + encodeURIComponent(id));
+  const busy = busyId !== null || running;
+
+  const removalRow = (c: CleanupCandidate) => (
+    <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
+      <span
+        onClick={() => openEntry(c.entryIds[0])}
+        style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', textDecoration: 'underline' }}
+      >
+        {c.payload.title || '(untitled)'}
+      </span>
+      <span style={{ color: 'var(--text-secondary)', fontSize: 11, whiteSpace: 'nowrap' }}>
+        {c.payload.scope}
+        {c.category === 'unread' && ` · ${t('cleanup.lastRead', { date: c.payload.lastReadAt?.slice(0, 10) ?? t('cleanup.never') })}`}
+      </span>
+      <button onClick={() => setConfirm({ kind: 'one', candidate: c })} disabled={busy} style={smallDangerButton}>
+        {t('cleanup.approve')}
+      </button>
+      <button onClick={() => dismiss(c)} disabled={busy} style={smallButton}>
+        {t('cleanup.dismiss')}
+      </button>
+    </div>
+  );
+
+  const removalGroup = (cat: 'deprecated' | 'unread', label: string) => {
+    const items = byCategory(cat);
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <h3 style={{ fontSize: 13, fontWeight: 600 }}>{label}</h3>
+          {items.length > 1 && (
+            <button
+              onClick={() => setConfirm({ kind: 'all', candidates: items, label })}
+              disabled={busy}
+              style={smallButton}
+            >
+              {t('cleanup.approveAll', { count: items.length })}
+            </button>
+          )}
+        </div>
+        {items.length === 0 ? (
+          <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('cleanup.emptyCategory')}</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>{items.map(removalRow)}</div>
+        )}
+      </div>
+    );
+  };
+
+  const groups = byCategory('duplicate_group');
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', marginTop: 32, paddingTop: 24 }}>
+      <h2 style={sectionHeaderStyle}>{t('cleanup.title')}</h2>
+      <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>{t('cleanup.subtitle')}</p>
+
+      {loading ? (
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('cleanup.loading')}</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <button onClick={runNow} disabled={busy} style={smallButton}>
+              {running ? t('cleanup.running') : t('cleanup.runNow')}
+            </button>
+            {data?.report && (
+              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                {t('cleanup.generatedAt', { date: data.report.createdAt.slice(0, 10) })}
+                {data.report.stats.counts && ` · ${t('cleanup.counts', {
+                  deprecated: data.report.stats.counts.deprecated,
+                  unread: data.report.stats.counts.unread,
+                  groups: data.report.stats.counts.duplicateGroups,
+                  total: data.report.stats.counts.removableEntries,
+                })}`}
+              </span>
+            )}
+            {data?.report?.status === 'open' && pending.length > 0 && (
+              <button onClick={closeReport} disabled={busy} style={smallButton}>{t('cleanup.closeReport')}</button>
+            )}
+          </div>
+
+          {message && <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{message}</p>}
+
+          {!data?.report && <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('cleanup.none')}</p>}
+
+          {/* Unread detection suppresses itself until its signal is trustworthy;
+              say so rather than showing a silently empty bucket. */}
+          {data?.report?.stats.unreadGate && (
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+              {t('cleanup.gate', { reason: data.report.stats.unreadGate })}
+            </p>
+          )}
+
+          {data?.report?.status === 'closed' && typeof data.report.stats.removed === 'number' && (
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              {t('cleanup.closed', { count: data.report.stats.removed })}
+            </p>
+          )}
+
+          {data?.report && (
+            <>
+              {removalGroup('deprecated', t('cleanup.deprecated'))}
+              {removalGroup('unread', t('cleanup.unread', { days: data.settings.cleanupUnreadDays }))}
+
+              <div>
+                <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{t('cleanup.duplicates')}</h3>
+                {groups.length === 0 ? (
+                  <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('cleanup.emptyCategory')}</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {groups.map((c) => {
+                      const p = previews[c.id];
+                      const members = c.payload.members ?? [];
+                      return (
+                        <div key={c.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                            {members.length} · {Math.round((c.payload.maxSimilarity ?? 0) * 100)}%
+                          </div>
+                          {members.map((m, i) => (
+                            <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                              <span style={{ fontSize: 11, color: i === 0 ? 'var(--success, #2a2)' : 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                                {i === 0 ? `★ ${t('cleanup.canonical')}` : t('cleanup.willDelete')}
+                              </span>
+                              <span
+                                onClick={() => openEntry(m.id)}
+                                style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', textDecoration: 'underline' }}
+                              >
+                                {m.title || '(untitled)'}
+                              </span>
+                              <span style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{m.updatedAt.slice(0, 10)}</span>
+                            </div>
+                          ))}
+
+                          {p && (
+                            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                                {p.usedLlm ? t('cleanup.byModel') : t('cleanup.byFallback')}
+                              </div>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>{p.draft.title}</div>
+                              <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 220, overflow: 'auto', background: 'var(--bg-secondary, transparent)', padding: 8, borderRadius: 6, margin: 0 }}>
+                                {p.draft.content}
+                              </pre>
+                              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                                {t('cleanup.mergedTags')}: {p.tags.join(', ') || '—'}
+                              </div>
+                            </div>
+                          )}
+
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {/* Apply only exists once the merged text has been shown:
+                                approving unseen text would delete the other members. */}
+                            {p ? (
+                              <button onClick={() => setConfirm({ kind: 'merge', candidate: c })} disabled={busy} style={smallDangerButton}>
+                                {t('cleanup.applyMerge')}
+                              </button>
+                            ) : (
+                              <button onClick={() => preview(c)} disabled={busy} style={smallButton}>
+                                {busyId === c.id ? t('cleanup.previewing') : t('cleanup.preview')}
+                              </button>
+                            )}
+                            <button onClick={() => dismiss(c)} disabled={busy} style={smallButton}>{t('cleanup.dismiss')}</button>
+                          </div>
+                          {busyId === c.id && !p && (
+                            <p style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{t('cleanup.downloadingModel')}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <ConfirmModal
+        isOpen={confirm !== null}
+        onClose={() => { if (!busy) setConfirm(null); }}
+        onConfirm={async () => {
+          const c = confirm;
+          setConfirm(null);
+          if (!c) return;
+          if (c.kind === 'one') await approveOne(c.candidate);
+          else if (c.kind === 'all') await approveMany(c.candidates);
+          else await applyMerge(c.candidate);
+        }}
+        title={t('cleanup.title')}
+        message={
+          confirm?.kind === 'all'
+            ? t('cleanup.confirmApproveAll', { count: confirm.candidates.length })
+            : confirm?.kind === 'merge'
+              ? t('cleanup.confirmMerge', { count: confirm.candidate.entryIds.length })
+              : t('cleanup.confirmApprove')
+        }
+        confirmLabel={confirm?.kind === 'merge' ? t('cleanup.applyMerge') : t('cleanup.approve')}
+        loading={busy}
+      />
+    </div>
+  );
+}
+
+const smallButton: React.CSSProperties = {
+  fontSize: 12,
+  padding: '4px 10px',
+  borderRadius: 6,
+  border: '1px solid var(--border)',
+  background: 'transparent',
+  color: 'var(--text)',
+  cursor: 'pointer',
+};
+
+const smallDangerButton: React.CSSProperties = {
+  ...smallButton,
+  borderColor: 'var(--error)',
+  color: 'var(--error)',
+};

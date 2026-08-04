@@ -142,6 +142,28 @@ export const api = {
   getDuplicateGroups: () =>
     request<{ groupId: string; maxSimilarity: number; members: { id: string; title: string; scope: string; type: string; version: number; updatedAt: string }[] }[]>('/api/health/duplicates'),
 
+  // Cleanup cycle
+  getCleanupReport: () => request<CleanupReportResponse>('/api/cleanup/report'),
+  getCleanupPendingCount: () => request<{ pendingCount: number }>('/api/cleanup/pending-count'),
+  runCleanupReport: () =>
+    request<{ created: boolean; report: CleanupReport }>('/api/cleanup/report/run', { method: 'POST' }),
+  // The first preview may download the merge model, so it gets the long timeout.
+  previewCleanupCandidate: (id: string) =>
+    request<{ draft: { title: string; content: string }; usedLlm: boolean; tags: string[] }>(
+      `/api/cleanup/candidates/${encodeURIComponent(id)}/preview`,
+      { method: 'POST' },
+      LONG_TIMEOUT_MS,
+    ),
+  approveCleanupCandidate: (id: string, body?: { draft: { title: string; content: string }; usedLlm: boolean }) =>
+    request<{ deleted?: number; skipped?: number; canonicalId?: string; errors?: string[] }>(
+      `/api/cleanup/candidates/${encodeURIComponent(id)}/approve`,
+      { method: 'POST', body: JSON.stringify(body ?? {}) },
+    ),
+  dismissCleanupCandidate: (id: string) =>
+    request<{ dismissed: boolean }>(`/api/cleanup/candidates/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }),
+  closeCleanupReport: (id: string) =>
+    request<{ removed: number }>(`/api/cleanup/report/${encodeURIComponent(id)}/close`, { method: 'POST' }),
+
   getByType: (range?: { from: string; to: string }) => {
     const path = range ? `/api/metrics/by-type?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : '/api/metrics/by-type';
     return request<{ type: string; count: number }[]>(path);
@@ -368,6 +390,59 @@ export interface AppSettings {
   lastSelectedRange: { from: string; to: string } | null;
   tokenProviderFilter: ProviderFilter;
   alwaysSearchExternalProviders: boolean;
+  cleanupEnabled: boolean;
+  cleanupIntervalDays: number;
+  cleanupUnreadDays: number;
+  cleanupDupThreshold: number;
+  cleanupLlmModel: string;
+  lastCleanupReportAt: string | null;
+}
+
+// ── Cleanup cycle ──
+
+export interface CleanupReport {
+  id: string;
+  createdAt: string;
+  status: 'open' | 'closed' | string;
+  stats: {
+    unreadDays?: number;
+    dupThreshold?: number;
+    generatedAt?: string;
+    /** Present when unread detection was suppressed; explains why. */
+    unreadGate?: string;
+    counts?: { deprecated: number; unread: number; duplicateGroups: number; removableEntries: number };
+    removed?: number;
+    autoClosed?: boolean;
+  };
+}
+
+export interface CleanupCandidate {
+  id: string;
+  reportId: string;
+  category: 'deprecated' | 'unread' | 'duplicate_group' | string;
+  entryIds: string[];
+  payload: {
+    title?: string;
+    scope?: string;
+    type?: string;
+    updatedAt?: string;
+    lastReadAt?: string | null;
+    maxSimilarity?: number;
+    canonicalUpdatedAt?: string;
+    members?: { id: string; title: string; scope: string; updatedAt: string }[];
+  };
+  status: 'pending' | 'applying' | 'dismissed' | 'applied' | 'failed' | string;
+  resolution: Record<string, unknown> | null;
+  updatedAt: string;
+}
+
+export interface CleanupReportResponse {
+  report: CleanupReport | null;
+  candidates: CleanupCandidate[];
+  settings: Pick<
+    AppSettings,
+    'cleanupEnabled' | 'cleanupIntervalDays' | 'cleanupUnreadDays' | 'cleanupDupThreshold' | 'cleanupLlmModel' | 'lastCleanupReportAt'
+  >;
 }
 
 // ── External knowledge providers (MCP-only, config v2) ──

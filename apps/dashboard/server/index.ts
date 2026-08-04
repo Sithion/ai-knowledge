@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, sep } from 'node:path';
-import { execSync, spawn } from 'node:child_process';
+import { execSync, execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
 import Fastify from 'fastify';
@@ -29,6 +29,15 @@ import {
   resolveMcpSpec,
   saveDeployedVersion as persistDeployedVersion,
 } from './mcp-entry.js';
+import {
+  readSettings,
+  writeSettings,
+  sanitizeSettings,
+  isValidOllamaModelName,
+  SETTINGS_DEFAULTS,
+  type AppSettings,
+} from './settings.js';
+import { registerCleanupRoutes, maybeGenerateReport } from './cleanup-routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -139,49 +148,14 @@ if (!VERSION_RESOLVED) {
 }
 
 // ─── User settings (survives upgrades) ────────────────────────
-const SETTINGS_FILE = resolve(INSTALL_DIR, 'settings.json');
-
-export interface AppSettings {
-  autoUpdate: boolean;
-  dateRangePreset: '1d' | '1w' | '1m' | '1y' | '2y' | 'custom';
-  lastSelectedRange: { from: string; to: string } | null;
-  tokenProviderFilter: 'all' | 'claude' | 'copilot';
-  alwaysSearchExternalProviders: boolean;
-}
-
-const SETTINGS_DEFAULTS: AppSettings = {
-  autoUpdate: false,
-  dateRangePreset: '1w',
-  lastSelectedRange: null,
-  tokenProviderFilter: 'all',
-  alwaysSearchExternalProviders: false,
-};
-
-function readSettings(): AppSettings {
-  try {
-    if (!existsSync(SETTINGS_FILE)) return { ...SETTINGS_DEFAULTS };
-    const parsed = JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8')) as Partial<AppSettings>;
-    return { ...SETTINGS_DEFAULTS, ...parsed };
-  } catch {
-    return { ...SETTINGS_DEFAULTS };
-  }
-}
-
-function writeSettings(patch: Partial<AppSettings>): AppSettings {
-  const merged: AppSettings = { ...readSettings(), ...patch };
-  mkdirSync(INSTALL_DIR, { recursive: true });
-  const tmp = SETTINGS_FILE + '.tmp';
-  writeFileSync(tmp, JSON.stringify(merged, null, 2));
-  try {
-    renameSync(tmp, SETTINGS_FILE);
-  } catch {
-    copyFileSync(tmp, SETTINGS_FILE);
-    try { unlinkSync(tmp); } catch { /* ignore */ }
-  }
-  return merged;
-}
+// Lifted to ./settings.ts so the validation can be unit-tested: the cleanup
+// values are load-bearing (a schedule, a deletion predicate, an `ollama rm`
+// argument), unlike the display preferences that lived here before.
 
 // ─── External knowledge providers (~/.cognistore/providers.json) ─────
+/** Fallback when settings are unreadable at uninstall time. */
+const DEFAULT_CLEANUP_MODEL = SETTINGS_DEFAULTS.cleanupLlmModel;
+
 const PROVIDERS_FILE = resolve(INSTALL_DIR, 'providers.json');
 type ProvidersConfig = ReturnType<typeof providersConfigSchema.parse>;
 
@@ -328,7 +302,12 @@ Pass an array to addKnowledge to create multiple entries at once.
   // from the still-retained raw window (MAX-merge, catches any stale/other-process
   // writer) BEFORE pruning the raw log, then cleanup + WAL checkpoint.
   setInterval(() => {
-    if (sdkReady) { try { sdk.reconcileOperationsDaily(); sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(730); sdk.walCheckpoint(); } catch { /* silent */ } }
+    if (!sdkReady) return;
+    try { sdk.reconcileOperationsDaily(); sdk.cleanupOldOperations(); sdk.cleanupCompletedPlanEmbeddings(730); sdk.walCheckpoint(); } catch { /* silent */ }
+    // Cleanup report. Awaited inside its own async IIFE with a catch: an
+    // unhandled rejection escaping a setInterval callback would crash the
+    // sidecar, and this path talks to the DB and (on preview) to Ollama.
+    void (async () => { await maybeGenerateReport({ sdk, log }); })().catch(() => { /* logged inside */ });
   }, 6 * 60 * 60 * 1000);
 
   // Token usage scan every 5 minutes — incremental, idempotent.
@@ -1319,8 +1298,29 @@ Pass an array to addKnowledge to create multiple entries at once.
       configManager.removeOpenCodeSkills(); results.push('OpenCode skills removed');
       configManager.removeOpenCodePlugins(); results.push('OpenCode plugins removed');
 
-      // 4. Remove Ollama model
-      await step('Ollama model removed', () => { execSync(`ollama rm ${process.env.OLLAMA_MODEL || 'nomic-embed-text'}`, { stdio: 'pipe', timeout: 30000 }); }, results, errors);
+      // 4. Remove the Ollama models this app pulled: the embedding model, and
+      //    the merge model if a consolidation preview ever downloaded it.
+      //
+      //    execFileSync with an argument array, never a shell string: the
+      //    cleanup model name comes from settings.json, which the user can edit
+      //    and PUT /api/settings can write. The name is re-validated here too,
+      //    because reading it and trusting it are different things.
+      //
+      //    Settings are read BEFORE the ~/.cognistore removal below, or the file
+      //    would already be gone by the time we needed the model name.
+      const cleanupModel = (() => {
+        try {
+          const configured = readSettings().cleanupLlmModel;
+          return isValidOllamaModelName(configured) ? configured : DEFAULT_CLEANUP_MODEL;
+        } catch { return DEFAULT_CLEANUP_MODEL; }
+      })();
+      const embeddingModel = process.env.OLLAMA_MODEL || 'nomic-embed-text';
+      for (const model of [embeddingModel, cleanupModel]) {
+        if (!isValidOllamaModelName(model)) continue;
+        await step(`Ollama model removed (${model})`, () => {
+          execFileSync('ollama', ['rm', model], { stdio: 'pipe', timeout: 30000 });
+        }, results, errors);
+      }
 
       // 5. Uninstall Ollama
       try { execSync('pkill -f "ollama serve"', { stdio: 'pipe' }); } catch { /* may not be running */ }
@@ -1951,6 +1951,18 @@ Pass an array to addKnowledge to create multiple entries at once.
     reply.code(403); return true;
   };
 
+  // Registered here rather than beside the other health routes: these handlers
+  // need rejectForeignOrigin, which is declared just above.
+  registerCleanupRoutes(app, {
+    sdk,
+    ensureReady,
+    rejectForeignOrigin,
+    sendError,
+    log,
+    ollamaHost: process.env.OLLAMA_HOST,
+  });
+
+
   app.get<{ Params: { id: string } }>('/api/plans/:id/file', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
     if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
@@ -2170,7 +2182,9 @@ Pass an array to addKnowledge to create multiple entries at once.
       reply.code(400);
       return { error: 'Body must be an object' };
     }
-    const merged = writeSettings(body);
+    // sanitizeSettings also runs inside writeSettings; calling it here keeps the
+    // response honest about what was actually stored.
+    const merged = writeSettings(sanitizeSettings(body));
     // The always-on flag is read by the SDK for federated search.
     sdk.reloadProviders();
     return merged;
@@ -2321,6 +2335,23 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   log('info', `Server listening on http://localhost:${PORT}`);
+
+  /**
+   * Catch up on the cleanup report shortly after boot, so a machine that is never
+   * up for a full 6-hour tick still gets one.
+   *
+   * Deferred by a minute and gated on COGNISTORE_MANAGED for two independent
+   * reasons: duplicate detection runs a synchronous per-entry KNN scan that would
+   * block the event loop during startup, and the e2e suite spawns this server
+   * against the developer's real HOME — an ungated run would rewrite their
+   * ~/.cognistore/settings.json on every test run.
+   */
+  if (process.env.COGNISTORE_MANAGED === '1') {
+    setTimeout(() => {
+      if (!sdkReady) return;
+      void (async () => { await maybeGenerateReport({ sdk, log }); })().catch(() => { /* logged inside */ });
+    }, 60_000).unref();
+  }
 
   /**
    * Self-heal deployed artifacts when this build is newer than what is on disk.

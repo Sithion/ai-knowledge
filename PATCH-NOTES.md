@@ -1,27 +1,33 @@
 # Patch Notes
 
-## v2.4.0 (in progress — not yet released)
+## v2.4.0
 
 **The knowledge base never shrank.** Nothing expired, nothing was ever retired, and near-duplicates could only be found manually in Settings — so a base that grows by a few hundred entries a month only ever got noisier. This introduces a periodic **cleanup report**, designed to run every 10 days and propose what could go — entries tagged `deprecated`, entries nobody has retrieved in six months, and groups of near-duplicates to consolidate into their newest member. **Nothing is deleted automatically.** The report is a proposal; you approve each item.
 
-> This section covers the groundwork only: the database schema, read tracking, detection and the merge policy. The 10-day scheduler, the HTTP routes and the dashboard UI land in a following change, so nothing below is reachable from the app yet. Two things do change today: agent retrieval and dashboard searches start recording reads, and every entry in an MCP `getKnowledge` response carries two extra fields (`lastReadAt`, `readCount`). Tagging an entry `deprecated` or `keep` has no effect until the cycle can run.
+> Requires a rebuild and a full app restart, plus the MCP config refresh to `@cognistore/mcp-server@2.4.0` — an older MCP server records no reads, which unread detection guards against explicitly (see below).
 
 ### Features
 - **Per-entry read tracking.** New `last_read_at` / `read_count` columns record when an entry is actually retrieved. Tracking is **opt-in per call**: agent retrieval through the MCP `getKnowledge` tool and explicit dashboard searches count; browsing, internal scans and re-embeds deliberately do not, or the signal would say everything is in use. Marking never touches `updated_at` or `version` — a read is not an edit.
-- **Cleanup detection.** Deprecated (tag `deprecated`), unread (180-day window, adjustable when the settings UI ships, with tag `keep` as an escape hatch), and near-duplicate groups above a deliberately high similarity threshold (0.92, since the non-survivors get deleted).
+- **Cleanup detection.** Deprecated (tag `deprecated`), unread (180-day window, adjustable in Settings, with tag `keep` as an escape hatch), and near-duplicate groups above a deliberately high similarity threshold (0.92, since the non-survivors get deleted).
 - **Consolidation merge via a local model.** Duplicate groups are merged by a small Ollama chat model (`llama3.2:3b`, pulled on demand), with a deterministic concatenation fallback that loses no information when Ollama is unavailable. The model only ever proposes a title and body — **it never chooses tags**, which are recomputed server-side.
+- **Review and approve in Settings.** The new *Cleanup Report* section lists what the cycle proposes, grouped by reason. Removals are approved per item or per group; a consolidation shows its members with the survivor starred and **cannot be applied until its merged text has been previewed** — approving unseen text would delete the others on the strength of it. A banner on the home page appears when proposals are waiting.
+- **Configurable.** Interval, unread window, similarity threshold and merge model are all settings. Values are clamped on both read and write, so a hand-edited `settings.json` cannot turn the whole base into deletion candidates.
 
 ### Notes on safety
 - **Unread detection stays silent for its first six months.** The migration starts every existing entry's clock at install time (there is no read history to mine), so the window only becomes meaningful once tracking has existed that long. The report says so explicitly instead of showing a misleading empty bucket.
 - It also suppresses itself if no read has been recorded recently — an outdated MCP server records nothing, and without this guard every heavily-used entry would look abandoned.
 - Approving re-checks the entry still qualifies, so un-tagging or re-reading something after the report was generated is honoured rather than overridden by the stale queue.
-- Each deleted entry is snapshotted into the candidate record *before* deletion, so nothing is lost irrecoverably. The restore path ships with the dashboard UI; until then, recovering means querying the database by hand.
+- Each deleted entry is snapshotted into the candidate record *before* deletion. That snapshot is the only copy of an irreversibly deleted entry, so a terminal candidate can no longer be overwritten by a second click. Recovering from it currently means querying the database by hand — a restore button is not in this release.
+- A candidate is claimed with a conditional update, so two dashboard windows cannot both apply the same one, and a late write cannot land on an already-closed report.
+- A report left open for more than twice the interval closes itself on the next cycle: only one report may be open at a time, so an ignored one would otherwise block the cycle forever.
 
 ### Internal
 - Migration `2.4.0` (in both `migrations/2.4.0.sql` and the embedded copy) adds the read-tracking columns, a `cleanup_meta` table and the `cleanup_reports` / `cleanup_candidates` queue. A unique partial index enforces one open report at a time.
 - Merge policy lives in `packages/core/src/services/cleanup-merge.ts` and is re-applied at apply time, so a hand-made request cannot bypass rules enforced only on the producing side.
 - The Ollama chat client lives in `@cognistore/embeddings` (the product's single Ollama boundary) rather than in the sidecar, reusing the existing model-pull logic.
-- 45 new tests in `cleanup-report.test.ts`, `cleanup-merge.test.ts`, `read-tracking.test.ts` and `migration-parity.test.ts` — the last one locks the two copies of every migration (the `.sql` files the sidecar runs and the strings the bundled MCP server runs) to the same statements, since a drift would give one machine two different schemas under one `schema_version`.
+- 66 new tests across `cleanup-report`, `cleanup-merge`, `cleanup-settings`, `cleanup-routes`, `read-tracking` and `migration-parity`. The parity test locks the two copies of every migration (the `.sql` files the sidecar runs and the strings the bundled MCP server runs) to the same statements, since a drift would give one machine two different schemas under one `schema_version`.
+- The sidecar's install directory is now overridable with `COGNISTORE_HOME`. `SQLITE_PATH` only ever moved the database — every config path still resolved from the home directory, so any test hitting a route that persists a setting rewrote the developer's own `~/.cognistore/settings.json`. Production never sets the override.
+- Uninstall now removes Ollama models with an argument array instead of a shell string, and covers the merge model as well as the embedding one.
 
 ## v2.3.6
 

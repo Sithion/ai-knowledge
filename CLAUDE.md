@@ -23,6 +23,7 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 | Install Ollama via brew/curl | Uninstall Ollama via brew uninstall or remove binary |
 | Start `ollama serve` | Stop `ollama serve` via pkill |
 | Pull embedding model via Ollama API | Remove model via `ollama rm` |
+| Pull cleanup LLM model via Ollama API (first consolidation preview) | Remove via `ollama rm <cleanupLlmModel>` — name read from `settings.json` **before** the directory is removed, re-validated, `llama3.2:3b` fallback; skipped when never pulled |
 | Inject `~/.claude/CLAUDE.md` markers | Remove markers via ConfigManager |
 | Inject `~/.github/copilot-instructions.md` markers | Remove markers via ConfigManager |
 | Inject `~/.copilot/copilot-instructions.md` markers | Remove markers via ConfigManager |

@@ -107,6 +107,10 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
       env: {
         ...process.env,
         SQLITE_PATH: join(tmpRoot, 'knowledge.db'),
+        // SQLITE_PATH only moves the DATABASE. Config paths still resolve from
+        // homedir(), so without this any route that persists a setting rewrites
+        // the developer's real ~/.cognistore on every test run.
+        COGNISTORE_HOME: join(tmpRoot, 'cognistore-home'),
         OLLAMA_HOST: `http://127.0.0.1:${mock.port}`,
         OLLAMA_MODEL: model,
         DASHBOARD_PORT: String(port),

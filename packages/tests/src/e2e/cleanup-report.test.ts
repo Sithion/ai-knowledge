@@ -107,7 +107,7 @@ test.describe('@e2e cleanup report — unread gates', () => {
     ctx.sqlite.prepare("UPDATE cleanup_meta SET value = ? WHERE key = 'read_tracking_since'").run(ago(5));
 
     const { report } = await ctx.service.generateCleanupReport({ unreadDays: 180 });
-    const stats = JSON.parse(report.stats);
+    const stats = report.stats;
 
     expect(stats.unreadGate).toContain('activates');
     expect(stats.counts.unread).toBe(0);
@@ -123,7 +123,7 @@ test.describe('@e2e cleanup report — unread gates', () => {
     // like this, and every entry would falsely appear abandoned.
 
     const { report } = await ctx.service.generateCleanupReport({ unreadDays: 180 });
-    const stats = JSON.parse(report.stats);
+    const stats = report.stats;
 
     expect(stats.unreadGate).toBeTruthy();
     expect(stats.counts.unread).toBe(0);
@@ -191,7 +191,7 @@ test.describe('@e2e cleanup report — lifecycle', () => {
     await mk({ title: 'Dep two', tags: ['deprecated'] });
 
     const { report } = await ctx.service.generateCleanupReport({});
-    expect(JSON.parse(report.stats).counts).toMatchObject({ deprecated: 2, removableEntries: 2 });
+    expect(report.stats.counts).toMatchObject({ deprecated: 2, removableEntries: 2 });
 
     const [candidate] = ctx.repository.listCleanupCandidates(report.id);
     await ctx.service.applyRemovalCandidate(candidate.id);

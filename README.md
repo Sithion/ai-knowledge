@@ -33,6 +33,7 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 - **MCP integration** — Works as a plugin for Claude Code, GitHub Copilot, and OpenCode out of the box. OpenCode also gets a plan enforcement plugin for lifecycle tracking.
 - **Zero configuration** — The setup wizard handles everything: Ollama, database, model downloads, MCP config injection, AI skills installation, and system knowledge seeding.
 - **System knowledge** — Mandatory protocol entries (type `system`) are seeded on setup, injected into agent sessions via hooks, hidden from the dashboard, and protected from deletion. Agents always operate with the correct protocol without manual configuration.
+- **Knowledge cleanup cycle** — Every 10 days (at least — the cycle only advances while the app is running) the app proposes what could be removed: entries tagged `deprecated`, entries nobody has retrieved in six months, and near-duplicate groups to merge into their newest member. Merges are drafted by a small local model via Ollama, with a deterministic fallback. **Nothing is deleted automatically** — you approve each item in Settings.
 - **Plans** — Create and manage implementation plans with task lists, priority tracking, relations to knowledge entries, and archive completed plans from the dashboard.
 - **Provenance tracking** — Every entry and plan records which **platform** (Claude Code / Copilot / OpenCode, auto-detected) and which **agent** (the calling agent's own name) created it, surfaced as dashboard charts and knowledge-list filters.
 - **Desktop dashboard** — Browse, search, filter, and manage your knowledge base and plans through the built-in UI with stats and charts. All destructive actions use modal confirmations.
@@ -149,6 +150,19 @@ Entries are categorized by type for structured retrieval:
 | `gotcha` | Unexpected behaviors, non-obvious pitfalls |
 | `system` | Mandatory protocol entries seeded on setup (hidden from dashboard, undeletable) |
 
+### Tag Conventions
+
+Two tags are read by the cleanup cycle. Both are ordinary tags — lowercase, set
+like any other — but they change what the cycle proposes:
+
+| Tag | Effect |
+|-----|--------|
+| `deprecated` | Marks knowledge as superseded. The next cleanup report proposes deleting it. Prefer this over deleting an entry outright: the cycle gives you a review step. |
+| `keep` | Excludes an entry from unread detection, however long it goes unretrieved. Use it for reference material that is rarely read but must never be proposed for removal. |
+
+Neither tag deletes anything on its own — every removal is proposed in the
+report and applied only when you approve it.
+
 ### AI Skills
 
 The setup wizard installs skills with lifecycle hooks that enforce knowledge base usage:
@@ -255,6 +269,7 @@ The desktop app includes a full dashboard with seven pages:
 - Bulk select mode for multi-delete with floating action bar
 - Add and edit entries via modal form, with related plans display
 - Auto-refresh polling every 5 seconds for cross-process change detection
+- A banner appears when a cleanup report has proposals waiting, linking to Settings.
 
 ### Plans
 
@@ -316,6 +331,7 @@ cognistore/
     ├── check-release-version.mjs # Assert all release-driving versions agree
     └── security-check.sh         # Local secret/security scan
 ```
+- **Cleanup Report** — the periodic proposal of what could be removed: entries tagged `deprecated`, entries unread beyond the configured window, and near-duplicate groups to consolidate into their newest member. Each item is approved individually; consolidations must be previewed before they can be applied. The interval, unread window, similarity threshold and merge model are configurable here.
 
 ### Tech Stack
 

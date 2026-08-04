@@ -10,6 +10,7 @@ export {
 } from './db/index.js';
 export { KnowledgeRepository } from './repositories/index.js';
 export { KnowledgeService, type EmbeddingProvider } from './services/index.js';
+export type { CleanupReport, CleanupCandidate } from './services/knowledge.service.js';
 
 // Cleanup cycle: pure merge policy. Exported so the sidecar's LLM orchestration
 // and the apply path share one implementation of the merge invariants.
