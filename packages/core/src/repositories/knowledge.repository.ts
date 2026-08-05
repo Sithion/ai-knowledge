@@ -763,12 +763,12 @@ export class KnowledgeRepository {
 
   // ─── Plans (separate table) ──────────────────────────────────
 
-  createPlan(input: { title: string; content: string; tags: string[]; scope: string; source: string; status?: string; planFilePath?: string | null; agentId?: string | null; platform?: string | null; embedding: number[] }): any {
+  createPlan(input: { title: string; content: string; tags: string[]; scope: string; source: string; status?: string; planFilePath?: string | null; agentId?: string | null; platform?: string | null; parentPlanId?: string | null; rootPlanId?: string | null; embedding: number[] }): any {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     this.sqlite.prepare(
-      'INSERT INTO plans (id, title, content, tags, scope, status, source, plan_file_path, agent_id, platform, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(id, input.title, input.content, JSON.stringify(input.tags), input.scope, input.status ?? 'draft', input.source, input.planFilePath ?? null, input.agentId ?? null, input.platform ?? null, now, now);
+      'INSERT INTO plans (id, title, content, tags, scope, status, source, plan_file_path, agent_id, platform, parent_plan_id, root_plan_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(id, input.title, input.content, JSON.stringify(input.tags), input.scope, input.status ?? 'draft', input.source, input.planFilePath ?? null, input.agentId ?? null, input.platform ?? null, input.parentPlanId ?? null, input.rootPlanId ?? null, now, now);
 
     // Insert embedding into plans_embeddings
     try {
@@ -802,11 +802,111 @@ export class KnowledgeRepository {
     return this.getPlanById(id);
   }
 
-  deletePlan(id: string): boolean {
+  /**
+   * Rollback-only: deletes the row WITHOUT repairing lineage around it. Safe for
+   * a plan that cannot have children yet (createPlan's task-creation rollback).
+   * Every user-facing delete goes through deletePlanWithLineageRepair instead —
+   * there is no foreign key, so a stray delete here strands root_plan_id pointers.
+   */
+  deletePlanRow(id: string): boolean {
     // Cascade deletes plan_relations and plan_tasks via FK
     const result = this.sqlite.prepare('DELETE FROM plans WHERE id = ?').run(id);
     try { deletePlanEmbedding(this.sqlite, id); } catch { /* silent */ }
     return result.changes > 0;
+  }
+
+  // ─── Plan lineage (parent/root chains) ──────────────────────
+  //
+  // Raw queries only; the traversal policy lives in services/plan-lineage.ts.
+  // These rows are the narrow projection a chain exposes — never plan content.
+
+  /**
+   * Every plan in the chain rooted at `rootId`, including the root itself.
+   * Bounded: a runaway chain is truncated rather than materialized whole.
+   */
+  getPlanChainRows(rootId: string, limit: number): { id: string; title: string; status: string; scope: string; parent_plan_id: string | null; root_plan_id: string | null; created_at: string }[] {
+    return this.sqlite.prepare(
+      `SELECT id, title, status, scope, parent_plan_id, root_plan_id, created_at
+         FROM plans
+        WHERE id = ? OR root_plan_id = ?
+        ORDER BY created_at ASC
+        LIMIT ?`
+    ).all(rootId, rootId, limit) as any[];
+  }
+
+  /** Direct children of a plan. Used by the delete-repair path. */
+  getChildPlans(parentId: string): { id: string; parent_plan_id: string | null; root_plan_id: string | null }[] {
+    return this.sqlite.prepare(
+      'SELECT id, parent_plan_id, root_plan_id FROM plans WHERE parent_plan_id = ?'
+    ).all(parentId) as any[];
+  }
+
+  /**
+   * Write lineage columns directly. Separate from updatePlan so a cascade over
+   * descendants does not bump their updated_at — a re-parent upstream is not an
+   * edit of the plans downstream, and listPlans orders by time.
+   */
+  setPlanLineage(id: string, parentPlanId: string | null, rootPlanId: string | null): void {
+    this.sqlite.prepare('UPDATE plans SET parent_plan_id = ?, root_plan_id = ? WHERE id = ?')
+      .run(parentPlanId, rootPlanId, id);
+  }
+
+  /** Point a whole set of plans at a new root in one statement. */
+  setSubtreeRoot(ids: string[], rootPlanId: string | null): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    this.sqlite.prepare(`UPDATE plans SET root_plan_id = ? WHERE id IN (${placeholders})`)
+      .run(rootPlanId, ...ids);
+  }
+
+  /**
+   * Re-parent a plan and move its subtree onto the new root atomically. The same
+   * class of invariant as deletePlanWithLineageRepair: a failure between the two
+   * writes leaves the plan in one chain and its descendants caching another.
+   * `verify` runs inside the transaction so a concurrent writer cannot slip a
+   * cycle in between the check and the write.
+   */
+  relinkPlanWithSubtree(
+    id: string,
+    parentPlanId: string | null,
+    rootPlanId: string | null,
+    descendantIds: string[],
+    verify: () => void
+  ): void {
+    this.sqlite.transaction(() => {
+      verify();
+      this.setPlanLineage(id, parentPlanId, rootPlanId);
+      if (descendantIds.length) this.setSubtreeRoot(descendantIds, rootPlanId ?? id);
+    })();
+  }
+
+  /**
+   * Delete a plan and repair the lineage around it atomically: children are
+   * re-parented to the deleted plan's parent, and `rootRewrites` re-homes the
+   * subtrees that lose their root. A partial failure would leave root_plan_id
+   * values pointing at a row that no longer exists, so it is one transaction.
+   * Only the target plan is ever deleted.
+   */
+  deletePlanWithLineageRepair(
+    id: string,
+    childParentId: string | null,
+    childRootId: string | null,
+    rootRewrites: { ids: string[]; rootPlanId: string | null }[]
+  ): boolean {
+    const run = this.sqlite.transaction(() => {
+      for (const child of this.getChildPlans(id)) {
+        this.setPlanLineage(child.id, childParentId, childRootId);
+      }
+      for (const rewrite of rootRewrites) {
+        this.setSubtreeRoot(rewrite.ids, rewrite.rootPlanId);
+      }
+      return this.sqlite.prepare('DELETE FROM plans WHERE id = ?').run(id).changes > 0;
+    });
+    const deleted = run();
+    if (deleted) {
+      try { deletePlanEmbedding(this.sqlite, id); } catch { /* silent */ }
+    }
+    return deleted;
   }
 
   listAllPlans(): any[] {

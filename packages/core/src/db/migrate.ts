@@ -222,6 +222,17 @@ CREATE TABLE IF NOT EXISTS cleanup_candidates (
 
 CREATE INDEX IF NOT EXISTS idx_cleanup_candidates_report ON cleanup_candidates(report_id, status);
 `,
+  '2.4.1': `
+-- Lineage convention: a ROOT plan has BOTH columns NULL.
+-- root_plan_id is denormalized so a whole chain is one indexed lookup.
+-- No foreign key: ALTER TABLE cannot add one, so parents may dangle and
+-- cycles may exist in data. Every traversal is bounded accordingly.
+ALTER TABLE plans ADD COLUMN parent_plan_id TEXT;
+ALTER TABLE plans ADD COLUMN root_plan_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_plans_parent_plan_id ON plans(parent_plan_id);
+CREATE INDEX IF NOT EXISTS idx_plans_root_plan_id ON plans(root_plan_id);
+`,
 };
 
 /**

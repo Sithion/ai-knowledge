@@ -31,6 +31,53 @@ cog_field() {
     | sed -E 's/.*:[[:space:]]*"(.*)"$/\1/' 2>/dev/null || true
 }
 
+# cog_resp_field <key> -> value of "key":"string" INSIDE the tool response.
+#
+# An MCP result arrives as tool_response.content[].text — a JSON *string*, so its
+# quotes are backslash-escaped and cog_field (which matches bare quotes) can never
+# see a single field of it. Verified: cog_field id returns empty for every real
+# createPlan payload, which is why the -active-plan marker used to be written only
+# by the updatePlan hook. This unescapes first, and starts from the leftmost
+# "tool_response" so a key echoed back in tool_input cannot shadow the real one.
+cog_resp_field() {
+  printf '%s' "$COG_INPUT" \
+    | grep -o '"tool_response".*' \
+    | sed -e 's/\\"/"/g' \
+    | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+    | head -1 \
+    | sed -E 's/.*:[[:space:]]*"(.*)"$/\1/' 2>/dev/null || true
+}
+
+# cog_sanitize_id <value> -> the value if it looks like a plan UUID, else empty.
+# Plan ids extracted from a payload end up in marker files and in text injected
+# back into the agent's context, so anything not UUID-shaped is dropped whole.
+cog_sanitize_id() {
+  printf '%s' "$1" \
+    | tr -cd 'a-zA-Z0-9-' \
+    | cut -c1-64 \
+    | grep -aiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 2>/dev/null || true
+}
+
+# cog_read_marker <path> -> sanitized id stored in a marker file, or empty.
+# Refuses symlinks: these live in a shared /tmp and a planted link would both
+# redirect our writes and feed attacker text into the agent's instructions.
+cog_read_marker() {
+  [ -f "$1" ] || return 0
+  [ -L "$1" ] && return 0
+  cog_sanitize_id "$(head -c 200 "$1" 2>/dev/null || true)"
+}
+
+# cog_write_marker <path> <value> — write only over a regular file (never a symlink).
+cog_write_marker() {
+  [ -L "$1" ] && return 0
+  printf '%s' "$2" > "$1" 2>/dev/null || true
+}
+
+# cog_json_escape <text> -> text safe to interpolate into a JSON string literal.
+cog_json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' 2>/dev/null || true
+}
+
 # --- session-keyed markers --------------------------------------------------
 # Markers are keyed by session_id so concurrent sessions don't race on shared
 # /tmp files. Falls back to "default" when the id is unavailable.

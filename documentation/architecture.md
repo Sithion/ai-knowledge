@@ -23,7 +23,7 @@ The system consists of three runtime subsystems:
 │  @cognistore/mcp-server│    │  Tauri Desktop App               │
 │  (npx, standalone)       │    │  ┌────────────┐ ┌──────────────┐ │
 │                          │    │  │ React UI   │ │ Fastify      │ │
-│  14 tools (knowledge +   │    │  │ (WebView)  │→│ sidecar      │ │
+│  18 tools (knowledge +   │    │  │ (WebView)  │→│ sidecar      │ │
 │  plans + tasks + health) │    │  └────────────┘ └──────┬───────┘ │
 │                          │    │                        │         │
 │                          │    └────────────────────────┼─────────┘
@@ -174,7 +174,8 @@ Plans are stored in their own `plans` table with a separate `plans_embeddings` v
 - Reactivation: if a task is updated on a `completed` plan, plan reactivates to `active`
 
 ```
-Write: createPlan(title, content, tags, scope, source, tasks?, relatedKnowledgeIds?)
+Write: createPlan(title, content, tags, scope, source, tasks?, relatedKnowledgeIds?, parentPlanId?)
+  0. Resolve parentPlanId → derive root_plan_id (parent's root, or the parent itself)
   1. Validate input → INSERT into plans table
   2. If tasks provided → INSERT each into plan_tasks
   3. If relatedKnowledgeIds → INSERT into plan_relations (type=input)
@@ -189,6 +190,18 @@ Batch: addKnowledge (array) / updatePlanTasks
   - addKnowledge: accepts a single entry or an array of entries (each with optional planId)
   - updatePlanTasks: update multiple tasks at once (batch status changes)
 ```
+
+**Plan lineage (chains):** a plan created without `parentPlanId` is the ORIGINAL of an effort and stores `parent_plan_id = NULL, root_plan_id = NULL` ("NULL means I am the root"). Every follow-up plan — including one created by a subagent — passes `parentPlanId`, and the service derives and caches `root_plan_id` so a whole chain is one indexed lookup (`WHERE root_plan_id = ?`). `getPlanChain` reads it from any member.
+
+*Invariants every consumer must honor.* There is no foreign key (SQLite cannot add one via `ALTER TABLE`) and several paths write these columns — the HTTP `PUT` route, import, concurrent MCP server processes — so: (1) `parent_plan_id` may dangle, (2) cycles may exist in data, (3) `root_plan_id` may drift, (4) chains may be truncated by the caps. `better-sqlite3` is synchronous, so one unbounded walk would hang the sidecar and every MCP server sharing the database. All traversal therefore lives in one module (`packages/core/src/services/plan-lineage.ts`) and is bounded by a visited set plus `PLAN_CHAIN_MAX_DEPTH` / `PLAN_CHAIN_MAX_ENTRIES`; write-time validation is a convenience, never the guard. *Rejected alternative:* dropping `root_plan_id` and deriving chains with a recursive CTE — cheaper to maintain, but it gives up the indexed chain read used by `listPlans` enrichment, and a column cannot be removed from SQLite later without a table rebuild.
+
+*Validation choke point:* lineage is validated in `KnowledgeService`, not at the tool layer — `sdk.updatePlan` runs no schema, and the MCP server, SDK and dashboard `PUT` route all converge on the service.
+
+*Cross-scope chains are allowed:* dedup is scope-filtered but a chain is not, so a subagent working in another scope can extend the chain. Each chain entry carries its own `scope` so the crossing is visible.
+
+**Protocol-text debt:** the createPlan protocol is spelled out in three independently maintained places — `templates/configs/_base-instructions.md` (compiled to three platform files), `SYSTEM_KNOWLEDGE_CONTENT` in `apps/dashboard/server/index.ts`, and the three `cognistore-plan/SKILL.md` files — plus the hook message strings. Every protocol change pays this tax, and the tool-count strings in the docs have already drifted apart once. Worth generating the seeded text from the SoT at build time; not done in the lineage change.
+
+**Enforcement is advisory outside Claude Code:** only the claude-code hooks can suggest `parentPlanId` (from session-keyed `/tmp` markers) and inject the effort id when a subagent is dispatched. Copilot and OpenCode carry the rule as instruction text only. The system's resilience to unlinked or runaway plans rests on dedup plus the chain caps, not on the text being obeyed.
 
 ### Knowledge Retention & Cleanup (groundwork)
 
@@ -324,6 +337,9 @@ skips the migration it actually needed. Consequences to respect when adding a mi
 | Merge policy placement | `@cognistore/core`, pure | Apply happens over HTTP; rules enforced only in the producer are bypassable. Tags are derived at apply time so a client cannot inject the `deprecated`/`keep` control tags |
 | Read tracking | Opt-in per call, two call sites | A retention signal, not an audit log. If browsing and internal scans counted, nothing would ever be unread |
 | Cleanup queue storage | Raw prepared statements | Queue-shaped tables with JSON payloads, mirroring `operations_daily`; `knowledge_entries` stays on Drizzle |
+| Plan lineage shape | `parent_plan_id` + denormalized `root_plan_id`, no foreign key | `ALTER TABLE` cannot add an FK in SQLite, so the graph is unenforced by definition. The cached root buys a one-index chain read; the cost is that the service maintains it on create, re-parent, delete and import, and that it may drift (readers fall back to a bounded parent walk). Rejected: recursive CTE only — cheaper to maintain but gives up the indexed read, and an unused column cannot be dropped later without a table rebuild |
+| Lineage traversal placement | One module, `packages/core/src/services/plan-lineage.ts`, always bounded | `better-sqlite3` is synchronous: one unbounded walk over a cyclic chain hangs the sidecar and every MCP server on the same file. Caps (`PLAN_CHAIN_MAX_DEPTH`, `PLAN_CHAIN_MAX_ENTRIES`) are the guard; write-time validation is only a convenience |
+| Lineage validation placement | `KnowledgeService` | MCP server, SDK and the dashboard `PUT` route all converge there and only the route runs a Zod schema — the service is the single choke point they share |
 
 ## Directory Structure
 
@@ -364,7 +380,8 @@ cognistore/
 │   │       ├── db/migrations/  # Versioned SQL migrations (0.8.0.sql, 0.9.0.sql)
 │   │       ├── repositories/   # KnowledgeRepository (CRUD + vector search + cleanup queue)
 │   │       └── services/       # KnowledgeService (embedding + persistence orchestration)
-│   │           └── cleanup-merge.ts  # Pure, LLM-free merge policy (shared by producer + apply path)
+│   │           ├── cleanup-merge.ts  # Pure, LLM-free merge policy (shared by producer + apply path)
+│   │           └── plan-lineage.ts   # Bounded plan-chain traversal (visited set + depth/entry caps)
 │   ├── embeddings/             # Ollama client (the product's single Ollama boundary)
 │   │   ├── src/client.ts       # OllamaEmbeddingClient (embed, ensureModel, healthCheck)
 │   │   └── src/chat.ts         # OllamaChatClient (JSON-constrained chat completions)

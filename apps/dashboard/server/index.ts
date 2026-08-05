@@ -245,10 +245,12 @@ Save any returned entry IDs for step 2.
 ### 2. Create a plan (for tasks with 2+ steps)
 createPlan({
   title, content, tags, scope, source,
+  parentPlanId: "<id of the plan this work continues, if any>",
   tasks: [{ description: "Step 1" }, { description: "Step 2" }, ...],
   relatedKnowledgeIds: ["<ids-from-step-1>"]
 })
 Save the returned planId — you need it in step 4.
+Plan chains: a plan created WITHOUT parentPlanId is the ORIGINAL of a new effort. Every follow-up plan for the same effort must pass parentPlanId so the chain stays linked and the original stays identifiable. Call getPlanChain(planId) to see the whole chain.
 Dedup is automatic: active plan in same scope gets tasks added, similar drafts get updated.
 Plan activates automatically when you start the first task.
 Plan completes automatically when all tasks are done.
@@ -271,7 +273,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 ### Rules
 - Follow this workflow on every task — steps 1 and 4 always apply, even for simple tasks
 - For plan-then-execute workflows (two sessions): the getKnowledge response will show your existing active plan
-- Never call createPlan() from subagents — only the main agent
+- Subagents that own an implementation slice MAY call createPlan(), but MUST pass parentPlanId = the main effort's plan id (the main agent includes that id in the subagent's prompt). Review-only and read-only subagents must not create plans
 - All knowledge entries must be in English
 - All CogniStore tools are pre-approved — call them directly without hesitation`;
 
@@ -1911,12 +1913,15 @@ Pass an array to addKnowledge to create multiple entries at once.
     });
   });
 
-  app.post<{ Body: { title: string; content: string; tags?: string[]; scope?: string; source?: string; planFilePath?: string | null; tasks?: { description: string; priority?: string }[] } }>('/api/plans', async (request, reply) => {
+  // This route destructures an explicit field list, so a new CreatePlanInput field
+  // reaches the SDK only if it is added here too — the shared zod schema alone
+  // changes nothing on this path.
+  app.post<{ Body: { title: string; content: string; tags?: string[]; scope?: string; source?: string; planFilePath?: string | null; parentPlanId?: string | null; tasks?: { description: string; priority?: string }[] } }>('/api/plans', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
     try {
-      const { title, content, tags = [], scope = 'global', source = 'dashboard', planFilePath, tasks = [] } = request.body;
-      const plan = await sdk.createPlan({ title, content, tags, scope, source, planFilePath, tasks });
+      const { title, content, tags = [], scope = 'global', source = 'dashboard', planFilePath, parentPlanId, tasks = [] } = request.body;
+      const plan = await sdk.createPlan({ title, content, tags, scope, source, planFilePath, parentPlanId, tasks });
       reply.code(201);
       return plan;
     } catch (error) {
@@ -2048,6 +2053,15 @@ Pass an array to addKnowledge to create multiple entries at once.
     return sdk.getPlanRelations(request.params.id);
   });
 
+  // Lineage chain: accepts any member and always answers from the chain's root.
+  app.get<{ Params: { id: string } }>('/api/plans/:id/chain', async (request, reply) => {
+    const err = ensureReady(reply);
+    if (err) return err;
+    const result = sdk.getPlanChain(request.params.id);
+    if (!result) { return sendError(reply, 404, 'Not found'); }
+    return result;
+  });
+
   app.get<{ Params: { id: string } }>('/api/knowledge/:id/plans', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
@@ -2070,9 +2084,15 @@ Pass an array to addKnowledge to create multiple entries at once.
       reply.code(400);
       return { error: parsed.error.issues[0]?.message ?? 'Invalid plan update' };
     }
-    const result = sdk.updatePlan(request.params.id, parsed.data);
-    if (!result) { return sendError(reply, 404, 'Not found'); }
-    return result;
+    try {
+      const result = sdk.updatePlan(request.params.id, parsed.data);
+      if (!result) { return sendError(reply, 404, 'Not found'); }
+      return result;
+    } catch (error) {
+      // Lineage rejections (self-parenting, cycles, missing parent) land here.
+      reply.code(400);
+      return { error: (error as Error).message };
+    }
   });
 
   app.delete<{ Params: { id: string } }>('/api/plans/:id', async (request, reply) => {

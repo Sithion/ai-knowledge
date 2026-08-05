@@ -145,6 +145,7 @@ const resources = {
       plans: {
         title: 'Plans', empty: 'No plans yet.', all: 'All', allScopes: 'All scopes', draft: 'Draft', active: 'Active', completed: 'Completed', archived: 'Archived',
         input: 'Consulted', output: 'Produced', noRelations: 'No related knowledge entries.', noPlans: 'No related plans.',
+        chain: { title: 'Plan Chain', original: 'Original', current: 'current' },
         originPlan: 'Origin Plan', consultedBy: 'Plans That Consulted',
         tasks: 'Tasks', activePlans: 'Active Plans', noTasks: 'No tasks yet.', progress: 'completed',
         newPlan: 'New Plan', planTitle: 'Title', planTitlePlaceholder: 'What is this plan about?',
@@ -372,6 +373,7 @@ const resources = {
       plans: {
         title: 'Planes', empty: 'Aún no hay planes.', all: 'Todos', allScopes: 'Todos los ámbitos', draft: 'Borrador', active: 'Activo', completed: 'Completado', archived: 'Archivado',
         input: 'Consultados', output: 'Producidos', noRelations: 'Sin entradas relacionadas.', noPlans: 'Sin planes relacionados.',
+        chain: { title: 'Cadena de planes', original: 'Original', current: 'actual' },
         originPlan: 'Plan de Origen', consultedBy: 'Planes que Consultaron',
         tasks: 'Tareas', activePlans: 'Planes Activos', noTasks: 'Sin tareas aún.', progress: 'completadas',
         newPlan: 'Nuevo Plan', planTitle: 'Título', planTitlePlaceholder: '¿De qué trata este plan?',
@@ -599,6 +601,7 @@ const resources = {
       plans: {
         title: 'Planos', empty: 'Nenhum plano ainda.', all: 'Todos', allScopes: 'Todos os escopos', draft: 'Rascunho', active: 'Ativo', completed: 'Concluído', archived: 'Arquivado',
         input: 'Consultados', output: 'Produzidos', noRelations: 'Sem entradas relacionadas.', noPlans: 'Sem planos relacionados.',
+        chain: { title: 'Cadeia de planos', original: 'Original', current: 'atual' },
         originPlan: 'Plano de Origem', consultedBy: 'Planos que Consultaram',
         tasks: 'Tarefas', activePlans: 'Planos Ativos', noTasks: 'Sem tarefas ainda.', progress: 'concluídas',
         newPlan: 'Novo Plano', planTitle: 'Título', planTitlePlaceholder: 'Sobre o que é este plano?',

@@ -11,6 +11,11 @@ export const DEFAULT_SEARCH_LIMIT = 10;
 export const PLAN_DEDUP_THRESHOLD = 0.7;          // bar to update an existing DRAFT plan
 export const PLAN_ACTIVE_MERGE_THRESHOLD = 0.8;   // higher bar to append into an ACTIVE plan
 
+// Plan lineage: parent/root chains have no foreign key, so cycles can exist in
+// data. Every traversal is bounded by these instead of trusting write-time checks.
+export const PLAN_CHAIN_MAX_DEPTH = 64;           // ancestor walk / depth computation cap
+export const PLAN_CHAIN_MAX_ENTRIES = 500;        // max plans returned for one chain
+
 // Plan-augmented knowledge retrieval: also surface knowledge linked to plans whose
 // embedding is similar to the query (input = consulted, output = produced).
 export const PLAN_CONTEXT_THRESHOLD = 0.6;        // similar-plan match bar for retrieval

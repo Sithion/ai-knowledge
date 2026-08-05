@@ -22,6 +22,9 @@ import {
   PLAN_CONTEXT_EXTRA,
 } from '@cognistore/shared';
 import { computeMergedTags, validateMergeDraft } from './cleanup-merge.js';
+import { walkAncestors, deriveRoot, isDescendant, buildChain, collectDescendants, recomputeSubtreeRoot, type ChainRow } from './plan-lineage.js';
+import { PLAN_CHAIN_MAX_ENTRIES } from '@cognistore/shared';
+import type { PlanChain } from '@cognistore/shared';
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
@@ -1018,9 +1021,30 @@ export class KnowledgeService {
 
   // ─── Plans (separate entity) ────────────────────────────────
 
-  async createPlan(input: CreatePlanInput & { tasks?: { description: string; priority?: string }[]; skipDedup?: boolean }): Promise<Plan & { deduplicated?: boolean; deduplicatedAction?: string; dedupSkipped?: boolean; nearestSimilarity?: number; nearestPlanId?: string; hint?: string }> {
+  async createPlan(input: CreatePlanInput & { tasks?: { description: string; priority?: string }[]; skipDedup?: boolean }): Promise<Plan & { deduplicated?: boolean; deduplicatedAction?: string; dedupSkipped?: boolean; nearestSimilarity?: number; nearestPlanId?: string; hint?: string; lineageWarning?: string }> {
     const { tasks, skipDedup, ...planInput } = input;
     const embedding = await this.embeddingProvider.embed(`${input.title} ${input.content}`);
+
+    // ─── Lineage: resolve the parent before anything else. ───
+    // A plan created without a parent is the ORIGINAL of a new chain. An
+    // unresolvable parent never fails the call — an agent mid-effort would lose
+    // its plan over a stale id — it creates a root and says so in the response.
+    let parentPlanId: string | null = planInput.parentPlanId ?? null;
+    let rootPlanId: string | null = null;
+    let lineageWarning: string | undefined;
+    if (parentPlanId) {
+      // One policy, one place: anything that does not resolve to a real plan —
+      // a malformed id an agent invented, or one that has since been deleted —
+      // downgrades to a root with a warning. Creating a plan must never fail
+      // over its lineage; an agent mid-effort would lose the whole plan.
+      const derivedRoot = deriveRoot(parentPlanId, this.repository);
+      if (derivedRoot === null) {
+        lineageWarning = `parentPlanId "${parentPlanId}" does not exist — this plan was created as a new ORIGINAL (root) instead.`;
+        parentPlanId = null;
+      } else {
+        rootPlanId = derivedRoot;
+      }
+    }
 
     // ─── Housekeeping: archive stale drafts before dedup (throttled to 1h) ───
     const now = Date.now();
@@ -1053,8 +1077,14 @@ export class KnowledgeService {
         if (input.planFilePath) {
           activeRow = this.repository.updatePlan(existingRow.id, { planFilePath: input.planFilePath }) ?? existingRow;
         }
+        const linkNote = this.linkMergedPlan(existingRow.id, parentPlanId);
+        // Re-read whenever a parent was requested: linkMergedPlan writes the
+        // lineage columns in place, so the row captured above is stale exactly
+        // when the link SUCCEEDED (linkNote undefined). The draft branch below
+        // re-reads unconditionally for the same reason.
+        if (parentPlanId) { activeRow = this.repository.getPlanById(existingRow.id) ?? activeRow; }
         const plan = this.toPlan(activeRow);
-        return { ...plan, deduplicated: true, deduplicatedAction: 'tasks_added_to_active_plan' };
+        return { ...plan, deduplicated: true, deduplicatedAction: 'tasks_added_to_active_plan', lineageWarning: linkNote ?? lineageWarning };
       } else if (!isActive) {
         // Draft plan: update content and replace tasks
         this.repository.updatePlan(existingRow.id, {
@@ -1073,15 +1103,16 @@ export class KnowledgeService {
         try {
           this.repository.updatePlanEmbeddingById(existingRow.id, embedding);
         } catch { /* silent */ }
+        const linkNote = this.linkMergedPlan(existingRow.id, parentPlanId);
         const updated = this.repository.getPlanById(existingRow.id);
         const plan = this.toPlan(updated);
-        return { ...plan, deduplicated: true, deduplicatedAction: 'draft_plan_updated' };
+        return { ...plan, deduplicated: true, deduplicatedAction: 'draft_plan_updated', lineageWarning: linkNote ?? lineageWarning };
       }
       // Active but below the active-merge bar → keep separate; create a new plan.
     }
 
     // No (close enough) duplicate — create normally.
-    const row = this.repository.createPlan({ ...planInput, embedding });
+    const row = this.repository.createPlan({ ...planInput, parentPlanId, rootPlanId, embedding });
     const plan = this.toPlan(row);
 
     if (tasks && tasks.length > 0) {
@@ -1090,7 +1121,7 @@ export class KnowledgeService {
           this.repository.createPlanTask({ planId: plan.id, description: tasks[i].description, priority: tasks[i].priority, position: i });
         }
       } catch (err) {
-        this.repository.deletePlan(plan.id);
+        this.repository.deletePlanRow(plan.id);
         throw err;
       }
     }
@@ -1104,10 +1135,46 @@ export class KnowledgeService {
         nearestSimilarity: nearest.similarity,
         nearestPlanId: nearest.id,
         hint: `A related ${nearest.status} plan (${pct}% similar) exists in this scope but was different enough to keep as a separate plan. If this is actually the same effort, add to it via updatePlan("${nearest.id}", ...) instead.`,
+        lineageWarning,
       };
     }
 
-    return plan;
+    return { ...plan, lineageWarning };
+  }
+
+  /**
+   * Dedup merged a new plan into an existing one, and the caller named a parent.
+   * Adopt it only when doing so cannot close a cycle: the merge target must not
+   * already have a parent, must not BE the parent, and the parent must not live
+   * in the target's own subtree (dedup matches on similarity and happily picks a
+   * descendant of the plan you were pointing at).
+   * Returns a note when the link was skipped, so the agent is not left believing
+   * a chain exists that does not.
+   */
+  private linkMergedPlan(targetId: string, parentPlanId: string | null): string | undefined {
+    if (!parentPlanId) return undefined;
+    const target = this.repository.getPlanById(targetId);
+    if (!target) return undefined;
+
+    if (targetId === parentPlanId) {
+      return `Merged into plan "${targetId}", which is the parentPlanId you passed — no lineage link was added.`;
+    }
+    if (target.parent_plan_id) {
+      return target.parent_plan_id === parentPlanId
+        ? undefined
+        : `Merged into plan "${targetId}", which already belongs to another chain (parent "${target.parent_plan_id}") — its lineage was left unchanged.`;
+    }
+    if (isDescendant(parentPlanId, targetId, this.repository)) {
+      return `Merged into plan "${targetId}", which is an ancestor of the parentPlanId you passed — linking would close a cycle, so lineage was left unchanged.`;
+    }
+
+    const rootPlanId = deriveRoot(parentPlanId, this.repository);
+    if (rootPlanId === null) return undefined;
+    this.repository.setPlanLineage(targetId, parentPlanId, rootPlanId);
+    // Everything already hanging off the merge target moves to the new chain.
+    const descendants = collectDescendants(targetId, this.repository);
+    if (descendants.length) this.repository.setSubtreeRoot(descendants, rootPlanId);
+    return undefined;
   }
 
   getPlanById(id: string): Plan | null {
@@ -1116,8 +1183,31 @@ export class KnowledgeService {
   }
 
   updatePlan(id: string, updates: UpdatePlanInput): Plan | null {
-    const row = this.repository.updatePlan(id, updates as Record<string, unknown>);
+    // Lineage is validated HERE, not at the tool layer: the MCP server, the SDK
+    // and the dashboard's PUT route all converge on this method, and only the
+    // PUT route runs a zod schema. This is the one choke point they share.
+    const { parentPlanId, rootPlanId: _ignoredRoot, ...rest } = updates;
+    // `null` is the explicit UNLINK signal, but a bare `undefined` is not: a
+    // caller that spreads an options object (or an MCP client that materializes
+    // absent optional keys) would otherwise silently detach the plan and re-root
+    // its entire subtree on a plain title/status update. Only a present, defined
+    // value — or an explicit null — counts as a relink request.
+    const relinking = Object.prototype.hasOwnProperty.call(updates, 'parentPlanId') && parentPlanId !== undefined;
+
+    // Validate the relink BEFORE writing `rest`: the two are separate statements,
+    // so a rejection raised afterwards would leave the status/content edit
+    // committed while the caller sees only an error. Skipped when the plan does
+    // not exist — that case must still answer null, not throw.
+    if (relinking && this.repository.getPlanById(id)) {
+      this.validateRelink(id, parentPlanId ?? null);
+    }
+
+    const row = this.repository.updatePlan(id, rest as Record<string, unknown>);
     if (!row) return null;
+
+    if (relinking) {
+      this.relinkPlan(id, parentPlanId ?? null);
+    }
 
     // Guard: when plan is completed, auto-complete all incomplete tasks
     if (updates.status === 'completed') {
@@ -1129,11 +1219,107 @@ export class KnowledgeService {
       }
     }
 
-    return this.toPlan(row);
+    return this.toPlan(relinking ? (this.repository.getPlanById(id) ?? row) : row);
+  }
+
+  /**
+   * Reject the two ways a re-parent can corrupt the graph — parenting a plan to
+   * itself, or to one of its own descendants — because a cycle here would
+   * bound-truncate every later read. Returns the root the plan should cache.
+   * Pure validation: callable before any write has happened.
+   */
+  private validateRelink(id: string, parentPlanId: string | null): string | null {
+    if (parentPlanId === id) {
+      throw new Error('A plan cannot be its own parent.');
+    }
+    if (!parentPlanId) return null;
+    if (!this.repository.getPlanById(parentPlanId)) {
+      throw new Error(`parentPlanId "${parentPlanId}" does not exist.`);
+    }
+    if (isDescendant(parentPlanId, id, this.repository)) {
+      throw new Error(`parentPlanId "${parentPlanId}" is a descendant of plan "${id}" — linking them would create a cycle.`);
+    }
+    return deriveRoot(parentPlanId, this.repository);
+  }
+
+  /**
+   * Re-parent a plan after the fact (or unlink it with `parentPlanId = null`),
+   * then move its whole subtree onto the new root. Re-validates: it is also
+   * reachable from paths that did not pre-validate.
+   */
+  private relinkPlan(id: string, parentPlanId: string | null): void {
+    const newRoot = this.validateRelink(id, parentPlanId);
+
+    // Descendants are found by walking parent links, not by the cached root: the
+    // plans below a mid-chain plan cache the CHAIN's root, so a root query would
+    // return nothing and their lineage would silently stay behind.
+    const descendants = collectDescendants(id, this.repository);
+
+    // One transaction, and the cycle check runs again inside it: two MCP server
+    // processes can otherwise both pass the check and then write a cycle.
+    // Unlinking makes this plan the root of what hangs below it.
+    this.repository.relinkPlanWithSubtree(id, parentPlanId, newRoot, descendants, () => {
+      this.validateRelink(id, parentPlanId);
+    });
+  }
+
+  /**
+   * The whole chain a plan belongs to, root first. Accepts any member: the root
+   * is resolved before the chain is read, so passing a leaf returns the full
+   * chain rather than its own subtree.
+   */
+  getPlanChain(planId: string): PlanChain | null {
+    const row = this.repository.getPlanById(planId);
+    if (!row) return null;
+
+    // root_plan_id is a cache and can drift (an interrupted cascade, a foreign
+    // import). Falling back to a bounded parent walk keeps the chain readable.
+    let rootId: string = row.root_plan_id ?? planId;
+    let walkTruncated = false;
+    if (!row.root_plan_id && row.parent_plan_id) {
+      const walk = walkAncestors(planId, this.repository);
+      rootId = walk.last ?? planId;
+      walkTruncated = walk.truncated;
+    }
+
+    const rows = this.repository.getPlanChainRows(rootId, PLAN_CHAIN_MAX_ENTRIES) as ChainRow[];
+
+    // The chain query matches on the cached root, so a plan whose root has
+    // drifted would be missing from its own chain. Pull the ancestor path in by
+    // id and merge it, rather than answering with a chain that omits the very
+    // plan that was asked about.
+    if (!rows.some((r) => r.id === planId)) {
+      const seen = new Set(rows.map((r) => r.id));
+      const walk = walkAncestors(planId, this.repository);
+      walkTruncated = walkTruncated || walk.truncated;
+      for (const ancestorId of walk.ancestors) {
+        if (seen.has(ancestorId)) continue;
+        const ancestorRow = this.repository.getPlanById(ancestorId);
+        if (ancestorRow) { rows.push(ancestorRow as ChainRow); seen.add(ancestorId); }
+      }
+    }
+
+    const { chain, truncated } = buildChain(rows, rootId, planId);
+    // A walk that hit the depth cap or a cycle means the answer is partial even
+    // when the chain itself fit — otherwise a cyclic chain reports truncated:false.
+    return { rootPlanId: rootId, chain, truncated: truncated || walkTruncated };
   }
 
   deletePlan(id: string): boolean {
-    return this.repository.deletePlan(id);
+    const row = this.repository.getPlanById(id);
+    if (!row) return false;
+
+    // Repair the lineage around the hole this leaves: children move up to the
+    // deleted plan's own parent. Deleting a root instead promotes each direct
+    // child to root of its own subtree, so nothing keeps caching a dead id.
+    // A parent that no longer exists is treated as no parent: re-parenting the
+    // children onto a dead id would just move the dangling reference down.
+    const rawParentId: string | null = row.parent_plan_id ?? null;
+    const parentId = rawParentId && this.repository.getPlanById(rawParentId) ? rawParentId : null;
+    const rootRewrites = parentId ? [] : recomputeSubtreeRoot(id, this.repository);
+    const childRoot = parentId ? (row.root_plan_id ?? parentId) : null;
+
+    return this.repository.deletePlanWithLineageRepair(id, parentId, childRoot, rootRewrites);
   }
 
   listAllPlans(): Plan[] {
@@ -1168,9 +1354,12 @@ export class KnowledgeService {
           skipped++;
           continue;
         }
-        const { tasks, ...planInput } = plan;
+        // Lineage is instance-local: ids are regenerated on import, so a parent
+        // or root from the exporting machine either dangles or — worse — collides
+        // with a real local plan and grafts foreign content into a live chain.
+        const { tasks, parentPlanId: _importedParent, rootPlanId: _importedRoot, ...planInput } = plan as typeof plan & { rootPlanId?: string | null };
         const embedding = await this.embeddingProvider.embed(planInput.tags.join(' '));
-        const row = this.repository.createPlan({ ...planInput, embedding });
+        const row = this.repository.createPlan({ ...planInput, parentPlanId: null, rootPlanId: null, embedding });
         const createdPlan = this.toPlan(row);
 
         if (tasks && tasks.length > 0) {
@@ -1375,6 +1564,8 @@ export class KnowledgeService {
       planFilePath: row.plan_file_path ?? row.planFilePath ?? null,
       agentId: row.agent_id ?? row.agentId ?? null,
       platform: row.platform ?? null,
+      parentPlanId: row.parent_plan_id ?? row.parentPlanId ?? null,
+      rootPlanId: row.root_plan_id ?? row.rootPlanId ?? null,
       createdAt: new Date(row.created_at ?? row.createdAt),
       updatedAt: new Date(row.updated_at ?? row.updatedAt),
     };

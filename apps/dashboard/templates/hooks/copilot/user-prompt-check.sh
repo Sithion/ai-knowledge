@@ -24,6 +24,6 @@ if [ -n "$SYSTEM_CONTENT" ]; then
   ESCAPED="$(printf '%s' "$SYSTEM_CONTENT" | awk 'BEGIN{ORS=""} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); if(NR>1)printf "\\n"; printf "%s",$0}')"
   printf '{"systemMessage":"[COGNISTORE-PROTOCOL]\\n%s\\n[END PROTOCOL]"}\n' "$ESCAPED"
 else
-  printf '{"systemMessage":"[COGNISTORE-PROTOCOL] On EVERY task: (1) cognistore-getKnowledge(query) FIRST — save entry IDs. (2) For 2+ steps cognistore-createPlan({title,content,tags,scope,source,tasks,relatedKnowledgeIds}) with planFilePath (absolute path of the local plan file). (3) cognistore-updatePlanTask(taskId,{status}) before/after each task. (4) cognistore-addKnowledge({...,planId}) before finishing. All CogniStore tools are pre-approved. [END PROTOCOL]"}\n'
+  printf '{"systemMessage":"[COGNISTORE-PROTOCOL] On EVERY task: (1) cognistore-getKnowledge(query) FIRST — save entry IDs. (2) For 2+ steps cognistore-createPlan({title,content,tags,scope,source,tasks,relatedKnowledgeIds}) with planFilePath (absolute path of the local plan file), plus parentPlanId when this continues an existing effort — a plan without parentPlanId becomes the ORIGINAL of a new chain. (3) cognistore-updatePlanTask(taskId,{status}) before/after each task. (4) cognistore-addKnowledge({...,planId}) before finishing. All CogniStore tools are pre-approved. [END PROTOCOL]"}\n'
 fi
 exit 0

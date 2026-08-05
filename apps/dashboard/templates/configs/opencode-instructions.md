@@ -31,6 +31,7 @@ cognistore_createPlan({
   title: "<plan title>",
   content: "<structured plan with ## Context, ## Approach, ## Files to Modify, ## Verification>",
   tags: ["..."], scope: "workspace:<project>", source: "<context>",
+  parentPlanId: "<id of the plan this work continues, if any>",
   tasks: [{ description: "Step 1", priority: "high" }, ...],
   relatedKnowledgeIds: ["<ids-from-checkpoint-1>"]
 })
@@ -39,6 +40,8 @@ cognistore_createPlan({
 > The `content` field must be a structured plan with **Context** (why), **Approach** (how), **Files to Modify** (table with paths), and **Verification** (how to test) sections. Include file paths, function names, and specific technical details.
 
 Save the returned **planId** — you need it for addKnowledge.
+
+**Plan chains**: a plan created WITHOUT `parentPlanId` becomes the **ORIGINAL** (root) of a new effort. Every follow-up plan for the same effort — including one created by a subagent — must pass `parentPlanId` so the whole chain stays linked and the original stays identifiable. Call `getPlanChain(planId)` from any member to see the original and every plan that followed.
 
 **Dedup is automatic**: if an active plan exists in the same scope, `createPlan()` adds your tasks to it instead of creating a duplicate. If a similar draft exists, it updates it. Just call `createPlan()` normally — the server handles dedup.
 
@@ -58,7 +61,7 @@ Use `updatePlanTasks` (plural) to update multiple tasks at once.
 - Retire a plan: `archivePlan(planId)` — reversible and preserves linked knowledge (prefer it over deleting)
 
 **Plan mode**: write the local plan file AND call `createPlan()` before ExitPlanMode.
-**Subagents**: NEVER call createPlan() from subagents — only the main agent.
+**Subagents**: a subagent that owns an implementation slice MAY call `createPlan()`, but it MUST pass `parentPlanId` = the main effort's plan id (include that id in the subagent's prompt when you dispatch it). Review-only and read-only subagents must not create plans.
 
 ### CHECKPOINT 3: Save What You Learned
 

@@ -517,11 +517,14 @@ Create a new plan.
     { "description": "Audit current endpoints", "priority": "high" },
     { "description": "Write migration scripts", "priority": "medium" }
   ],
-  "relatedKnowledgeIds": ["uuid-1", "uuid-2"]
+  "relatedKnowledgeIds": ["uuid-1", "uuid-2"],
+  "parentPlanId": "uuid-of-the-plan-this-continues"
 }
 ```
 
 Required: `title`, `content`, `tags`, `scope`, `source`
+
+Optional `parentPlanId` links the plan into an existing chain. Omitted, the plan becomes the ORIGINAL (root) of a new chain. A parent that does not exist does not fail the request — the plan is created as a root.
 
 **Response:** `Plan`
 
@@ -533,17 +536,40 @@ Update a plan. Only include fields to change. The `archived` status can only be 
 ```json
 {
   "status": "active",
-  "title": "Updated title"
+  "title": "Updated title",
+  "parentPlanId": "uuid-of-another-plan"
 }
 ```
+
+`parentPlanId` re-links the plan into another chain; `null` unlinks it, making it the ORIGINAL of its own chain. Unlike `POST /api/plans`, re-linking is strict: pointing a plan at itself, at one of its own descendants, or at a `parentPlanId` that does not exist returns **400** with an explanatory message.
 
 **Response:** `Plan`
 
 ### DELETE /api/plans/:id
 
-Delete a plan and all associated tasks and relations.
+Delete a plan and all associated tasks and relations. Only the target plan is deleted — the lineage around it is repaired in the same transaction: children are re-parented to the deleted plan's parent, and deleting a chain's ORIGINAL promotes each direct child to the root of its own subtree.
 
 **Response:** `{ success: true }`
+
+### GET /api/plans/:id/chain
+
+Get the full lineage chain the plan belongs to. Accepts any member: the chain's root is resolved first, so a leaf returns the whole chain.
+
+**Response:**
+```json
+{
+  "rootPlanId": "uuid-of-original",
+  "chain": [
+    { "id": "uuid-of-original", "title": "...", "status": "completed", "scope": "workspace:my-app", "parentPlanId": null, "depth": 0, "isCurrent": false },
+    { "id": "uuid-child", "title": "...", "status": "active", "scope": "workspace:my-app", "parentPlanId": "uuid-of-original", "depth": 1, "isCurrent": true }
+  ],
+  "truncated": false
+}
+```
+
+Ordered root-first, then by depth (ties broken by creation time). Plan content is never included. `truncated: true` means the chain hit the traversal caps (depth 64, 500 entries).
+
+> **Export/import:** lineage is **instance-local** and does not travel. `GET /api/export` projects an explicit field list for plans (`title`, `content`, `tags`, `scope`, `source`, `status`, `createdAt`, `tasks`) that omits `parentPlanId` / `rootPlanId`, and `POST /api/import` strips them if present anyway — plan ids are regenerated on import, so a foreign id would either dangle or graft onto an unrelated local chain. Imported plans always arrive as standalone ORIGINALs.
 
 ### GET /api/plans/:id/relations
 

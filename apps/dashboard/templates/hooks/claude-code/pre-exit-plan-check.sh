@@ -11,6 +11,6 @@ if [ -f "${COG_MARK}-plan-persisted" ]; then
   exit 0
 fi
 
-REASON="CogniStore: persist your plan before ExitPlanMode — call mcp__cognistore__createPlan() (or mcp__cognistore__updatePlan() if a plan already exists this session). The local plan file is temporary; the persisted plan is the source of truth. createPlan content should include title, ## Context, ## Approach, ## Files to Modify, ## Verification, tags, scope, source, tasks. All CogniStore tools are pre-approved."
+REASON="CogniStore: persist your plan before ExitPlanMode — call mcp__cognistore__createPlan() (or mcp__cognistore__updatePlan() if a plan already exists this session). The local plan file is temporary; the persisted plan is the source of truth. createPlan content should include title, ## Context, ## Approach, ## Files to Modify, ## Verification, tags, scope, source, tasks — plus parentPlanId when this plan continues an existing effort. All CogniStore tools are pre-approved."
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$REASON"
 exit 0

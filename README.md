@@ -34,7 +34,7 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 - **Zero configuration** — The setup wizard handles everything: Ollama, database, model downloads, MCP config injection, AI skills installation, and system knowledge seeding.
 - **System knowledge** — Mandatory protocol entries (type `system`) are seeded on setup, injected into agent sessions via hooks, hidden from the dashboard, and protected from deletion. Agents always operate with the correct protocol without manual configuration.
 - **Knowledge cleanup cycle** — Every 10 days (at least — the cycle only advances while the app is running) the app proposes what could be removed: entries tagged `deprecated`, entries nobody has retrieved in six months, and near-duplicate groups to merge into their newest member. Merges are drafted by a small local model via Ollama, with a deterministic fallback. **Nothing is deleted automatically** — you approve each item in Settings.
-- **Plans** — Create and manage implementation plans with task lists, priority tracking, relations to knowledge entries, and archive completed plans from the dashboard.
+- **Plans** — Create and manage implementation plans with task lists, priority tracking, relations to knowledge entries, and archive completed plans from the dashboard. Plans also form **chains**: the first plan of an effort is the ORIGINAL, and every follow-up (including ones created by subagents) links back to it, so the whole lineage stays visible.
 - **Provenance tracking** — Every entry and plan records which **platform** (Claude Code / Copilot / OpenCode, auto-detected) and which **agent** (the calling agent's own name) created it, surfaced as dashboard charts and knowledge-list filters.
 - **Desktop dashboard** — Browse, search, filter, and manage your knowledge base and plans through the built-in UI with stats and charts. All destructive actions use modal confirmations.
 - **Auto-update** — The app checks for updates every 30 minutes and installs them automatically.
@@ -126,15 +126,16 @@ If you prefer to configure the MCP server manually:
 | `listTags` | List all unique tags in the knowledge base | — |
 | `healthCheck` | Verify database and Ollama connectivity | — |
 | `getTokenUsage` | Aggregated AI token-usage analytics (input/output/cache) for a date range | `from`, `to`, `source`, `model`, `project` |
-| `createPlan` | Create a plan with optional tasks and knowledge relations | `title`, `content`, `tags`, `scope`, `source` |
-| `updatePlan` | Update plan title, content, tags, scope, or status | `planId`, `status`, `title`, `content` |
+| `createPlan` | Create a plan with optional tasks and knowledge relations. Pass `parentPlanId` to link it into an existing effort; without it the plan is the ORIGINAL of a new chain | `title`, `content`, `tags`, `scope`, `source`, `parentPlanId` |
+| `updatePlan` | Update plan title, content, tags, scope, or status; re-link lineage with `parentPlanId` (`null` detaches) | `planId`, `status`, `title`, `content`, `parentPlanId` |
 | `addPlanRelation` | Link a knowledge entry to a plan (silently skips system entries) | `planId`, `knowledgeId`, `relationType` |
 | `addPlanTask` | Add a task to a plan's todo list | `planId`, `description`, `priority` |
 | `updatePlanTask` | Mark task in_progress/completed, add notes | `taskId`, `status`, `notes` |
 | `updatePlanTasks` | Update multiple plan tasks at once | `updates[]` (each with taskId, status?) |
 | `deletePlanTask` | Remove a task from a plan (auto-completes the plan when the rest are done) | `taskId` |
 | `listPlanTasks` | List tasks for a plan ordered by position | `planId` |
-| `listPlans` | List plans with optional status/scope filters | `limit`, `status`, `scope` |
+| `listPlans` | List plans with optional status/scope filters (each marked as ORIGINAL or linked) | `limit`, `status`, `scope` |
+| `getPlanChain` | Show a plan's full lineage chain: the ORIGINAL plan plus every follow-up linked to it | `planId` |
 | `archivePlan` | Archive a plan (status → `archived`); reversible via `updatePlan` | `planId` |
 
 ### Knowledge Types
@@ -275,6 +276,7 @@ The desktop app includes a full dashboard with seven pages:
 
 - Active plans section showing live task lists with progress bars
 - Browse all plans with status/scope filters and infinite scroll; full-page detail view with tasks, relations, and a collapsible plan-file preview
+- Plan chain section on the detail view (shown only when the plan is part of a chain): the ORIGINAL plan and every follow-up, indented by depth, each other member clickable to navigate the chain
 - Task status icons: pending (circle), in_progress (spinner), completed (checkmark)
 - Priority left-border colors: red (high), yellow (medium), gray (low)
 - Auto-refreshes when plans change out-of-band (e.g. an agent updating them via MCP)

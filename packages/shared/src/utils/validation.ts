@@ -68,6 +68,12 @@ export const createPlanSchema = z.object({
   planFilePath: z.string().min(1).nullable().optional(),
   agentId: z.string().max(64).nullable().optional(),
   platform: z.string().max(64).nullable().optional(),
+  // Lineage. Bounded but NOT uuid-constrained: creating a plan must never fail
+  // over its parent reference, so an id that does not resolve is downgraded to a
+  // root with a warning by the service — one policy, one place. (updatePlanSchema
+  // stays strict: an explicit relink SHOULD be rejected loudly.) Undeclared
+  // fields are stripped here, so omitting this would silently drop the link.
+  parentPlanId: z.string().max(64).nullable().optional(),
   tasks: z.array(z.object({
     description: z.string().min(1),
     priority: z.enum(['low', 'medium', 'high']).optional(),
@@ -84,6 +90,10 @@ export const updatePlanSchema = z.object({
   planFilePath: z.string().min(1).nullable().optional(),
   agentId: z.string().max(64).nullable().optional(),
   platform: z.string().max(64).nullable().optional(),
+  // Retroactive linking; null unlinks. Keep this schema a strict whitelist —
+  // repository.updatePlan derives column names from object keys, so a
+  // .passthrough() here would turn arbitrary caller keys into SQL identifiers.
+  parentPlanId: z.string().uuid().nullable().optional(),
 });
 
 // ─── Plan Tasks ───────────────────────────────────────────────

@@ -249,7 +249,7 @@ export const api = {
   }>('/api/import', { method: 'POST', body: JSON.stringify(data) }),
 
   // Plans
-  createPlan: (data: { title: string; content: string; tags?: string[]; scope?: string; source?: string; tasks?: { description: string; priority?: string }[] }) =>
+  createPlan: (data: { title: string; content: string; tags?: string[]; scope?: string; source?: string; parentPlanId?: string | null; tasks?: { description: string; priority?: string }[] }) =>
     request('/api/plans', { method: 'POST', body: JSON.stringify(data) }),
 
   listPlans: (limit = 20, status?: string, offset = 0, scope?: string) => {
@@ -271,6 +271,14 @@ export const api = {
 
   getPlanRelations: (id: string) =>
     request<{ entry: any; relationType: string }[]>(`/api/plans/${id}/relations`),
+
+  // Lineage chain: accepts any member, always answers from the chain's root.
+  getPlanChain: (id: string) =>
+    request<{
+      rootPlanId: string;
+      chain: { id: string; title: string; status: string; scope: string; parentPlanId: string | null; depth: number; isCurrent: boolean }[];
+      truncated: boolean;
+    }>(`/api/plans/${id}/chain`),
 
   addPlanRelation: (id: string, knowledgeId: string, relationType: 'input' | 'output') =>
     request(`/api/plans/${id}/relations`, { method: 'POST', body: JSON.stringify({ knowledgeId, relationType }) }),

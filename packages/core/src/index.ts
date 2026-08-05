@@ -12,6 +12,11 @@ export { KnowledgeRepository } from './repositories/index.js';
 export { KnowledgeService, type EmbeddingProvider } from './services/index.js';
 export type { CleanupReport, CleanupCandidate } from './services/knowledge.service.js';
 
+// Plan lineage traversals live in ./services/plan-lineage.js and are deliberately
+// NOT exported: KnowledgeService is the only path allowed to derive or rewrite a
+// chain, so publishing them would hand any consumer a way around its validation.
+// Chain shapes come from @cognistore/shared (PlanChain / PlanChainEntry).
+
 // Cleanup cycle: pure merge policy. Exported so the sidecar's LLM orchestration
 // and the apply path share one implementation of the merge invariants.
 export {

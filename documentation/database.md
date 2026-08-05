@@ -69,12 +69,20 @@ This is a **sqlite-vec** virtual table that stores 768-dimensional float32 vecto
 | `scope` | TEXT NOT NULL | — | `global` or `workspace:<project-name>` |
 | `status` | TEXT NOT NULL | `'draft'` | One of: `draft`, `active`, `completed`, `archived` |
 | `source` | TEXT NOT NULL | `''` | Origin of the plan |
+| `parent_plan_id` | TEXT | `NULL` | Plan that spawned this one. `NULL` means this plan is the ORIGINAL (root) of its chain |
+| `root_plan_id` | TEXT | `NULL` | Cached first plan of the chain. `NULL` means this plan **is** the root |
 | `created_at` | TEXT NOT NULL | — | ISO timestamp |
 | `updated_at` | TEXT NOT NULL | — | ISO timestamp |
 
 **Indices:**
 - `idx_plans_status` on `status`
 - `idx_plans_scope` on `scope`
+- `idx_plans_parent_plan_id` on `parent_plan_id`
+- `idx_plans_root_plan_id` on `root_plan_id`
+
+**Lineage columns** (migration `2.4.1.sql`): `root_plan_id` is denormalized so a whole chain is one indexed lookup. There is **no foreign key** — SQLite cannot add one via `ALTER TABLE` — so a parent may dangle, a cycle may exist and a cached root may drift; every traversal in the service layer is bounded (visited set, depth 64, 500 entries) instead of trusting the data. Lineage is instance-local: `importPlans` strips both columns because ids are regenerated on import.
+
+> Migration file versions are independent of the app version. `2.4.1.sql` ships inside the v2.4.0 release simply because `2.4.0.sql` was already applied on that branch; the runner sorts `.sql` files by semver and applies whatever is unapplied.
 
 ### plan_relations (join table)
 

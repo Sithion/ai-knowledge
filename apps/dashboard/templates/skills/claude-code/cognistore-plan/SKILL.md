@@ -45,7 +45,8 @@ argument-hint: <plan title and description>
 - **NEVER** use only TodoWrite as a substitute — those are for in-session tracking, NOT persistence
 - **NEVER** describe a plan only in chat without persisting it
 - **NEVER** skip createPlan() because "it's a small task"
-- **NEVER** call createPlan() from a subagent (Agent tool) — ONLY the main agent creates plans
+- **NEVER** create a follow-up plan for the SAME effort without `parentPlanId` — that starts a disconnected chain and loses the original
+- **NEVER** call createPlan() from a review-only or read-only subagent — a subagent that owns an implementation slice MAY create one, but it MUST pass `parentPlanId` = the main effort's plan id
 
 ## How to Create (with Tasks)
 
@@ -56,6 +57,7 @@ mcp__cognistore__createPlan({
   tags: ["feature-name", "component", "approach"],
   scope: "workspace:<project-name>",
   source: "planning session for <task description>",
+  parentPlanId: "<id of the plan this work continues — omit ONLY for a new effort>",
   relatedKnowledgeIds: ["id1", "id2"],
   tasks: [
     { description: "Step 1: Do X", priority: "high" },
@@ -66,6 +68,17 @@ mcp__cognistore__createPlan({
 ```
 
 **Important**: Always include a `tasks` array when creating a plan.
+
+## Plan Chains (lineage)
+
+A plan created **without** `parentPlanId` is the **ORIGINAL** — the root of a new effort. Every plan created afterwards for that same effort must pass `parentPlanId`, so the whole chain stays linked and the original is always identifiable.
+
+- Continuing an effort (including from a subagent): `parentPlanId: "<the effort's plan id>"`
+- Genuinely new, unrelated work: omit `parentPlanId` — this plan becomes the next ORIGINAL
+- Inspect a chain from any member: `mcp__cognistore__getPlanChain(planId)` — returns the original first, then every follow-up plan
+- Link a plan after the fact: `updatePlan(planId, { parentPlanId: "<id>" })`; pass `null` to detach it into its own chain
+
+When you dispatch a subagent that may create a plan, include the effort's plan id in its prompt so it can pass `parentPlanId`.
 
 ## Required Plan Structure (MANDATORY)
 

@@ -540,7 +540,10 @@ export class ConfigManager {
     return {
       UserPromptSubmit: [group(undefined, 'user-prompt-check.sh')],
       PreToolUse: [
-        group('Edit|Write|Bash|MultiEdit|Agent|NotebookEdit|EnterPlanMode', 'pre-tool-check.sh'),
+        // Agent and Task are the same subagent-dispatch tool under two names
+        // (current vs older Claude Code builds); matching both keeps the plan-chain
+        // hint from becoming dead code on either.
+        group('Edit|Write|Bash|MultiEdit|Agent|Task|NotebookEdit|EnterPlanMode', 'pre-tool-check.sh'),
         group('Write|Edit|MultiEdit|NotebookEdit', 'pre-plan-file-check.sh'),
         group('EnterPlanMode', 'pre-enter-plan-check.sh'),
         group('mcp__cognistore__createPlan', 'pre-create-plan-check.sh'),

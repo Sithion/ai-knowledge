@@ -230,6 +230,8 @@ Similar protocol adapted for Copilot's instruction format.
 
 Both Claude Code and Copilot instructions include the rule: **plans must be stored in the knowledge base** using `createPlan`, never as local files. The `cognistore-plan` skill reinforces this with a `PostToolUse` hook on `ExitPlanMode` that reminds agents to persist their plans before leaving plan mode.
 
+The same instructions carry the **plan-chain rule**: a plan created without `parentPlanId` is the ORIGINAL of an effort, and every follow-up plan — including one created by a subagent — must pass `parentPlanId` so the chain stays linked. Subagents that own an implementation slice may create plans under that condition; review-only subagents must not. On Claude Code the rule is also assisted by hooks (the current effort's plan id is suggested before `createPlan` and injected when a subagent is dispatched); on Copilot and OpenCode it is instruction text only.
+
 ## Hook-Based Protocol Injection
 
 In addition to marker-based instruction injection and skills, CogniStore uses `UserPromptSubmit` hooks to dynamically inject protocol instructions at the start of every agent session.

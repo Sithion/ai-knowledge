@@ -9,6 +9,7 @@ For tasks with 2+ steps, create a plan and track execution.
 ```
 cognistore_createPlan({
   title, content: "<structured plan>", tags, scope, source,
+  parentPlanId: "<id of the plan this work continues, if any>",
   tasks: [{ description: "Step 1" }, ...],
   relatedKnowledgeIds: ["<ids>"]
 })
@@ -28,6 +29,12 @@ Include file paths, function names, and specific technical details — not gener
 
 If you wrote the plan to a local file (plan mode), pass its ABSOLUTE path as `planFilePath`
 in `createPlan()` — mandatory whenever a plan file exists, so the plan links back to it.
+
+Plan chains: a plan created WITHOUT `parentPlanId` is the ORIGINAL of a new effort. Every
+follow-up plan for that effort must pass `parentPlanId` so the chain stays linked and the
+original stays identifiable. Inspect it from any member with `cognistore_getPlanChain(planId)`.
+A subagent that owns an implementation slice may create a plan, but must pass the main
+effort's plan id as `parentPlanId`; review-only subagents must not create plans.
 
 Track each task:
 - Before: `updatePlanTask(taskId, { status: "in_progress" })`

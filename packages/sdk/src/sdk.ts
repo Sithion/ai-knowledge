@@ -28,6 +28,7 @@ import {
   type Plan,
   type CreatePlanInput,
   type UpdatePlanInput,
+  type PlanChain,
   type PlanTask,
   type HealthStatus,
   type SDKConfig,
@@ -508,7 +509,7 @@ export class KnowledgeSDK {
 
   // ─── Plans (separate entity) ─────────────────────────────────
 
-  async createPlan(input: CreatePlanInput & { relatedKnowledgeIds?: string[]; tasks?: { description: string; priority?: string }[] }): Promise<Plan> {
+  async createPlan(input: CreatePlanInput & { relatedKnowledgeIds?: string[]; tasks?: { description: string; priority?: string }[] }): Promise<Plan & { deduplicated?: boolean; deduplicatedAction?: string; dedupSkipped?: boolean; nearestPlanId?: string; hint?: string; lineageWarning?: string }> {
     this.ensureInitialized();
     const { relatedKnowledgeIds, ...rest } = input;
     const parsed = createPlanSchema.safeParse(rest);
@@ -535,7 +536,15 @@ export class KnowledgeSDK {
 
   updatePlan(id: string, updates: UpdatePlanInput): Plan | null {
     this.ensureInitialized();
+    // No schema parse here by design — the service is the single validation
+    // choke point for lineage, shared with the MCP server and the HTTP route.
     return this.service!.updatePlan(id, updates);
+  }
+
+  /** The full lineage chain a plan belongs to, root (the ORIGINAL) first. */
+  getPlanChain(planId: string): PlanChain | null {
+    this.ensureInitialized();
+    return this.service!.getPlanChain(planId);
   }
 
   deletePlan(id: string): boolean {

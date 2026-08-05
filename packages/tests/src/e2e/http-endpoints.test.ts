@@ -288,6 +288,78 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect(body.path).toBe(planFile);
   });
 
+  // ─── Plan lineage over HTTP ──────────────────────────────────────
+
+  test('POST /api/plans persists parentPlanId and GET :id/chain returns the whole chain', async () => {
+    // Distinct content per plan on purpose: near-identical plans in one scope are
+    // legitimately merged by dedup, which would hide what this test checks.
+    const stamp = Date.now();
+    const create = async (title: string, content: string, parentPlanId?: string) => {
+      // A scope per plan: this suite's mock Ollama returns a constant embedding,
+      // so two plans in one scope always look like duplicates and dedup merges
+      // them. Chains are allowed to cross scopes, which keeps this realistic.
+      const r = await fetch(`${baseUrl}/api/plans`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title, content, tags: ['lineage-http'], scope: `workspace:lineage-http-${stamp}-${title.split(' ')[1]}`, parentPlanId }),
+      });
+      expect(r.status).toBe(201);
+      return r.json();
+    };
+
+    const root = await create(
+      `Chain root ${stamp}`,
+      'Design the export pipeline: schema, batching strategy and the CLI entry point.',
+    );
+    expect(root.parentPlanId ?? null).toBeNull();
+
+    // The POST route destructures an explicit field list — this asserts the plan
+    // actually carries the parent, not merely that the request was accepted.
+    const child = await create(
+      `Chain child ${stamp}`,
+      'Localize the onboarding emails into Portuguese and wire the template picker.',
+      root.id,
+    );
+    expect(child.parentPlanId).toBe(root.id);
+    expect(child.rootPlanId).toBe(root.id);
+
+    const r = await fetch(`${baseUrl}/api/plans/${child.id}/chain`);
+    expect(r.status).toBe(200);
+    const chain = await r.json();
+    expect(chain.rootPlanId).toBe(root.id);
+    expect(chain.chain.map((p: any) => p.id)).toEqual([root.id, child.id]);
+    expect(chain.chain[1].isCurrent).toBe(true);
+    expect(chain.truncated).toBe(false);
+  });
+
+  test('GET /api/plans/:id/chain returns 404 for an unknown plan', async () => {
+    const r = await fetch(`${baseUrl}/api/plans/does-not-exist/chain`);
+    expect(r.status).toBe(404);
+  });
+
+  test('PUT /api/plans/:id rejects a lineage cycle with 400 {error}', async () => {
+    const stamp = Date.now();
+    const create = async (title: string, content: string, parentPlanId?: string) => {
+      const r = await fetch(`${baseUrl}/api/plans`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title, content, tags: ['lineage-http'], scope: `workspace:cycle-http-${stamp}-${title.split(' ')[1]}`, parentPlanId }),
+      });
+      return r.json();
+    };
+    const root = await create(`Cycle root ${stamp}`, 'Replace the billing reconciliation job with an event-driven consumer.');
+    const child = await create(`Cycle child ${stamp}`, 'Add keyboard navigation and focus traps to the settings dialog.', root.id);
+    expect(child.parentPlanId).toBe(root.id);
+
+    const r = await fetch(`${baseUrl}/api/plans/${root.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ parentPlanId: child.id }),
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toHaveProperty('error');
+  });
+
   // ─── CRUD error shapes ───────────────────────────────────────────
 
   test('POST /api/plans with an empty title returns 400 {error}', async () => {

@@ -100,8 +100,38 @@ export interface Plan {
   agentId?: string | null;
   /** Auto-detected host platform: "claude-code" | "copilot" | "opencode" | "unknown". */
   platform?: string | null;
+  /** Plan that spawned this one. NULL means this plan is the ORIGINAL (root) of its chain. */
+  parentPlanId?: string | null;
+  /** First plan of this chain. NULL means this plan IS the root. May drift — see PlanChainEntry. */
+  rootPlanId?: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * One plan in a lineage chain, as returned by getPlanChain.
+ *
+ * Deliberately a narrow projection: chains are shown to agents, and plan content
+ * (authored by subagents that may have ingested untrusted input) is never included.
+ * `depth` is precomputed server-side so no consumer has to walk parent pointers.
+ */
+export interface PlanChainEntry {
+  id: string;
+  title: string;
+  status: KnowledgeStatus;
+  scope: string;
+  parentPlanId: string | null;
+  depth: number;
+  isCurrent: boolean;
+}
+
+export interface PlanChain {
+  /** The ORIGINAL plan of the chain. */
+  rootPlanId: string;
+  /** Root first, then depth ascending, ties broken by creation time. */
+  chain: PlanChainEntry[];
+  /** True when the chain hit PLAN_CHAIN_MAX_ENTRIES or PLAN_CHAIN_MAX_DEPTH. */
+  truncated: boolean;
 }
 
 export interface CreatePlanInput {
@@ -115,6 +145,10 @@ export interface CreatePlanInput {
   planFilePath?: string | null;
   agentId?: string | null;
   platform?: string | null;
+  /** Plan that spawned this one. Omit for a brand-new ORIGINAL effort. */
+  parentPlanId?: string | null;
+  /** Derived from the parent by the service — never supplied by callers. */
+  rootPlanId?: string | null;
 }
 
 export interface UpdatePlanInput {
@@ -127,6 +161,10 @@ export interface UpdatePlanInput {
   planFilePath?: string | null;
   agentId?: string | null;
   platform?: string | null;
+  /** Retroactive linking. `null` unlinks the plan, making it the root of its own chain. */
+  parentPlanId?: string | null;
+  /** Recomputed by the service when parentPlanId changes — never supplied by callers. */
+  rootPlanId?: string | null;
 }
 
 // ─── Plan Tasks ──────────────────────────────────────────────

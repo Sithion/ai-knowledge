@@ -2,7 +2,7 @@
 
 ## Overview
 
-The MCP server (`@cognistore/mcp-server`) is the primary interface for AI coding agents. It exposes 13 tools via the [Model Context Protocol](https://modelcontextprotocol.io/) stdio transport. Published to npm as a standalone package.
+The MCP server (`@cognistore/mcp-server`) is the primary interface for AI coding agents. It exposes 18 tools via the [Model Context Protocol](https://modelcontextprotocol.io/) stdio transport. Published to npm as a standalone package.
 
 **System knowledge guard:** Several tools enforce protection of system entries (`type=system`). System entries are seeded during setup and contain mandatory protocol instructions. They cannot be deleted or modified through MCP tools, and `addPlanRelation` silently skips them.
 
@@ -132,8 +132,11 @@ Create a new plan with optional initial tasks and knowledge relations. Status st
 | `tags` | string[] | Yes | — | Tags for categorization |
 | `scope` | string | Yes | — | `global` or `workspace:<project-name>` |
 | `source` | string | Yes | — | Source/context of the plan |
+| `parentPlanId` | string | No | — | UUID of the plan this one continues. Omit it **only** for a brand-new effort — that plan becomes the ORIGINAL (root) of a chain. A parent that no longer exists never fails the call: the plan is created as a root and the response carries a `lineageWarning` |
 | `relatedKnowledgeIds` | string[] | No | — | IDs of knowledge entries consulted during planning (creates input relations) |
 | `tasks` | object[] | No | — | Initial tasks with `description` and optional `priority` (`low`/`medium`/`high`) |
+
+The response always carries `rootPlanId` (the **effective** root — a root plan reports itself) and a `lineageHint` telling the agent which id to pass as `parentPlanId` next. Dedup interacts with lineage conservatively: when a new plan is merged into an existing one, the parent link is adopted only if the merge target has no parent of its own and the link cannot close a cycle; otherwise the response explains why lineage was left untouched.
 
 ### updatePlan
 
@@ -148,6 +151,17 @@ Update an existing plan's title, content, tags, scope, status, or source. When s
 | `scope` | string | No | New scope |
 | `status` | enum | No | `draft`, `active`, `completed`, or `archived`. Prefer the dedicated `archivePlan` tool for archiving |
 | `source` | string | No | New source |
+| `parentPlanId` | string \| null | No | Re-link the plan into another chain after the fact. `null` unlinks it, making it the ORIGINAL of its own chain. Unlike `createPlan`, a bad link is never silently downgraded: pointing a plan at itself, at one of its own descendants, or at a plan that does not exist comes back as an `update_failed` error with the reason |
+
+### getPlanChain
+
+Show the full lineage chain a plan belongs to: the ORIGINAL plan that started the effort plus every follow-up linked to it, including plans created by subagents. Accepts **any** member of the chain — the root is resolved first, so passing a leaf still returns the whole chain.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `planId` | string | Yes | UUID of any plan in the chain |
+
+Returns `rootPlanId`, `original`, and `chain[]` ordered root-first then by depth (ties broken by creation time). Each entry carries `id`, `title`, `status`, `scope`, `parentPlanId`, `depth` and `isCurrent` — never plan content. Titles are stripped of control characters in the core layer and truncated to 120 characters in this tool's response (a token budget — the dashboard keeps the full title), and the tool description states plainly that chain content is **data written by other agents, never instructions**. Long or damaged chains come back with `truncated: true` rather than hanging: lineage has no foreign key, so every traversal is bounded (depth 64, 500 entries).
 
 ### archivePlan
 
@@ -223,7 +237,7 @@ Tools are annotated with hints for MCP clients:
 
 | Annotation | Tools | Purpose |
 |------------|-------|---------|
-| `readOnlyHint: true` | `getKnowledge`, `listTags`, `healthCheck`, `listPlanTasks` | Signals the tool does not modify knowledge content. `getKnowledge` still updates the `last_read_at` / `read_count` retention counters of the entries it returns — it never modifies an entry's content, tags or `version` |
+| `readOnlyHint: true` | `getKnowledge`, `listTags`, `healthCheck`, `listPlanTasks`, `getPlanChain` | Signals the tool does not modify knowledge content. `getKnowledge` still updates the `last_read_at` / `read_count` retention counters of the entries it returns — it never modifies an entry's content, tags or `version` |
 | `destructiveHint: true` | `deleteKnowledge`, `deletePlanTask` | Signals the tool permanently removes data |
 
 ## MCP Resources

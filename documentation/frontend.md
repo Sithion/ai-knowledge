@@ -43,6 +43,7 @@ Plan management with live task tracking.
 - Priority left-border colors: red (high), yellow (medium), gray (low)
 - Progress bars and mini progress counters (e.g., "3/5 tasks")
 - Plan relations sections (input/output knowledge entries)
+- **Plan chain** section (hidden for standalone plans, where the chain is just the plan itself): the ORIGINAL plan and every follow-up, indented by server-computed depth, with an `Original` badge at depth 0 and a status badge per row; every row except the one being viewed is clickable and switches the detail view to that plan
 - Plan status lifecycle: draft → active → completed → archived
 - **Archive button** on completed plans — allows users to archive plans directly from the dashboard (agents cannot set `archived` status via MCP; this is a user-only action)
 - All destructive actions (delete plan, delete entry, etc.) use the shared **ConfirmModal** component
