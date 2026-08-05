@@ -1,4 +1,4 @@
-# OSV-Scanner ignore list (applied via --config in .github/workflows/security.yml).
+# OSV-Scanner ignore list (applied via --config in the osv-scan job of .github/workflows/ci.yml).
 #
 # Only advisories with NO available fix in our dependency tree are ignored, each
 # with a rationale. Re-evaluate the entries below whenever dependencies are upgraded.
@@ -13,15 +13,6 @@
 # uses esbuild as a compiler (no dev server is started). Not exploitable here.
 [[IgnoredVulns]]
 id = "GHSA-67mh-4wv8-2f99"
-
-# GHSA-v2v4-37r5-5v8g — ip-address SSRF bypass (CVSS 5.3)
-# ip-address@10.1.0 is pinned by express-rate-limit@8.3.1, which is a transitive
-# dep of @modelcontextprotocol/sdk. The sdk specifier (^8.2.1) resolves to 8.3.1;
-# upgrading requires an MCP SDK release that bumps express-rate-limit. The SSRF
-# risk applies to untrusted IP strings from user input; our usage is internal
-# rate-limiting on the Fastify sidecar which only binds to 127.0.0.1.
-[[IgnoredVulns]]
-id = "GHSA-v2v4-37r5-5v8g"
 
 # GHSA-qwww-vcr4-c8h2 — React Router RSC Mode CSRF bypass (CVSS 7.1)
 # Affects react-router >=7.12.0, fixed in 8.3.0. Not reachable by a version bump:

@@ -26,6 +26,10 @@
 - A candidate is claimed with a conditional update, so two dashboard windows cannot both apply the same one, and a late write cannot land on an already-closed report.
 - A report left open for more than twice the interval closes itself on the next cycle: only one report may be open at a time, so an ignored one would otherwise block the cycle forever.
 
+### Security
+- **Dependency refresh clearing outstanding advisories.** `brace-expansion` **5.0.8 → 5.0.9**, `fast-uri` **4.1.1 → 4.1.2** and `hono` **4.12.32 → 4.13.0** resolve upward through the `>=` security overrides added in v2.3.6; `event-listener` **5.4.1 → 5.4.2** on the Rust side. No direct dependency or override range changed — this is a lockfile-only update.
+- **`express-rate-limit` 8.3.1 → 8.6.2 finally moves `ip-address` off 10.1.0 (now 10.4.0).** This is the transitive bump `osv-scanner.toml` had recorded as unreachable, on a premise that turned out to be wrong: the ignore entry for `GHSA-v2v4-37r5-5v8g` claimed the fix "requires an MCP SDK release that bumps `express-rate-limit`", but `@modelcontextprotocol/sdk` is unchanged at 1.27.1 and its `^8.2.1` range always permitted 8.6.2 — a plain lockfile re-resolution was enough the whole time. (The entry also mislabelled the advisory as an SSRF bypass; it is an XSS in `Address6`'s HTML-emitting methods, fixed in 10.1.1.) A scan with the CI-pinned OSV-Scanner confirms the advisory is cleared (it reported the suppression as an unused ignore), so that entry has been removed from `osv-scanner.toml` rather than left to mask a future regression.
+
 ### Internal
 - Migration `2.4.0` (in both `migrations/2.4.0.sql` and the embedded copy) adds the read-tracking columns, a `cleanup_meta` table and the `cleanup_reports` / `cleanup_candidates` queue. A unique partial index enforces one open report at a time.
 - Merge policy lives in `packages/core/src/services/cleanup-merge.ts` and is re-applied at apply time, so a hand-made request cannot bypass rules enforced only on the producing side.
@@ -38,6 +42,8 @@
 - The "never call createPlan from a subagent" rule is replaced everywhere it was stated (base instructions, the Claude Code skill, the seeded system knowledge) with: a subagent that owns an implementation slice may create a plan, but must pass the main effort's `parentPlanId`; review-only subagents still must not.
 
 ## v2.3.6
+
+> Never released standalone — this fix ships as part of v2.4.0 (PR #101 was superseded by PR #102, which contains all of it).
 
 **The app stopped upgrading itself — silently — and agents ended up talking to a years-old MCP server.** Every installed build reported its version as `0.0.0`, which made the upgrade check permanently answer "nothing to do", so hooks, skills, agent instructions and MCP configs were frozen at whatever first shipped. Meanwhile the generated MCP config used an *unversioned* `npx -y @cognistore/mcp-server`, which `npm exec` happily satisfied from a stale globally-installed copy on `PATH` instead of the registry. Together those produced an unsolvable deadlock: a hook from one release demanding a `planFilePath` argument that an old server's `createPlan` schema rejected, leaving agents unable to leave plan mode at all.
 

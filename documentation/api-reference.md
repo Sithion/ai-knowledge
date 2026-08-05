@@ -397,10 +397,10 @@ Run the upgrade pipeline. Compares `~/.cognistore/.version` with the running app
 {
   "success": true,
   "fromVersion": "2.3.5",
-  "toVersion": "2.3.6",
+  "toVersion": "2.4.0",
   "results": [
     { "step": "database", "status": "success", "message": "Schema up to date" },
-    { "step": "version", "status": "success", "message": "v2.3.6" }
+    { "step": "version", "status": "success", "message": "v2.4.0" }
   ]
 }
 ```

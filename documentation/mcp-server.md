@@ -301,7 +301,7 @@ The MCP server reads configuration from environment variables:
 > equivalent: `npm exec` resolves an already-installed **global** copy from `PATH`
 > before consulting the registry, so a stale global install silently keeps serving
 > an old tool schema. The desktop app writes a pinned spec for this reason; if you
-> hand-write a config, pin it too (`@2.3.6` or at least `@latest`), and remove any
+> hand-write a config, pin it too (`@2.4.0` or at least `@latest`), and remove any
 > global install with `npm uninstall -g @cognistore/mcp-server`.
 >
 > The app also sets `npm_config_ignore_scripts=false` on the entry. A pinned spec
@@ -318,7 +318,7 @@ The MCP server reads configuration from environment variables:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server@2.3.6"]
+      "args": ["-y", "@cognistore/mcp-server@2.4.0"]
     }
   }
 }
@@ -333,7 +333,7 @@ The MCP server reads configuration from environment variables:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server@2.3.6"]
+      "args": ["-y", "@cognistore/mcp-server@2.4.0"]
     }
   }
 }
@@ -347,7 +347,7 @@ The MCP server reads configuration from environment variables:
   "mcp": {
     "cognistore": {
       "type": "local",
-      "command": ["npx", "-y", "@cognistore/mcp-server@2.3.6"],
+      "command": ["npx", "-y", "@cognistore/mcp-server@2.4.0"],
       "enabled": true
     }
   }
