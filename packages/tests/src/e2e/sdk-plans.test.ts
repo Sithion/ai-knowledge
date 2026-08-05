@@ -402,3 +402,238 @@ test('listPlans + listPlanTasks enrichment pattern (MCP tool flow)', async () =>
   expect(planTasks).toHaveLength(3);
   expect(completedTasks).toBe(1);
 });
+
+// ─── Plan lineage (chains) ───────────────────────────────────
+//
+// A plan created without a reference is the ORIGINAL of an effort; follow-up
+// plans carry parentPlanId so the whole chain stays traversable. There is no
+// foreign key behind these columns, so the tests below also pin the behaviour
+// when the data is wrong (missing parent, drifted root, attempted cycle).
+
+test('a plan created without parentPlanId is the ORIGINAL (both lineage columns null)', async () => {
+  const plan = await factory.plan({ title: 'Original effort' });
+
+  expect(plan.parentPlanId ?? null).toBeNull();
+  expect(plan.rootPlanId ?? null).toBeNull();
+
+  const chain = ctx.service.getPlanChain(plan.id)!;
+  expect(chain.rootPlanId).toBe(plan.id);
+  expect(chain.chain).toHaveLength(1);
+  expect(chain.chain[0].depth).toBe(0);
+  expect(chain.chain[0].isCurrent).toBe(true);
+});
+
+test('a child derives the root from its parent, and a grandchild keeps the ORIGINAL as root', async () => {
+  const root = await factory.plan({ title: 'Chain root' });
+  const child = await factory.plan({ title: 'Chain child', parentPlanId: root.id });
+  const grandChild = await factory.plan({ title: 'Chain grandchild', parentPlanId: child.id });
+
+  expect(child.parentPlanId).toBe(root.id);
+  expect(child.rootPlanId).toBe(root.id);
+  // The grandchild points at its own parent but caches the ORIGINAL as root.
+  expect(grandChild.parentPlanId).toBe(child.id);
+  expect(grandChild.rootPlanId).toBe(root.id);
+});
+
+test('getPlanChain answers from any member, ordered root first by depth', async () => {
+  const root = await factory.plan({ title: 'Q root' });
+  const child = await factory.plan({ title: 'Q child', parentPlanId: root.id });
+  const grandChild = await factory.plan({ title: 'Q grandchild', parentPlanId: child.id });
+  const sibling = await factory.plan({ title: 'Q sibling', parentPlanId: root.id });
+
+  // Passing a LEAF must still return the whole chain, not just its subtree.
+  const chain = ctx.service.getPlanChain(grandChild.id)!;
+  expect(chain.rootPlanId).toBe(root.id);
+  expect(chain.chain.map((p) => p.id)).toEqual([root.id, child.id, sibling.id, grandChild.id]);
+  expect(chain.chain.map((p) => p.depth)).toEqual([0, 1, 1, 2]);
+  expect(chain.chain.find((p) => p.isCurrent)!.id).toBe(grandChild.id);
+  expect(chain.truncated).toBe(false);
+  // The chain projection never leaks plan content.
+  expect(Object.keys(chain.chain[0])).not.toContain('content');
+});
+
+test('getPlanChain returns null for an unknown plan', () => {
+  expect(ctx.service.getPlanChain('11111111-2222-3333-4444-555555555555')).toBeNull();
+});
+
+test('a parentPlanId that does not exist creates a root instead of failing', async () => {
+  const plan = await ctx.service.createPlan({
+    title: 'Orphan parent',
+    content: 'Points at a plan that was deleted',
+    tags: ['lineage-test'],
+    scope: 'global',
+    source: 'test',
+    parentPlanId: '11111111-2222-3333-4444-555555555555',
+    skipDedup: true,
+  });
+
+  expect(plan.id).toBeTruthy();
+  expect(plan.parentPlanId ?? null).toBeNull();
+  expect(plan.lineageWarning).toContain('does not exist');
+});
+
+test('a malformed parentPlanId is treated like a missing one, never losing the plan', async () => {
+  // The likeliest agent error: inventing an id instead of pasting the real one.
+  const plan = await ctx.service.createPlan({
+    title: 'Invented parent id',
+    content: 'The model made the id up',
+    tags: ['lineage-test'],
+    scope: 'global',
+    source: 'test',
+    parentPlanId: 'plan-3',
+    skipDedup: true,
+  });
+
+  expect(plan.id).toBeTruthy();
+  expect(plan.parentPlanId ?? null).toBeNull();
+  expect(plan.lineageWarning).toContain('does not exist');
+});
+
+test('updatePlan links a plan retroactively and cascades the root to its subtree', async () => {
+  const effort = await factory.plan({ title: 'Existing effort' });
+  const stray = await factory.plan({ title: 'Stray plan' });
+  const strayChild = await factory.plan({ title: 'Stray child', parentPlanId: stray.id });
+
+  ctx.service.updatePlan(stray.id, { parentPlanId: effort.id });
+
+  expect(ctx.service.getPlanById(stray.id)!.rootPlanId).toBe(effort.id);
+  // The child moved chains along with its parent.
+  expect(ctx.service.getPlanById(strayChild.id)!.rootPlanId).toBe(effort.id);
+  expect(ctx.service.getPlanChain(strayChild.id)!.chain.map((p) => p.id))
+    .toEqual([effort.id, stray.id, strayChild.id]);
+});
+
+test('updatePlan with parentPlanId null unlinks a plan into its own chain', async () => {
+  const root = await factory.plan({ title: 'Unlink root' });
+  const child = await factory.plan({ title: 'Unlink child', parentPlanId: root.id });
+  const grandChild = await factory.plan({ title: 'Unlink grandchild', parentPlanId: child.id });
+
+  ctx.service.updatePlan(child.id, { parentPlanId: null });
+
+  const detached = ctx.service.getPlanById(child.id)!;
+  expect(detached.parentPlanId ?? null).toBeNull();
+  expect(detached.rootPlanId ?? null).toBeNull();
+  // Everything under it follows into the new chain.
+  expect(ctx.service.getPlanById(grandChild.id)!.rootPlanId).toBe(child.id);
+  expect(ctx.service.getPlanChain(root.id)!.chain).toHaveLength(1);
+});
+
+test('updatePlan rejects self-parenting and descendant-parenting (would close a cycle)', async () => {
+  const root = await factory.plan({ title: 'Cycle root' });
+  const child = await factory.plan({ title: 'Cycle child', parentPlanId: root.id });
+
+  expect(() => ctx.service.updatePlan(root.id, { parentPlanId: root.id })).toThrow(/own parent/);
+  expect(() => ctx.service.updatePlan(root.id, { parentPlanId: child.id })).toThrow(/cycle/);
+  expect(() => ctx.service.updatePlan(root.id, { parentPlanId: '11111111-2222-3333-4444-555555555555' }))
+    .toThrow(/does not exist/);
+
+  // Nothing was written by the rejected calls.
+  expect(ctx.service.getPlanById(root.id)!.parentPlanId ?? null).toBeNull();
+});
+
+test('a rejected relink leaves the other fields of the same update untouched', async () => {
+  // Regression: lineage was validated AFTER the non-lineage columns had already
+  // been written, so a rejected call still committed the title/status edit while
+  // the caller saw only an error.
+  const root = await factory.plan({ title: 'Atomic root' });
+  const child = await factory.plan({ title: 'Atomic child', parentPlanId: root.id });
+  const before = ctx.service.getPlanById(root.id)!;
+
+  expect(() => ctx.service.updatePlan(root.id, { title: 'Renamed by a doomed call', parentPlanId: child.id }))
+    .toThrow(/cycle/);
+
+  const after = ctx.service.getPlanById(root.id)!;
+  expect(after.title).toBe(before.title);
+  expect(after.parentPlanId ?? null).toBeNull();
+});
+
+test('updatePlan on an unknown plan returns null instead of throwing on lineage', () => {
+  expect(ctx.service.updatePlan('11111111-2222-3333-4444-555555555555', { parentPlanId: null })).toBeNull();
+});
+
+test('deleting a mid-chain plan re-parents its children and keeps the root', async () => {
+  const root = await factory.plan({ title: 'Del root' });
+  const middle = await factory.plan({ title: 'Del middle', parentPlanId: root.id });
+  const leaf = await factory.plan({ title: 'Del leaf', parentPlanId: middle.id });
+
+  expect(ctx.service.deletePlan(middle.id)).toBe(true);
+
+  const orphan = ctx.service.getPlanById(leaf.id)!;
+  expect(orphan.parentPlanId).toBe(root.id);   // moved up to its grandparent
+  expect(orphan.rootPlanId).toBe(root.id);
+  expect(ctx.service.getPlanChain(leaf.id)!.chain.map((p) => p.id)).toEqual([root.id, leaf.id]);
+});
+
+test('deleting the ORIGINAL promotes each child to root of its own subtree', async () => {
+  const root = await factory.plan({ title: 'Promote root' });
+  const child = await factory.plan({ title: 'Promote child', parentPlanId: root.id });
+  const grandChild = await factory.plan({ title: 'Promote grandchild', parentPlanId: child.id });
+
+  expect(ctx.service.deletePlan(root.id)).toBe(true);
+
+  const promoted = ctx.service.getPlanById(child.id)!;
+  expect(promoted.parentPlanId ?? null).toBeNull();
+  expect(promoted.rootPlanId ?? null).toBeNull();          // it IS a root now
+  expect(ctx.service.getPlanById(grandChild.id)!.rootPlanId).toBe(child.id);
+  // No row still caches the deleted id.
+  expect(ctx.service.getPlanChain(grandChild.id)!.rootPlanId).toBe(child.id);
+});
+
+test('getPlanChain survives a drifted root_plan_id by walking parents', async () => {
+  const root = await factory.plan({ title: 'Drift root' });
+  const child = await factory.plan({ title: 'Drift child', parentPlanId: root.id });
+
+  // Simulate an interrupted cascade: parent set, cached root lost.
+  ctx.repository.setPlanLineage(child.id, root.id, null);
+
+  const chain = ctx.service.getPlanChain(child.id)!;
+  expect(chain.rootPlanId).toBe(root.id);
+  expect(chain.chain.some((p) => p.id === child.id)).toBe(true);
+});
+
+test('getPlanChain does not hang on a cycle in the data', async () => {
+  const a = await factory.plan({ title: 'Cyc A' });
+  const b = await factory.plan({ title: 'Cyc B', parentPlanId: a.id });
+
+  // Force a cycle behind the service's back (no FK exists to prevent this).
+  ctx.repository.setPlanLineage(a.id, b.id, a.id);
+
+  // Read from the cached root, this still answers completely: the chain is built
+  // breadth-first from the root, so the cycle below it is never walked.
+  const chain = ctx.service.getPlanChain(b.id)!;
+  expect(chain.chain.length).toBeGreaterThan(0);
+  expect(chain.chain.length).toBeLessThanOrEqual(4);
+});
+
+test('a cycle with no cached root is reported as truncated, not as a complete chain', async () => {
+  const a = await factory.plan({ title: 'Cyc-only A' });
+  const b = await factory.plan({ title: 'Cyc-only B', parentPlanId: a.id });
+
+  // Parents point in a circle and neither caches a root, so resolving the root
+  // means walking the cycle. A bounded answer must say it is partial rather than
+  // passing itself off as the whole chain.
+  ctx.repository.setPlanLineage(a.id, b.id, null);
+  ctx.repository.setPlanLineage(b.id, a.id, null);
+
+  const chain = ctx.service.getPlanChain(a.id)!;
+  expect(chain.truncated).toBe(true);
+  expect(chain.chain.length).toBeGreaterThan(0);
+});
+
+test('imported plans drop foreign lineage instead of grafting onto local chains', async () => {
+  const local = await factory.plan({ title: 'Local effort' });
+
+  const result = await ctx.service.importPlans([{
+    title: 'Imported from another machine',
+    content: 'Carries lineage ids from its origin instance',
+    tags: ['import-lineage'],
+    scope: 'global',
+    source: 'import',
+    parentPlanId: local.id,
+  } as any]);
+
+  expect(result.imported).toBe(1);
+  const imported = ctx.service.listAllPlans().find((p) => p.title === 'Imported from another machine')!;
+  expect(imported.parentPlanId ?? null).toBeNull();
+  expect(ctx.service.getPlanChain(local.id)!.chain).toHaveLength(1);
+});

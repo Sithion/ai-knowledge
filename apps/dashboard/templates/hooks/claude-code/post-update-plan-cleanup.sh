@@ -12,7 +12,7 @@ touch "${COG_MARK}-plan-persisted"
 if printf '%s' "$COG_INPUT" | grep -q '"status"[[:space:]]*:[[:space:]]*"completed"'; then
   # Plan completed — drop all session markers (including the gate) so a later,
   # unrelated plan-mode cycle must persist afresh.
-  rm -f "${COG_MARK}-active-plan" "${COG_MARK}-edit-count" "${COG_MARK}-task-updated" "${COG_MARK}-plan-persisted"
+  rm -f "${COG_MARK}-active-plan" "${COG_MARK}-edit-count" "${COG_MARK}-task-updated" "${COG_MARK}-plan-persisted" "${COG_MARK}-effort-plan" "${COG_MARK}-root-plan"
 else
   # Not a completion: seed task-sync markers if this session has none yet, so
   # updatePlan-first flows get the same tracking createPlan would set up. Prefer
@@ -23,6 +23,10 @@ else
   if [ -n "$PLAN_ID" ] && [ ! -f "${COG_MARK}-active-plan" ]; then
     echo "$PLAN_ID" > "${COG_MARK}-active-plan"
     echo "0" > "${COG_MARK}-edit-count"
+    # updatePlan-first flows get the lineage cursor too (createPlan's hook is
+    # the usual writer). Only when it is UUID-shaped — see cog_sanitize_id.
+    SAFE_PLAN_ID="$(cog_sanitize_id "$PLAN_ID")"
+    [ -n "$SAFE_PLAN_ID" ] && cog_write_marker "${COG_MARK}-effort-plan" "$SAFE_PLAN_ID"
   fi
 fi
 echo '{}'

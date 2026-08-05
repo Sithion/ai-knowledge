@@ -1,7 +1,15 @@
 import { defineConfig } from 'tsup';
+import pkg from './package.json';
 
 export default defineConfig({
   entry: ['server/index.ts'],
+  // Inline the version at build time. Resolving it at runtime from a package.json
+  // next to __dirname is unreliable: the packaged sidecar runs from
+  // <app>/Resources/dist-server/ where no package.json exists, which silently
+  // pinned the app at "0.0.0" and disabled the whole upgrade system.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   format: ['esm'],
   target: 'node24',
   platform: 'node',

@@ -23,6 +23,7 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 | Install Ollama via brew/curl | Uninstall Ollama via brew uninstall or remove binary |
 | Start `ollama serve` | Stop `ollama serve` via pkill |
 | Pull embedding model via Ollama API | Remove model via `ollama rm` |
+| Pull cleanup LLM model via Ollama API (first consolidation preview) | Remove via `ollama rm <cleanupLlmModel>` — name read from `settings.json` **before** the directory is removed, re-validated, `llama3.2:3b` fallback; skipped when never pulled |
 | Inject `~/.claude/CLAUDE.md` markers | Remove markers via ConfigManager |
 | Inject `~/.github/copilot-instructions.md` markers | Remove markers via ConfigManager |
 | Inject `~/.copilot/copilot-instructions.md` markers | Remove markers via ConfigManager |
@@ -49,11 +50,14 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 Every feature that changes **any** of the following MUST include an upgrade script that runs automatically when the app updates:
 - **Database schema** → add a `.sql` migration file in `packages/core/src/db/migrations/{version}.sql`
 - **Skills** → the upgrade system re-copies all skill templates on version change (no extra work needed)
-- **Hooks** → global hooks are re-deployed on version change via `deployGlobalHooks()` (idempotent `injectHooks`/`setupCopilotHooks`) in `/api/upgrade/run` and `/api/redeploy`. Hook scripts live in `~/.cognistore/hooks/`; settings-file entries are strip-then-append merged so re-runs never duplicate or clobber user hooks
+- **Hooks** → global hooks are re-deployed on version change via `deployGlobalHooks()` (idempotent `injectHooks`/`setupCopilotHooks`) in `/api/upgrade/run`, `/api/redeploy`, and the sidecar's startup self-heal (all three share `redeployArtifacts()`). Hook scripts live in `~/.cognistore/hooks/`; settings-file entries are strip-then-append merged so re-runs never duplicate or clobber user hooks
 - **Agent instructions** → re-injected automatically on version change
 - **MCP configs** → re-written automatically on version change
 
 The upgrade system (`/api/upgrade/run`) compares `~/.cognistore/.version` with the running app version. On mismatch, it re-deploys all artifacts.
+The sidecar also self-heals at startup: when `~/.cognistore/.artifacts-version` lags the running version it re-deploys the artifacts alone. That path keeps its own marker because `/api/upgrade/run` owns `.version` and is the only place that re-embeds and resyncs embedding integrity. It requires `COGNISTORE_MANAGED=1` and skips first installs.
+
+> The app version is inlined at build time (`__APP_VERSION__`). Never resolve it by reading a `package.json` relative to `__dirname` — the packaged sidecar runs from `Resources/dist-server/`, and that mistake silently pinned every install at `0.0.0`, disabling upgrades entirely (v2.3.6). An unknown version is never written to `.version`.
 
 ### Patch Notes
 Every change MUST update `PATCH-NOTES.md` at the project root. Group entries by version and category (features, fixes, improvements). This file is linked from README.md.
@@ -68,3 +72,4 @@ The Tauri sidecar sets environment variables for the Fastify server:
 - `OLLAMA_HOST` — Ollama API endpoint
 - `DASHBOARD_DIST_PATH` — path to bundled frontend assets
 - `TEMPLATES_PATH` — path to bundled skills/config templates
+- `COGNISTORE_MANAGED` — `1` only when the Tauri shell launched the sidecar; gates the startup artifact self-heal so tests (which spawn the sidecar against the real `HOME`) never rewrite the developer's agent configs

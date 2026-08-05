@@ -72,6 +72,11 @@ Body: { "name": "nomic-embed-text", "stream": true }
 
 The `nomic-embed-text` model is ~274MB and takes 15-60 seconds to download.
 
+The cleanup cycle uses a second, larger model (`llama3.2:3b` by default, ~2GB) to
+draft merges for duplicate entries. It is **not** pulled at setup: the download
+starts the first time you preview a consolidation, and never happens if you do
+not use that feature. Uninstall removes it only if it is present.
+
 ### Configure Step Details
 
 The configure step performs multiple actions:
@@ -115,7 +120,7 @@ The uninstall button requires a 3-step confirmation to prevent accidental data l
 | 1 | Remove instruction markers | Delete `COGNISTORE:BEGIN/END` blocks from CLAUDE.md, copilot-instructions.md |
 | 2 | Remove MCP entries | Delete `cognistore` from all `mcpServers`/`mcp` configs |
 | 3 | Remove skills | Delete `~/.claude/skills/cognistore-*/` directories (query, capture, plan) and `~/.copilot/skills/cognistore-*.md` files |
-| 4 | Uninstall Ollama model | `ollama rm nomic-embed-text` |
+| 4 | Uninstall Ollama models | `ollama rm <embedding model>` and, when it was pulled, `ollama rm <cleanup model>` |
 | 5 | Uninstall Ollama binary | `brew uninstall ollama` (macOS) or remove binary (Linux) |
 | 6 | Clear provider secrets | `cleanup_provider_secrets` removes each provider's OS-keychain entry (run before the data dir is deleted) |
 | 7 | Close SDK | Gracefully close database connections |
@@ -134,6 +139,7 @@ Every resource created by setup **must** be removed by uninstall. This is a mand
 | Ollama via brew/curl | Uninstall via brew or remove binary |
 | `ollama serve` process | Stop via `pkill` |
 | `nomic-embed-text` model | Remove via `ollama rm` |
+| Cleanup LLM model (lazily pulled) | Remove via `ollama rm <cleanupLlmModel>` |
 | CLAUDE.md markers | Remove via ConfigManager |
 | copilot-instructions.md markers | Remove via ConfigManager |
 | MCP config entries (4 files) | Remove via ConfigManager |

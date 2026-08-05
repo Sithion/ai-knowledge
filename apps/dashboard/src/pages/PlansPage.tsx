@@ -41,10 +41,23 @@ interface PlanEntry {
   source: string;
   status: string;
   planFilePath?: string | null;
+  parentPlanId?: string | null;
+  rootPlanId?: string | null;
   createdAt: string;
   updatedAt: string;
   taskCount?: number;
   completedTasks?: number;
+}
+
+interface PlanChainEntry {
+  id: string;
+  title: string;
+  status: string;
+  scope: string;
+  parentPlanId: string | null;
+  /** Precomputed server-side — the UI never walks parent pointers itself. */
+  depth: number;
+  isCurrent: boolean;
 }
 
 interface PlanTask {
@@ -525,6 +538,7 @@ export function PlansPage() {
   const [selectedPlan, setSelectedPlan] = useState<PlanEntry | null>(null);
   const [tasks, setTasks] = useState<PlanTask[]>([]);
   const [relations, setRelations] = useState<PlanRelation[]>([]);
+  const [chain, setChain] = useState<PlanChainEntry[]>([]);
   const [activePlans, setActivePlans] = useState<PlanEntry[]>([]);
   const [activeTasksMap, setActiveTasksMap] = useState<Record<string, PlanTask[]>>({});
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
@@ -666,14 +680,16 @@ export function PlansPage() {
   // Refresh selected plan detail (status, tasks, relations)
   const refreshSelectedPlan = useCallback(async (planId: string) => {
     try {
-      const [planData, t, r] = await Promise.all([
+      const [planData, t, r, c] = await Promise.all([
         api.getPlan(planId),
         api.listPlanTasks(planId),
         api.getPlanRelations(planId),
+        api.getPlanChain(planId),
       ]);
       if (planData) setSelectedPlan(planData as PlanEntry);
       setTasks(t as PlanTask[]);
       setRelations(r as PlanRelation[]);
+      setChain((c?.chain ?? []) as PlanChainEntry[]);
     } catch { /* silent — don't clear on transient errors */ }
   }, []);
 
@@ -688,16 +704,28 @@ export function PlansPage() {
   const selectPlan = async (plan: PlanEntry) => {
     setSelectedPlan(plan);
     try {
-      const [t, r] = await Promise.all([
+      const [t, r, c] = await Promise.all([
         api.listPlanTasks(plan.id),
         api.getPlanRelations(plan.id),
+        api.getPlanChain(plan.id),
       ]);
       setTasks(t as PlanTask[]);
       setRelations(r as PlanRelation[]);
+      setChain((c?.chain ?? []) as PlanChainEntry[]);
     } catch {
       setTasks([]);
       setRelations([]);
+      setChain([]);
     }
+  };
+
+  // Chain navigation: a chain entry is a narrow projection, so fetch the real
+  // plan before switching the detail view to it.
+  const selectPlanById = async (planId: string) => {
+    try {
+      const plan = await api.getPlan(planId);
+      if (plan) await selectPlan(plan as PlanEntry);
+    } catch { /* silent — the current plan stays selected */ }
   };
 
   const toggleNotes = (taskId: string) => {
@@ -868,6 +896,45 @@ export function PlansPage() {
             ))}
           </div>
         </div>
+
+        {/* Plan chain — hidden for a standalone plan, where the chain is just itself. */}
+        {chain.length > 1 && (
+          <div style={{ backgroundColor: 'var(--bg-card)', borderRadius: 10, border: '1px solid var(--border)', padding: 20, marginBottom: 20 }}>
+            <h3 style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-secondary)', marginBottom: 10 }}>
+              {t('plans.chain.title')}
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {chain.map((node) => (
+                <button
+                  key={node.id}
+                  onClick={() => { if (!node.isCurrent) selectPlanById(node.id); }}
+                  disabled={node.isCurrent}
+                  title={node.title}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left',
+                    marginLeft: Math.min(node.depth, 8) * 16,
+                    padding: '6px 10px', borderRadius: 6, fontSize: 12,
+                    border: '1px solid var(--border)',
+                    backgroundColor: node.isCurrent ? 'var(--bg-input)' : 'transparent',
+                    color: 'var(--text-primary)',
+                    cursor: node.isCurrent ? 'default' : 'pointer',
+                  }}
+                >
+                  {node.depth === 0 && (
+                    <span style={{ padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, backgroundColor: 'var(--accent)22', color: 'var(--accent)' }}>
+                      {t('plans.chain.original')}
+                    </span>
+                  )}
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.title}</span>
+                  <StatusBadge status={node.status} />
+                  {node.isCurrent && (
+                    <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{t('plans.chain.current')}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Relations */}
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>

@@ -9,7 +9,7 @@ Technical documentation for CogniStore.
 | [Architecture](./architecture.md) | System overview, data flow, package graph, directory structure, system knowledge, instruction compilation, OpenCode plugins, design decisions |
 | [Tauri Sidecar](./tauri-sidecar.md) | Desktop app internals: startup sequence, Node.js discovery, port allocation, auto-update, security |
 | [Database](./database.md) | SQLite schema, sqlite-vec virtual table, system type, vector search algorithm, embedding strategy |
-| [MCP Server](./mcp-server.md) | Tool definitions (14 tools), parameters, batch tools, tool annotations, MCP resources, plan status guards, system entry guards, bundling strategy |
+| [MCP Server](./mcp-server.md) | Tool definitions (18 tools), parameters, batch tools, tool annotations, MCP resources, plan status guards, system entry guards, bundling strategy |
 | [Config Injection](./config-injection.md) | Marker-based injection, instruction compilation, hook catalog, OpenCode skills/plugins, supported clients |
 | [Setup & Uninstall](./setup-uninstall.md) | Setup wizard steps (incl. instruction compilation, plugin deployment, system knowledge seeding), uninstall teardown, symmetry rule |
 | [Frontend](./frontend.md) | React pages, ConfirmModal, plan archive, Redux state, i18n, routing, loading strategy |

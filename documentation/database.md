@@ -24,6 +24,9 @@ The knowledge base uses **SQLite** with the **sqlite-vec** extension for vector 
 | `confidence_score` | REAL NOT NULL | `1.0` | 0.0–1.0 confidence rating |
 | `related_ids` | TEXT | NULL | JSON array of related entry IDs |
 | `agent_id` | TEXT | NULL | ID of the agent that created this entry |
+| `platform` | TEXT | NULL | Auto-detected host platform: `claude-code`, `copilot`, `opencode` or `unknown` |
+| `last_read_at` | TEXT | NULL | ISO timestamp of the last tracked retrieval. Written only by read tracking (`SearchOptions.trackRead`), never by edits — see below |
+| `read_count` | INTEGER NOT NULL | `0` | Number of tracked retrievals since read tracking began |
 | `created_at` | TEXT NOT NULL | — | ISO timestamp |
 | `updated_at` | TEXT NOT NULL | — | ISO timestamp |
 
@@ -38,6 +41,8 @@ The knowledge base uses **SQLite** with the **sqlite-vec** extension for vector 
 - `addPlanRelation` silently skips system entries (no error, no relation created)
 - The dashboard frontend filters them out of all views and search results
 - `UserPromptSubmit` hooks read system entries and inject them as `[COGNISTORE-PROTOCOL]` system messages
+
+**Read tracking (`last_read_at` / `read_count`):** These columns are a retention signal, not an audit log. They are updated only when a search explicitly opts in via `SearchOptions.trackRead`, which today happens at exactly two call sites: agent retrieval through the MCP `getKnowledge` tool, and the dashboard's explicit search endpoint (`POST /api/knowledge/search`, which forces the flag server-side so a client cannot suppress or forge it). Browsing endpoints (`/api/knowledge/recent`, `/api/knowledge/:id`), the MCP knowledge-context resource, internal scans and re-embeds deliberately do **not** opt in. Marking a read never changes `updated_at` or `version` — a read is not an edit.
 
 ### knowledge_embeddings (virtual table)
 
@@ -64,12 +69,20 @@ This is a **sqlite-vec** virtual table that stores 768-dimensional float32 vecto
 | `scope` | TEXT NOT NULL | — | `global` or `workspace:<project-name>` |
 | `status` | TEXT NOT NULL | `'draft'` | One of: `draft`, `active`, `completed`, `archived` |
 | `source` | TEXT NOT NULL | `''` | Origin of the plan |
+| `parent_plan_id` | TEXT | `NULL` | Plan that spawned this one. `NULL` means this plan is the ORIGINAL (root) of its chain |
+| `root_plan_id` | TEXT | `NULL` | Cached first plan of the chain. `NULL` means this plan **is** the root |
 | `created_at` | TEXT NOT NULL | — | ISO timestamp |
 | `updated_at` | TEXT NOT NULL | — | ISO timestamp |
 
 **Indices:**
 - `idx_plans_status` on `status`
 - `idx_plans_scope` on `scope`
+- `idx_plans_parent_plan_id` on `parent_plan_id`
+- `idx_plans_root_plan_id` on `root_plan_id`
+
+**Lineage columns** (migration `2.4.1.sql`): `root_plan_id` is denormalized so a whole chain is one indexed lookup. There is **no foreign key** — SQLite cannot add one via `ALTER TABLE` — so a parent may dangle, a cycle may exist and a cached root may drift; every traversal in the service layer is bounded (visited set, depth 64, 500 entries) instead of trusting the data. Lineage is instance-local: `importPlans` strips both columns because ids are regenerated on import.
+
+> Migration file versions are independent of the app version. `2.4.1.sql` ships inside the v2.4.0 release simply because `2.4.0.sql` was already applied on that branch; the runner sorts `.sql` files by semver and applies whatever is unapplied.
 
 ### plan_relations (join table)
 

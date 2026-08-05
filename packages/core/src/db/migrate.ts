@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
  * Embedded migrations — used when .sql files are not available (e.g., bundled MCP server).
  * These MUST be kept in sync with the .sql files in the migrations/ directory.
  */
-const EMBEDDED_MIGRATIONS: Record<string, string> = {
+export const EMBEDDED_MIGRATIONS: Record<string, string> = {
   '0.8.0': `
 CREATE TABLE IF NOT EXISTS knowledge_entries (
   id TEXT PRIMARY KEY,
@@ -167,6 +167,71 @@ INSERT INTO operations_daily (date, reads, writes)
   WHERE date(created_at) IS NOT NULL
   GROUP BY date(created_at)
   ON CONFLICT(date) DO UPDATE SET reads = excluded.reads, writes = excluded.writes;
+`,
+  // v2.4.0: per-entry read tracking + the 10-day cleanup report queue.
+  // The STATEMENTS here must stay identical to migrations/2.4.0.sql (comments
+  // may differ) — the sidecar runs the .sql files and the bundled MCP server
+  // runs this copy, so a drift means two different schemas on one machine.
+  // Enforced by the migration-parity test in packages/tests.
+  //
+  // PARSER CONTRACT (see step 5 below): only whole lines starting with two
+  // dashes are stripped, then the rest is split on the semicolon character.
+  // Never put a semicolon inside a comment or string literal here, and never
+  // append a trailing comment to a statement line — either splits a statement
+  // in half and aborts DB open for the sidecar AND every MCP server process.
+  '2.4.0': `
+ALTER TABLE knowledge_entries ADD COLUMN last_read_at TEXT;
+ALTER TABLE knowledge_entries ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0;
+
+-- Fairness backfill: there is no historical read data to mine, so the unread
+-- clock starts now for every pre-existing entry.
+UPDATE knowledge_entries SET last_read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE last_read_at IS NULL;
+
+-- Domain facts owned by the cleanup feature. Deliberately NOT schema_version.
+CREATE TABLE IF NOT EXISTS cleanup_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO cleanup_meta (key, value) VALUES ('read_tracking_since', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+-- status: open or closed
+CREATE TABLE IF NOT EXISTS cleanup_reports (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  stats TEXT NOT NULL DEFAULT '{}'
+);
+
+-- At most one open report at a time.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_reports_open ON cleanup_reports(status) WHERE status = 'open';
+
+-- category: deprecated, unread or duplicate_group
+-- entry_ids: JSON array. For duplicate_group the canonical id comes first.
+-- status: pending, applying, dismissed, applied or failed
+CREATE TABLE IF NOT EXISTS cleanup_candidates (
+  id TEXT PRIMARY KEY,
+  report_id TEXT NOT NULL REFERENCES cleanup_reports(id) ON DELETE CASCADE,
+  category TEXT NOT NULL,
+  entry_ids TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  resolution TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cleanup_candidates_report ON cleanup_candidates(report_id, status);
+`,
+  '2.4.1': `
+-- Lineage convention: a ROOT plan has BOTH columns NULL.
+-- root_plan_id is denormalized so a whole chain is one indexed lookup.
+-- No foreign key: ALTER TABLE cannot add one, so parents may dangle and
+-- cycles may exist in data. Every traversal is bounded accordingly.
+ALTER TABLE plans ADD COLUMN parent_plan_id TEXT;
+ALTER TABLE plans ADD COLUMN root_plan_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_plans_parent_plan_id ON plans(parent_plan_id);
+CREATE INDEX IF NOT EXISTS idx_plans_root_plan_id ON plans(root_plan_id);
 `,
 };
 

@@ -27,6 +27,7 @@ Knowledge management interface with search, filters, and CRUD.
 - Search bar with natural language query input
 - Bulk select toggle (SVG checkbox icon) for multi-delete with floating action bar
 - Filter dropdowns: type (decision/pattern/fix/constraint/gotcha), scope, tags
+- Cleanup banner when a report has pending proposals (reads `/api/cleanup/pending-count` once per mount, dismissible per session)
 - Knowledge cards grid with title, tag chips, type badges, related plans, and similarity scores
 - Inline icon buttons: pencil (amber) for edit, trash (red) for delete
 - Floating action button (FAB) → add knowledge modal (confidence score step: 0.01 for fine granularity)
@@ -42,6 +43,7 @@ Plan management with live task tracking.
 - Priority left-border colors: red (high), yellow (medium), gray (low)
 - Progress bars and mini progress counters (e.g., "3/5 tasks")
 - Plan relations sections (input/output knowledge entries)
+- **Plan chain** section (hidden for standalone plans, where the chain is just the plan itself): the ORIGINAL plan and every follow-up, indented by server-computed depth, with an `Original` badge at depth 0 and a status badge per row; every row except the one being viewed is clickable and switches the detail view to that plan
 - Plan status lifecycle: draft → active → completed → archived
 - **Archive button** on completed plans — allows users to archive plans directly from the dashboard (agents cannot set `archived` status via MCP; this is a user-only action)
 - All destructive actions (delete plan, delete entry, etc.) use the shared **ConfirmModal** component
@@ -72,6 +74,7 @@ System health monitoring, updates, data management, maintenance, and uninstall.
 - Language selection (English, Spanish, Portuguese)
 - Maintenance: re-deploy configurations, remove unused embeddings
 - Data Management: unified Export/Import with modal-based flows (checkboxes for knowledge/plans selection, single JSON file)
+- Cleanup Report: the periodic proposal of removable entries. Three groups — deprecated, unread, and duplicate groups to consolidate. Removals are approved per item or per group (never across groups); a consolidation shows its members with the canonical starred and can only be applied *after* its merged text has been previewed, so nothing unseen is ever applied. Renders the unread-detection gate (including the date it activates) instead of a silently empty list, and labels the unread group with the configured window. The settings themselves are read-only here — there is no editor for them in this release.
 - Danger Zone: uninstall button with confirmation dialog
 
 ### SetupPage (conditional, first launch)

@@ -12,7 +12,7 @@ import { TokenConsumptionPage } from './pages/TokenConsumptionPage.js';
 import { ProvidersPage } from './pages/ProvidersPage.js';
 import { SetupPage } from './pages/SetupPage.js';
 import { UpgradePage } from './pages/UpgradePage.js';
-import { api } from './api/client.js';
+import { api, ApiError } from './api/client.js';
 import { UpdateChecker } from './components/UpdateChecker.js';
 
 const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
@@ -70,7 +70,21 @@ export function App() {
           setUpgradeFrom(upgrade.fromVersion || '?');
           // Silent upgrade — covers Tauri auto-update case
           try {
-            const result = await api.runUpgrade();
+            let result;
+            try {
+              result = await api.runUpgrade();
+            } catch (e) {
+              // 409 means another deploy is already running (e.g. a second window).
+              // That is progress, not failure — wait it out and re-check once.
+              if (!(e instanceof ApiError && e.status === 409)) throw e;
+              await new Promise((r) => setTimeout(r, 3000));
+              const recheck = await api.checkUpgrade();
+              if (!recheck.needsUpgrade) {
+                setState('ready');
+                return;
+              }
+              result = await api.runUpgrade();
+            }
             if (result.success) {
               setState('ready');
               return;

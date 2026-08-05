@@ -68,6 +68,11 @@ Semantic search across knowledge entries.
 
 All fields except `query` are optional.
 
+This endpoint counts as real usage: every returned local entry has its `last_read_at` / `read_count`
+updated (see [Database Layer](./database.md#knowledge_entries-relational-table)). The flag is forced
+server-side and cannot be set or suppressed from the body. Browsing endpoints
+(`GET /api/knowledge/recent`, `GET /api/knowledge/:id`) do not count as reads.
+
 **Response (local only):** `{ entry: KnowledgeEntry, similarity: number }[]`
 
 **Federated:** add `"includeExternal": true` (or `"providers": ["id", ...]`) to also query external
@@ -145,6 +150,119 @@ Delete an entry and its embedding. Returns `403 Forbidden` if the entry has `typ
   "statusCode": 403
 }
 ```
+
+## Cleanup Reports
+
+The periodic cleanup cycle proposes entries for removal and near-duplicate groups
+for consolidation. **Nothing is deleted without an explicit approval call.**
+
+Approving re-checks the entry still qualifies at that moment, so an entry that
+was read, un-tagged or marked `keep` after the report was generated is skipped
+rather than deleted. All mutating routes below reject requests from a foreign
+`Origin`.
+
+### GET /api/cleanup/report
+
+The latest report with its candidates, plus the cleanup settings the UI renders.
+
+**Response:**
+```json
+{
+  "report": {
+    "id": "uuid",
+    "createdAt": "2026-08-04T16:15:11.180Z",
+    "status": "open",
+    "stats": {
+      "unreadDays": 180,
+      "dupThreshold": 0.92,
+      "counts": { "deprecated": 1, "unread": 0, "duplicateGroups": 2, "removableEntries": 4 },
+      "unreadGate": "read tracking started 0d ago; unread detection activates 2027-01-31"
+    }
+  },
+  "candidates": [
+    { "id": "uuid", "category": "deprecated", "entryIds": ["uuid"], "payload": { "title": "…" }, "status": "pending" }
+  ],
+  "settings": { "cleanupEnabled": true, "cleanupIntervalDays": 10, "cleanupUnreadDays": 180 }
+}
+```
+
+`stats.unreadGate` is present when unread detection suppressed itself — either
+read tracking is younger than the unread window, or no read has been recorded
+recently (which is what an outdated MCP server looks like). `report` is `null`
+when no report has ever been generated.
+
+### GET /api/cleanup/pending-count
+
+Just the number of pending candidates, for the dashboard banner to poll.
+
+**Response:** `{ "pendingCount": 3 }`
+
+### POST /api/cleanup/report/run
+
+Generate a report now instead of waiting for the cycle. Idempotent: while a
+report is open it is returned rather than duplicated.
+
+**Response:** `{ "created": true, "report": { … } }`
+
+### POST /api/cleanup/candidates/:id/preview
+
+Draft the merged entry for a `duplicate_group` candidate so it can be reviewed.
+Uses the local Ollama chat model, falling back to a deterministic concatenation
+when the model is unavailable.
+
+**The first call may download the model** (~2GB), so allow a long timeout.
+
+**Response:**
+```json
+{
+  "draft": { "title": "Merged title", "content": "Merged body" },
+  "usedLlm": true,
+  "tags": ["alpha", "beta"]
+}
+```
+
+`tags` is advisory — the apply route recomputes them server-side from the
+entries themselves, so a client cannot choose the merged entry's tags.
+
+**Errors:** `400` for a non-duplicate candidate, `409` when fewer than two
+members still exist.
+
+### POST /api/cleanup/candidates/:id/approve
+
+Apply a candidate: delete the entries (`deprecated` / `unread`), or merge the
+group into its newest member and delete the rest (`duplicate_group`).
+
+**Body — required for `duplicate_group` only:**
+```json
+{ "draft": { "title": "…", "content": "…" }, "usedLlm": true }
+```
+
+A consolidation **cannot** be approved without a draft: the merged text must be
+one the user actually saw, since approving deletes the other members.
+
+**Response:** `{ "deleted": 2, "skipped": 0, "errors": [] }` for removals,
+`{ "canonicalId": "uuid", "deleted": 1, "errors": [] }` for consolidations.
+
+**Errors:** `400` when a consolidation has no draft, `404` unknown candidate,
+`409` when the candidate is no longer pending (already applied or dismissed by
+another window) or the canonical entry changed since the report was generated.
+
+### POST /api/cleanup/candidates/:id/dismiss
+
+Decline a candidate. Only a pending candidate can be dismissed — dismissing an
+applied one would erase it from the report's removal tally.
+
+**Response:** `{ "dismissed": true }` · **Errors:** `404`, `409`
+
+### POST /api/cleanup/report/:id/close
+
+Seal a report. Remaining pending candidates are dismissed and the number of
+entries actually removed while it was open is recorded.
+
+**Response:** `{ "removed": 3 }`
+
+A report left open for more than twice the configured interval is closed
+automatically on the next cycle, so an ignored report cannot block future ones.
 
 ## Statistics & Metrics
 
@@ -272,31 +390,54 @@ Finalize setup and re-initialize the SDK.
 
 Run the upgrade pipeline. Compares `~/.cognistore/.version` with the running app version. On mismatch, re-deploys all artifacts: database migrations, agent instructions (recompiled from `_base-instructions.md`), MCP configs, skills/hooks, OpenCode plugins, and system knowledge entries.
 
+`~/.cognistore/.version` is written **only** when the app version is known and no step failed — a half-finished upgrade is not recorded as complete, and an unknown version is never persisted.
+
 **Response (success):**
 ```json
 {
   "success": true,
-  "from": "0.9.16",
-  "to": "1.0.0",
-  "steps": ["migrations", "instructions", "mcpConfigs", "skills", "plugins", "systemKnowledge"]
+  "fromVersion": "2.3.5",
+  "toVersion": "2.4.0",
+  "results": [
+    { "step": "database", "status": "success", "message": "Schema up to date" },
+    { "step": "version", "status": "success", "message": "v2.4.0" }
+  ]
 }
 ```
 
-**Response (already up-to-date):**
+`results[].status` is `success`, `warning`, `skipped` or `error`; `success` is `true` when every step is `success` or `warning`.
+
+**Concurrency:** if a deploy is already running (startup self-heal or `/api/redeploy`), the request **waits** for it and then runs. A `409 Upgrade already in progress` is returned only if another deploy starts in between.
+
+### POST /api/redeploy
+
+Re-deploy on-disk artifacts without touching the database, embeddings or the version markers: agent instructions, MCP configs, skills and global hooks. Shares the same `redeployArtifacts()` routine as `/api/upgrade/run` and the startup self-heal.
+
+Missing templates are reported as `error` steps (the call no longer reports success regardless of outcome).
+
+**Response:**
 ```json
 {
   "success": true,
-  "message": "Already up to date"
+  "results": [
+    { "step": "instructions-claude", "status": "success" },
+    { "step": "mcp-configs", "status": "success" }
+  ]
 }
 ```
 
-**Response (concurrent request):**
-```json
-{
-  "error": "Upgrade already in progress",
-  "statusCode": 409
-}
-```
+Returns `409 A deploy is already in progress` when another deploy holds the lock.
+
+### Startup self-heal
+
+The sidecar re-deploys the same artifacts at launch, without any HTTP call, when all of the following hold:
+
+- `COGNISTORE_MANAGED=1` (set only by the Tauri shell — see [Tauri sidecar](./tauri-sidecar.md#environment-variables))
+- the app version resolved (not `0.0.0`)
+- it is not a first install (`~/.cognistore/.version` or `~/.cognistore/.artifacts-version` exists)
+- `~/.cognistore/.artifacts-version` differs from the running version
+
+On success it writes `~/.cognistore/.artifacts-version`. That marker is intentionally separate from `.version`, which stays owned by `/api/upgrade/run` (the only path that also re-embeds and re-checks embedding integrity). Both markers live inside `~/.cognistore/` and are removed by uninstall with the directory.
 
 ## Export & Import
 
@@ -376,11 +517,14 @@ Create a new plan.
     { "description": "Audit current endpoints", "priority": "high" },
     { "description": "Write migration scripts", "priority": "medium" }
   ],
-  "relatedKnowledgeIds": ["uuid-1", "uuid-2"]
+  "relatedKnowledgeIds": ["uuid-1", "uuid-2"],
+  "parentPlanId": "uuid-of-the-plan-this-continues"
 }
 ```
 
 Required: `title`, `content`, `tags`, `scope`, `source`
+
+Optional `parentPlanId` links the plan into an existing chain. Omitted, the plan becomes the ORIGINAL (root) of a new chain. A parent that does not exist does not fail the request — the plan is created as a root.
 
 **Response:** `Plan`
 
@@ -392,17 +536,40 @@ Update a plan. Only include fields to change. The `archived` status can only be 
 ```json
 {
   "status": "active",
-  "title": "Updated title"
+  "title": "Updated title",
+  "parentPlanId": "uuid-of-another-plan"
 }
 ```
+
+`parentPlanId` re-links the plan into another chain; `null` unlinks it, making it the ORIGINAL of its own chain. Unlike `POST /api/plans`, re-linking is strict: pointing a plan at itself, at one of its own descendants, or at a `parentPlanId` that does not exist returns **400** with an explanatory message.
 
 **Response:** `Plan`
 
 ### DELETE /api/plans/:id
 
-Delete a plan and all associated tasks and relations.
+Delete a plan and all associated tasks and relations. Only the target plan is deleted — the lineage around it is repaired in the same transaction: children are re-parented to the deleted plan's parent, and deleting a chain's ORIGINAL promotes each direct child to the root of its own subtree.
 
 **Response:** `{ success: true }`
+
+### GET /api/plans/:id/chain
+
+Get the full lineage chain the plan belongs to. Accepts any member: the chain's root is resolved first, so a leaf returns the whole chain.
+
+**Response:**
+```json
+{
+  "rootPlanId": "uuid-of-original",
+  "chain": [
+    { "id": "uuid-of-original", "title": "...", "status": "completed", "scope": "workspace:my-app", "parentPlanId": null, "depth": 0, "isCurrent": false },
+    { "id": "uuid-child", "title": "...", "status": "active", "scope": "workspace:my-app", "parentPlanId": "uuid-of-original", "depth": 1, "isCurrent": true }
+  ],
+  "truncated": false
+}
+```
+
+Ordered root-first, then by depth (ties broken by creation time). Plan content is never included. `truncated: true` means the chain hit the traversal caps (depth 64, 500 entries).
+
+> **Export/import:** lineage is **instance-local** and does not travel. `GET /api/export` projects an explicit field list for plans (`title`, `content`, `tags`, `scope`, `source`, `status`, `createdAt`, `tasks`) that omits `parentPlanId` / `rootPlanId`, and `POST /api/import` strips them if present anyway — plan ids are regenerated on import, so a foreign id would either dangle or graft onto an unrelated local chain. Imported plans always arrive as standalone ORIGINALs.
 
 ### GET /api/plans/:id/relations
 

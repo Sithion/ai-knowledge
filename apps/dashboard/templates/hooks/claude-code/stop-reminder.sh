@@ -13,7 +13,8 @@ STOP_BLOCKED="${COG_MARK}-stop-blocked"
 cleanup() {
   rm -f "${COG_MARK}-queried" "${COG_MARK}-plan-persisted" "$PLAN_MARKER" \
         "$EDITS" "${COG_MARK}-task-updated" "$CAPTURED" \
-        "${COG_MARK}-capture-nudge-count" "$STOP_BLOCKED"
+        "${COG_MARK}-capture-nudge-count" "$STOP_BLOCKED" \
+        "${COG_MARK}-root-plan" "${COG_MARK}-effort-plan"
 }
 
 # Already captured → light pattern reminder, then clean up session state.

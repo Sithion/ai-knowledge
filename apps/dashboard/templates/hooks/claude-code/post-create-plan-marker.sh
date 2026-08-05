@@ -5,12 +5,25 @@
 # leave plan mode, so a missing path never deadlocks the agent.
 source "$(dirname "$0")/_common.sh"
 
-PLAN_ID="$(cog_field id)"
+# The created plan's id and its chain root live in the tool RESPONSE, which is an
+# escaped JSON string — cog_field cannot read it (that is why -active-plan used to
+# be written only by the updatePlan hook). rootPlanId is the EFFECTIVE root, so a
+# root plan reports itself; if an older MCP server omits the key we fall back to
+# the plan's own id rather than losing the chain cursor.
+PLAN_ID="$(cog_sanitize_id "$(cog_resp_field id)")"
+ROOT_PLAN_ID="$(cog_sanitize_id "$(cog_resp_field rootPlanId)")"
 PLAN_FILE="$(cog_field planFilePath)"
 
 if [ -n "$PLAN_ID" ]; then
-  echo "$PLAN_ID" > "${COG_MARK}-active-plan"
-  echo "0" > "${COG_MARK}-edit-count"
+  cog_write_marker "${COG_MARK}-active-plan" "$PLAN_ID"
+  cog_write_marker "${COG_MARK}-edit-count" "0"
+  # The lineage cursor is a SEPARATE marker from -active-plan on purpose:
+  # -active-plan also drives task-sync and stop-time reminders, and the lineage
+  # cursor has to be cleared when a new plan-mode cycle starts. Clearing the
+  # shared marker for that would silence an unrelated feature mid-effort.
+  cog_write_marker "${COG_MARK}-effort-plan" "$PLAN_ID"
+  [ -z "$ROOT_PLAN_ID" ] && ROOT_PLAN_ID="$PLAN_ID"
+  cog_write_marker "${COG_MARK}-root-plan" "$ROOT_PLAN_ID"
 fi
 
 # Open the ExitPlanMode gate unconditionally — a plan is now persisted.

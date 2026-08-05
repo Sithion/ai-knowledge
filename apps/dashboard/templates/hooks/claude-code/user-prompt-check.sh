@@ -11,5 +11,5 @@ if ! cog_db_present; then
   exit 0
 fi
 
-printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"[CogniStore] Workflow: (1) getKnowledge() FIRST (2) createPlan() for multi-step tasks — include planFilePath (absolute path to the local plan file) (3) updatePlanTask() during execution (4) addKnowledge() before finishing. All CogniStore tools are pre-approved."}}\n'
+printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"[CogniStore] Workflow: (1) getKnowledge() FIRST (2) createPlan() for multi-step tasks — include planFilePath (absolute path to the local plan file), and parentPlanId when this continues an existing effort (3) updatePlanTask() during execution (4) addKnowledge() before finishing. All CogniStore tools are pre-approved."}}\n'
 exit 0

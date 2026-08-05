@@ -85,3 +85,99 @@ test('related plan merges into a DRAFT at the lower 0.7 bar', async () => {
   expect((upd as any).deduplicated).toBe(true);
   expect((upd as any).deduplicatedAction).toBe('draft_plan_updated');
 });
+
+// ─── Dedup × lineage ─────────────────────────────────────────
+// Dedup picks a merge target by similarity, which can be a plan ANYWHERE in the
+// graph — including an ancestor of the parent the caller named. Adopting the
+// parent blindly would close a cycle, so the rules are conservative and the
+// response explains any link that was skipped.
+
+test('merging into a parentless plan adopts the requested parent', async () => {
+  const scope = 'workspace:lineage-adopt';
+  const effort = await ctx.service.createPlan({
+    title: 'Effort root', content: 'VEC[0,0,1]', tags: ['x'], scope, source: 'test', skipDedup: true,
+  });
+  const target = await ctx.service.createPlan({
+    title: 'Draft target', content: 'VEC[1,0,0]', tags: ['x'], scope, source: 'test', skipDedup: true,
+  });
+
+  // Near-identical to the draft → merges into it, while naming a parent.
+  const merged = await ctx.service.createPlan({
+    title: 'Same work again', content: 'VEC[1,0.05,0]', tags: ['x'], scope, source: 'test',
+    parentPlanId: effort.id,
+  });
+
+  expect(merged.deduplicated).toBe(true);
+  expect(merged.id).toBe(target.id);
+  expect(ctx.service.getPlanById(target.id)!.parentPlanId).toBe(effort.id);
+  expect(ctx.service.getPlanChain(target.id)!.chain.map((p) => p.id)).toEqual([effort.id, target.id]);
+});
+
+test('merging into an ACTIVE plan returns the lineage it just wrote, not a stale row', async () => {
+  // Regression: the active-merge branch captured the row BEFORE the link was
+  // written and only re-read it when the link had been SKIPPED, so a successful
+  // adoption came back with parentPlanId still null — the agent then had no id to
+  // chain from, which is the whole point of the feature.
+  const scope = 'workspace:lineage-active-merge';
+  const effort = await ctx.service.createPlan({
+    title: 'Effort root', content: 'VEC[0,0,1]', tags: ['x'], scope, source: 'test', skipDedup: true,
+  });
+  const target = await ctx.service.createPlan({
+    title: 'Active target', content: 'VEC[1,0,0]', tags: ['x'], scope, source: 'test', skipDedup: true,
+  });
+  ctx.service.updatePlan(target.id, { status: KnowledgeStatus.ACTIVE });
+
+  const merged = await ctx.service.createPlan({
+    title: 'Same effort', content: 'VEC[1,0.05,0]', tags: ['x'], scope, source: 'test',
+    parentPlanId: effort.id,
+  });
+
+  expect(merged.id).toBe(target.id);
+  expect((merged as any).deduplicatedAction).toBe('tasks_added_to_active_plan');
+  expect(merged.parentPlanId).toBe(effort.id);
+  expect(merged.rootPlanId).toBe(effort.id);
+  expect(merged.lineageWarning).toBeUndefined();
+  expect(ctx.service.getPlanById(target.id)!.parentPlanId).toBe(effort.id);
+});
+
+test('merging into the requested parent itself does not self-link', async () => {
+  const scope = 'workspace:lineage-self';
+  const parent = await ctx.service.createPlan({
+    title: 'Parent plan', content: 'VEC[1,0,0]', tags: ['x'], scope, source: 'test', skipDedup: true,
+  });
+
+  const merged = await ctx.service.createPlan({
+    title: 'Same as parent', content: 'VEC[1,0.05,0]', tags: ['x'], scope, source: 'test',
+    parentPlanId: parent.id,
+  });
+
+  expect(merged.id).toBe(parent.id);
+  expect(ctx.service.getPlanById(parent.id)!.parentPlanId ?? null).toBeNull();
+  expect(merged.lineageWarning).toContain('parentPlanId you passed');
+});
+
+test('merging into an ancestor of the requested parent never closes a cycle', async () => {
+  const scope = 'workspace:lineage-cycle';
+  const ancestor = await ctx.service.createPlan({
+    title: 'Ancestor', content: 'VEC[1,0,0]', tags: ['x'], scope, source: 'test', skipDedup: true,
+  });
+  const descendant = await ctx.service.createPlan({
+    title: 'Descendant', content: 'VEC[0,1,0]', tags: ['x'], scope, source: 'test',
+    parentPlanId: ancestor.id, skipDedup: true,
+  });
+
+  // Near-identical to the ancestor → dedup targets it, while the caller points at
+  // the ancestor's own descendant as the parent.
+  const merged = await ctx.service.createPlan({
+    title: 'Same as ancestor', content: 'VEC[1,0.05,0]', tags: ['x'], scope, source: 'test',
+    parentPlanId: descendant.id,
+  });
+
+  expect(merged.id).toBe(ancestor.id);
+  expect(ctx.service.getPlanById(ancestor.id)!.parentPlanId ?? null).toBeNull();
+  expect(merged.lineageWarning).toContain('cycle');
+
+  // The chain is still readable — no infinite walk.
+  expect(ctx.service.getPlanChain(descendant.id)!.chain.map((p) => p.id))
+    .toEqual([ancestor.id, descendant.id]);
+});

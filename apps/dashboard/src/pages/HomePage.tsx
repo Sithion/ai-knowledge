@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams, useLocation } from 'react-router-dom';
+import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { api, type ExternalSection } from '../api/client.js';
 import { useInfiniteList, PAGE_SIZE } from '../hooks/useInfiniteScroll.js';
 import { KnowledgeCard } from '../components/KnowledgeCard.js';
@@ -344,6 +344,7 @@ export function HomePage() {
   return (
     <div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <CleanupBanner />
       {showModal ? (
         <>
           <button
@@ -687,6 +688,58 @@ export function HomePage() {
         loading={bulkDeleting}
         errorText={deleteError}
       />
+    </div>
+  );
+}
+
+
+/**
+ * Nudge to the cleanup report when candidates are waiting.
+ *
+ * Reads the dedicated count endpoint rather than the full report: this renders
+ * on the home page, and pulling every candidate just to show a number would be
+ * wasteful. Fetched once per mount — the count only changes when the user acts
+ * on the report in Settings, which unmounts this page.
+ * Dismissal is per-session only — the report itself is the durable state.
+ */
+function CleanupBanner() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [count, setCount] = useState(0);
+  const [hidden, setHidden] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getCleanupPendingCount()
+      .then((r) => { if (!cancelled) setCount(r.pendingCount); })
+      .catch(() => { /* the sidecar may still be starting */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (hidden || count === 0) return null;
+
+  return (
+    <div
+      style={{
+        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
+        padding: '10px 14px', borderRadius: 8,
+        border: '1px solid var(--border)', fontSize: 13,
+      }}
+    >
+      <span style={{ flex: 1 }}>{t('cleanup.bannerReady', { count })}</span>
+      <button
+        onClick={() => navigate('/settings')}
+        style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}
+      >
+        {t('cleanup.bannerReview')}
+      </button>
+      <button
+        onClick={() => setHidden(true)}
+        aria-label={t('cleanup.bannerDismiss')}
+        style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+      >
+        ×
+      </button>
     </div>
   );
 }

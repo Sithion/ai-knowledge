@@ -46,6 +46,16 @@ description: >
 - **NEVER** skip createPlan() because "it's a small task"
 - **NEVER** create a plan without tracking task execution afterward
 - **NEVER** bypass this skill in [PLAN] mode — the plan MUST still use `createPlan()`
+- **NEVER** create a follow-up plan for the SAME effort without `parentPlanId` — that starts a disconnected chain and loses the original
+
+## Plan Chains (lineage)
+
+A plan created **without** `parentPlanId` is the **ORIGINAL** — the root of a new effort. Every follow-up plan for that effort must pass `parentPlanId`, so the chain stays linked and the original stays identifiable.
+
+- Continuing an effort: `parentPlanId: "<the effort's plan id>"`; genuinely new work: omit it
+- Inspect a chain from any member: `cognistore-getPlanChain(planId)`
+- Link after the fact: `cognistore-updatePlan(planId, { parentPlanId: "<id>" })`; `null` detaches it
+- A subagent that owns an implementation slice MAY create a plan, but MUST pass the main effort's plan id as `parentPlanId`. Review-only subagents must not create plans
 
 ## [PLAN] Mode — This Skill STILL Applies
 
@@ -74,6 +84,7 @@ cognistore-createPlan({
   tags: ["feature-name", "component", "approach"],
   scope: "workspace:<project-name>",
   source: "planning session for <task description>",
+  parentPlanId: "<id of the plan this work continues — omit ONLY for a new effort>",
   relatedKnowledgeIds: ["id1", "id2"],
   tasks: [
     { description: "Step 1: Do X", priority: "high" },

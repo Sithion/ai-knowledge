@@ -17,7 +17,7 @@ emit() {
 
 case "$FILE_PATH" in
   */.claude/plans/*)
-    emit "[CogniStore] Plan file detected at ${ESCAPED_PATH} . After writing it you MUST call mcp__cognistore__createPlan() with title, content, tags, scope, tasks AND planFilePath: \\\"${ESCAPED_PATH}\\\" (the ABSOLUTE path) so the persisted plan links back to the local file. The local file is temporary — createPlan() is the source of truth." ;;
+    emit "[CogniStore] Plan file detected at ${ESCAPED_PATH} . After writing it you MUST call mcp__cognistore__createPlan() with title, content, tags, scope, tasks AND planFilePath: \\\"${ESCAPED_PATH}\\\" (the ABSOLUTE path) so the persisted plan links back to the local file — plus parentPlanId if this plan continues an existing effort. The local file is temporary — createPlan() is the source of truth." ;;
 esac
 
 FILENAME="$(basename "$FILE_PATH" | tr '[:upper:]' '[:lower:]')"

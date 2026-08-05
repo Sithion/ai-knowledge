@@ -1,5 +1,5 @@
 export { createDbClient, type Database, type SQLiteDatabase } from './db/index.js';
-export { runMigrations } from './db/index.js';
+export { runMigrations, EMBEDDED_MIGRATIONS } from './db/index.js';
 export { knowledgeEntries, knowledgeTypeEnum } from './db/index.js';
 export {
   createEmbeddingsTable,
@@ -10,6 +10,24 @@ export {
 } from './db/index.js';
 export { KnowledgeRepository } from './repositories/index.js';
 export { KnowledgeService, type EmbeddingProvider } from './services/index.js';
+export type { CleanupReport, CleanupCandidate } from './services/knowledge.service.js';
+
+// Plan lineage traversals live in ./services/plan-lineage.js and are deliberately
+// NOT exported: KnowledgeService is the only path allowed to derive or rewrite a
+// chain, so publishing them would hand any consumer a way around its validation.
+// Chain shapes come from @cognistore/shared (PlanChain / PlanChainEntry).
+
+// Cleanup cycle: pure merge policy. Exported so the sidecar's LLM orchestration
+// and the apply path share one implementation of the merge invariants.
+export {
+  computeMergedTags,
+  validateMergeDraft,
+  deterministicMergeDraft,
+  MergeDraftError,
+  CLEANUP_CONTROL_TAGS,
+  type MergeDraft,
+  type MergeMember,
+} from './services/cleanup-merge.js';
 
 // Token usage
 export { TokenUsageRepository } from './repositories/token-usage.repository.js';

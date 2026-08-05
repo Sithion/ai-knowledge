@@ -201,6 +201,11 @@ pub fn spawn_node(
         .env("TEMPLATES_PATH", templates_path.to_string_lossy().to_string())
         .env("NODE_ENV", "production")
         .env("NODE_PATH", node_modules_path.to_string_lossy().to_string())
+        // Marks a sidecar owned by the desktop app, so it may re-deploy the user's
+        // agent configs on a version change. Tests spawn the same server binary
+        // (with SIDECAR_TOKEN and NODE_ENV set) against a real HOME, so this is the
+        // only reliable discriminator.
+        .env("COGNISTORE_MANAGED", "1")
         .env("SIDECAR_TOKEN", &token);
 
     // Inject external-provider secrets from the OS keychain (Rust is the only

@@ -96,7 +96,7 @@ export function createFactory(service: KnowledgeService) {
         ...overrides,
       });
     },
-    async plan(overrides: Partial<{ title: string; content: string; tags: string[]; scope: string; source: string; tasks: { description: string; priority?: string }[] }> = {}) {
+    async plan(overrides: Partial<{ title: string; content: string; tags: string[]; scope: string; source: string; parentPlanId: string | null; tasks: { description: string; priority?: string }[] }> = {}) {
       counter++;
       return service.createPlan({
         title: overrides.title ?? `Test Plan ${counter}`,
@@ -104,6 +104,7 @@ export function createFactory(service: KnowledgeService) {
         tags: overrides.tags ?? ['test-plan'],
         scope: overrides.scope ?? 'global',
         source: overrides.source ?? 'test',
+        parentPlanId: overrides.parentPlanId,
         tasks: overrides.tasks,
         skipDedup: true,
       });

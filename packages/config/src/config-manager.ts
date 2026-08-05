@@ -283,9 +283,18 @@ export class ConfigManager {
     const configPath = ConfigManager.OPENCODE_CONFIG;
     await mkdir(dirname(configPath), { recursive: true });
 
+    // Derive the command from the caller's entry rather than hardcoding it: the
+    // caller resolves both the pinned npx path (so the MCP child runs on the same
+    // Node major as the sidecar) and the pinned package spec (so a stale global
+    // install cannot shadow it). Hardcoding silently discarded both.
+    const command =
+      typeof mcpEntry.command === 'string' && Array.isArray(mcpEntry.args)
+        ? [mcpEntry.command, ...(mcpEntry.args as string[])]
+        : ['npx', '-y', '@cognistore/mcp-server@latest'];
+
     const openCodeEntry = {
       type: 'local',
-      command: ['npx', '-y', '@cognistore/mcp-server'],
+      command,
       enabled: true,
       environment: mcpEntry.env || {},
     };
@@ -531,7 +540,10 @@ export class ConfigManager {
     return {
       UserPromptSubmit: [group(undefined, 'user-prompt-check.sh')],
       PreToolUse: [
-        group('Edit|Write|Bash|MultiEdit|Agent|NotebookEdit|EnterPlanMode', 'pre-tool-check.sh'),
+        // Agent and Task are the same subagent-dispatch tool under two names
+        // (current vs older Claude Code builds); matching both keeps the plan-chain
+        // hint from becoming dead code on either.
+        group('Edit|Write|Bash|MultiEdit|Agent|Task|NotebookEdit|EnterPlanMode', 'pre-tool-check.sh'),
         group('Write|Edit|MultiEdit|NotebookEdit', 'pre-plan-file-check.sh'),
         group('EnterPlanMode', 'pre-enter-plan-check.sh'),
         group('mcp__cognistore__createPlan', 'pre-create-plan-check.sh'),
