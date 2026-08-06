@@ -396,18 +396,59 @@ Run the upgrade pipeline. Compares `~/.cognistore/.version` with the running app
 ```json
 {
   "success": true,
-  "fromVersion": "2.3.5",
-  "toVersion": "2.4.0",
+  "fromVersion": "2.4.0",
+  "toVersion": "2.4.1",
   "results": [
     { "step": "database", "status": "success", "message": "Schema up to date" },
-    { "step": "version", "status": "success", "message": "v2.4.0" }
+    { "step": "version", "status": "success", "message": "v2.4.1" }
   ]
 }
 ```
 
 `results[].status` is `success`, `warning`, `skipped` or `error`; `success` is `true` when every step is `success` or `warning`.
 
-**Concurrency:** if a deploy is already running (startup self-heal or `/api/redeploy`), the request **waits** for it and then runs. A `409 Upgrade already in progress` is returned only if another deploy starts in between.
+`results[].step` is one of the names in the `DeployStepName` union declared in `apps/dashboard/server/upgrade-progress.ts` — the source of truth for the step vocabulary. `reembed` and `integrity` are conditional (an embedding-dimension change and an embedding shortfall respectively), so a healthy upgrade emits nine steps and at most eleven.
+
+**Already up to date:** before doing any work the handler re-reads `~/.cognistore/.version`, so a duplicate request — a second window, a StrictMode remount, or a request that just waited out an in-flight deploy — never repeats the upgrade:
+
+- Marker already equals the running app version and an upgrade completed this boot with every step `success` or `warning` → returns that run's `results` verbatim (messages included), without repeating any work.
+- Marker already equals the running app version but that run was **degraded** — a `skipped` step; `.version` is written whenever nothing hard-errored — → the upgrade **runs again**. A failed result is never replayed from the cache, so retrying stays meaningful (a `reembed` skipped because Ollama was still starting can succeed on the second attempt).
+- Marker already equals the running app version and nothing ran this boot → returns
+
+  ```json
+  { "success": true, "noop": true, "fromVersion": "2.4.1", "toVersion": "2.4.1", "results": [] }
+  ```
+
+  Treat `noop` as "nothing to do", not as a completed upgrade with no steps.
+- Otherwise the upgrade runs normally. This includes the case where the app version is unknown (`0.0.0`): nothing is ever short-circuited on an unresolved version.
+
+**Concurrency:** if a deploy is already running (startup self-heal or `/api/redeploy`), the request **waits** for it and then applies the check above — the upgrade it was waiting for may well have been the one it wanted.
+
+A `409 Upgrade already in progress` is returned only when another deploy holds the lock without an awaitable promise — in practice a concurrent `/api/redeploy`.
+
+### GET /api/upgrade/progress
+
+Live view of the upgrade `POST /api/upgrade/run` is performing, for a client that wants to show progress while it waits. Poll it (the upgrade screen polls every 750 ms).
+
+**Response:**
+```json
+{
+  "running": true,
+  "startedAt": "2026-08-06T12:00:00.000Z",
+  "fromVersion": "2.4.0",
+  "toVersion": "2.4.1",
+  "currentStep": "reembed",
+  "steps": [
+    { "step": "database", "status": "success" }
+  ]
+}
+```
+
+- `steps` mirrors the `results` of the in-flight run, **without `message`**. Step messages embed raw filesystem errors — absolute paths, and with them the OS username — plus template paths and the globally-installed MCP version. This endpoint is unauthenticated like every route here, so it publishes names and statuses only; the full messages come back with the `POST` response the app already consumes.
+- `currentStep` names the phase about to run, and is `null` while the artifact steps run (they are published individually as they complete) and once the run ends.
+- **No readiness guard:** this endpoint never returns `503`, deliberately — it has to answer while the `database` step has the SDK torn down. It reads in-memory state only.
+- **Between runs** it keeps `running: false` with the previous run's `steps` still populated, so a client that connects late can still render what happened. `startedAt` identifies which run a snapshot describes: latch it to tell a fresh snapshot from a stale one. Before the first run of the process it answers `running: false` with `startedAt` and `fromVersion` `null` and `steps: []`; `toVersion` is always the running app version, run or no run.
+- The startup self-heal deliberately publishes nothing here — only user-visible upgrades do.
 
 ### POST /api/redeploy
 
@@ -614,7 +655,7 @@ Add a task to a plan.
 
 **Response:** `PlanTask`
 
-### PUT /api/tasks/:id
+### PUT /api/plans/tasks/:taskId
 
 Update a task (status, description, priority, notes).
 
@@ -628,11 +669,11 @@ Update a task (status, description, priority, notes).
 
 **Response:** `PlanTask`
 
-### DELETE /api/tasks/:id
+### DELETE /api/plans/tasks/:taskId
 
-Delete a task.
+Delete a task. Used by the dashboard's per-task delete button, which branches on `deleted`.
 
-**Response:** `{ success: true }`
+**Response:** `{ "deleted": true }` — `deleted` is `false` when no task with that id existed (still `200`, not `404`).
 
 ## Error Handling
 

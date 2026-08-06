@@ -38,6 +38,11 @@ import {
   type AppSettings,
 } from './settings.js';
 import { registerCleanupRoutes, maybeGenerateReport } from './cleanup-routes.js';
+import {
+  createUpgradeProgress,
+  deployWentWell,
+  type DeployStep as UpgradeDeployStep,
+} from './upgrade-progress.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -75,12 +80,10 @@ const APP_VERSION = (() => {
  *  artifact (hooks, skills, MCP configs) at whatever shipped first. */
 const VERSION_RESOLVED = APP_VERSION !== UNKNOWN_VERSION;
 
-/** One entry in a setup/upgrade/redeploy result list. */
-type DeployStep = {
-  step: string;
-  status: 'success' | 'error' | 'skipped' | 'warning';
-  message?: string;
-};
+/** One entry in a setup/upgrade/redeploy result list. Declared in
+ *  ./upgrade-progress.ts, where `DeployStepName` is the source of truth for the
+ *  step vocabulary the upgrade emits. */
+type DeployStep = UpgradeDeployStep;
 
 /** Skills deployed to ~/.claude/skills and ~/.copilot/skills. */
 const COGNISTORE_SKILLS = ['cognistore-query', 'cognistore-capture', 'cognistore-plan'] as const;
@@ -506,7 +509,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   /** Warn (never mutate) when a global install of the MCP server shadows the
    *  pinned spec by putting `cognistore-mcp` on PATH ahead of the registry. */
-  function checkGlobalMcpShadow(): { step: string; status: 'success' | 'warning'; message?: string } {
+  function checkGlobalMcpShadow(): DeployStep {
     const shadowed = detectGlobalMcpShadow(APP_VERSION);
     if (!shadowed) return { step: 'mcp-shadow-check', status: 'success' };
     const message =
@@ -549,8 +552,19 @@ Pass an array to addKnowledge to create multiple entries at once.
    * `clearNpxCache` is opt-in: wiping the npx cache forces a full MCP re-download,
    * which is right on an explicit upgrade but must never happen on every launch.
    */
-  async function redeployArtifacts(opts: { clearNpxCache?: boolean } = {}): Promise<DeployStep[]> {
+  async function redeployArtifacts(
+    opts: { clearNpxCache?: boolean; onStep?: (step: DeployStep) => void } = {},
+  ): Promise<DeployStep[]> {
     const results: DeployStep[] = [];
+    /** Records a step and publishes it. The callback is never allowed to affect
+     *  the deploy: a throw here would escape into the surrounding per-step
+     *  `catch`, which would push a *second*, contradictory entry for the same
+     *  step — `saveDeployedVersion` would then refuse to write `.version` and
+     *  the app would re-upgrade on every launch, forever. */
+    const push = (step: DeployStep) => {
+      results.push(step);
+      try { opts.onStep?.(step); } catch { /* progress is best-effort */ }
+    };
     const configTemplateDir = resolve(TEMPLATES_PATH, 'configs');
     const claudeT = resolve(configTemplateDir, 'claude-code-instructions.md');
     const copilotT = resolve(configTemplateDir, 'copilot-instructions.md');
@@ -560,35 +574,35 @@ Pass an array to addKnowledge to create multiple entries at once.
     try {
       if (existsSync(claudeT)) {
         await configManager.injectConfig(ConfigManager.CLAUDE_MD, claudeT, 'Claude Code');
-        results.push({ step: 'instructions-claude', status: 'success' });
+        push({ step: 'instructions-claude', status: 'success' });
       } else {
         console.warn(`[CogniStore] Redeploy: Claude template not found at: ${claudeT}`);
-        results.push({ step: 'instructions-claude', status: 'error', message: `Template not found: ${claudeT}` });
+        push({ step: 'instructions-claude', status: 'error', message: `Template not found: ${claudeT}` });
       }
     } catch (e: any) {
-      results.push({ step: 'instructions-claude', status: 'error', message: e.message });
+      push({ step: 'instructions-claude', status: 'error', message: e.message });
     }
 
     try {
       if (existsSync(copilotT)) {
         await configManager.injectConfig(ConfigManager.COPILOT_MD, copilotT, 'GitHub Copilot');
         await configManager.injectConfig(ConfigManager.COPILOT_INSTRUCTIONS, copilotT, 'Copilot CLI');
-        results.push({ step: 'instructions-copilot', status: 'success' });
+        push({ step: 'instructions-copilot', status: 'success' });
       } else {
         console.warn(`[CogniStore] Redeploy: Copilot template not found at: ${copilotT}`);
-        results.push({ step: 'instructions-copilot', status: 'error', message: `Template not found: ${copilotT}` });
+        push({ step: 'instructions-copilot', status: 'error', message: `Template not found: ${copilotT}` });
       }
     } catch (e: any) {
-      results.push({ step: 'instructions-copilot', status: 'error', message: e.message });
+      push({ step: 'instructions-copilot', status: 'error', message: e.message });
     }
 
     try {
       if (existsSync(opencodeT)) {
         await configManager.injectConfig(ConfigManager.OPENCODE_AGENTS_MD, opencodeT, 'OpenCode');
       }
-      results.push({ step: 'instructions-opencode', status: 'success' });
+      push({ step: 'instructions-opencode', status: 'success' });
     } catch (e: any) {
-      results.push({ step: 'instructions-opencode', status: 'error', message: e.message });
+      push({ step: 'instructions-opencode', status: 'error', message: e.message });
     }
 
     // 2. MCP configs (one entry per platform so each stamps its own COGNISTORE_PLATFORM)
@@ -602,12 +616,12 @@ Pass an array to addKnowledge to create multiple entries at once.
       try { await configManager.setupMcpConfig(ConfigManager.COPILOT_MCP_CONFIG, copilotEntry); } catch { /* optional */ }
       try { await configManager.setupOpenCodeMcp(opencodeEntry); } catch { /* optional */ }
       try { await configManager.injectPermissions(ConfigManager.CLAUDE_SETTINGS, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS); } catch (e: any) { console.warn('[CogniStore] Permission injection failed:', e.message); }
-      results.push({ step: 'mcp-configs', status: 'success' });
+      push({ step: 'mcp-configs', status: 'success' });
     } catch (e: any) {
-      results.push({ step: 'mcp-configs', status: 'error', message: e.message });
+      push({ step: 'mcp-configs', status: 'error', message: e.message });
     }
 
-    results.push(checkGlobalMcpShadow());
+    push(checkGlobalMcpShadow());
 
     // 3. Skills
     try {
@@ -646,17 +660,17 @@ Pass an array to addKnowledge to create multiple entries at once.
       try { await configManager.setupOpenCodeSkills(TEMPLATES_PATH); } catch { /* optional */ }
       try { await configManager.setupOpenCodePlugins(TEMPLATES_PATH); } catch { /* optional */ }
 
-      results.push({ step: 'skills', status: 'success' });
+      push({ step: 'skills', status: 'success' });
     } catch (e: any) {
-      results.push({ step: 'skills', status: 'error', message: e.message });
+      push({ step: 'skills', status: 'error', message: e.message });
     }
 
     // 4. Global enforcement hooks (settings.json + ~/.copilot/hooks)
     try {
       await deployGlobalHooks();
-      results.push({ step: 'hooks', status: 'success' });
+      push({ step: 'hooks', status: 'success' });
     } catch (e: any) {
-      results.push({ step: 'hooks', status: 'error', message: e.message });
+      push({ step: 'hooks', status: 'error', message: e.message });
     }
 
     return results;
@@ -1053,6 +1067,9 @@ Pass an array to addKnowledge to create multiple entries at once.
   let upgradeRunning = false;
   /** Resolves when the in-flight deploy finishes; lets callers wait instead of 409. */
   let inFlightDeploy: Promise<unknown> | null = null;
+  /** Live view of the running upgrade, polled by the upgrade screen. */
+  const upgradeProgress = createUpgradeProgress(APP_VERSION);
+  app.get('/api/upgrade/progress', async () => upgradeProgress.snapshot());
 
   app.post('/api/upgrade/run', async (request, reply) => {
     // The UI auto-POSTs this on window load, which can land while the startup
@@ -1060,20 +1077,49 @@ Pass an array to addKnowledge to create multiple entries at once.
     // client would surface as a failed upgrade.
     if (inFlightDeploy) { await inFlightDeploy.catch(() => {}); }
     if (upgradeRunning) { return sendError(reply, 409, 'Upgrade already in progress'); }
+    // Whatever we were waiting for may have been the very upgrade this request
+    // wanted. Without this check the flags are already cleared by the time we
+    // get here, so a second window (or a StrictMode remount) would run the whole
+    // thing again — re-embed probe, npx cache wipe and all.
+    if (VERSION_RESOLVED && getDeployedVersion() === APP_VERSION) {
+      const last = upgradeProgress.lastRun();
+      if (last === null) {
+        // Nothing ran this boot: already current. Say so explicitly rather than
+        // returning an empty list, which reads as a completed upgrade with no steps.
+        return { success: true, noop: true, fromVersion: getDeployedVersion(), toVersion: APP_VERSION, results: [] as DeployStep[] };
+      }
+      if (deployWentWell(last.steps)) {
+        // `last.fromVersion` is the version that run started from — re-reading
+        // the marker here would report `fromVersion === toVersion`, since the
+        // run itself overwrote it.
+        return { success: true, fromVersion: last.fromVersion, toVersion: APP_VERSION, results: last.steps };
+      }
+      // A degraded run is NOT replayable (see deployWentWell): the upgrade
+      // screen's Retry button would be permanently dead for the rest of the
+      // boot. Fall through and genuinely run it again, which is what Retry means.
+    }
     upgradeRunning = true;
-    const results: DeployStep[] = [];
     // Captured before Step 5 overwrites the marker.
     const fromVersion = getDeployedVersion();
+    // Only now that this request owns the upgrade: a reset before the guard
+    // above would wipe a live run's steps out from under a polling client.
+    upgradeProgress.begin(fromVersion);
+    /** The single append path for this run's results — the store owns the list,
+     *  and the response is read back from it at the end. `redeployArtifacts`
+     *  feeds the same function through its `onStep` callback, so there is no
+     *  second list to keep in sync. */
+    const record = (step: DeployStep) => upgradeProgress.record(step);
     const run = (async () => {
 
       // Step 1: Database migrations (handled automatically by createDbClient, but log it)
+      upgradeProgress.setStep('database');
       try {
         if (sdkReady) { await sdk.close(); sdkReady = false; }
         const ok = await tryInitSDK();
-        results.push({ step: 'database', status: ok ? 'success' : 'error', message: ok ? 'Schema up to date' : 'SDK init failed' });
+        record({ step: 'database', status: ok ? 'success' : 'error', message: ok ? 'Schema up to date' : 'SDK init failed' });
         if (ok) await seedSystemKnowledge();
       } catch (e: any) {
-        results.push({ step: 'database', status: 'error', message: e.message });
+        record({ step: 'database', status: 'error', message: e.message });
       }
 
       // Step 1b: Re-embed if embedding dimensions changed (e.g. all-minilm 384d → nomic-embed-text 768d)
@@ -1093,6 +1139,7 @@ Pass an array to addKnowledge to create multiple entries at once.
           })();
 
           if (needsReembed) {
+            upgradeProgress.setStep('reembed');
             console.log(`[CogniStore] Upgrade: embedding dimension mismatch detected, re-embedding all entries...`);
 
             // 1. Pull new model first
@@ -1142,7 +1189,7 @@ Pass an array to addKnowledge to create multiple entries at once.
             } catch { canEmbed = false; }
 
             if (!canEmbed) {
-              results.push({ step: 'reembed', status: 'skipped', message: 'Ollama unavailable — kept existing embeddings, will re-embed on next upgrade' });
+              record({ step: 'reembed', status: 'skipped', message: 'Ollama unavailable — kept existing embeddings, will re-embed on next upgrade' });
               console.warn('[CogniStore] Upgrade: skipping re-embed (Ollama cannot embed); existing embeddings preserved');
             } else {
               // 2. Drop old vec tables and re-init SDK (recreates with new dimensions)
@@ -1162,19 +1209,19 @@ Pass an array to addKnowledge to create multiple entries at once.
               if (reinitOk) {
                 try {
                   const reembedded = await sdk.reembedAll();
-                  results.push({ step: 'reembed', status: 'success', message: `Re-embedded ${reembedded} entries with new model` });
+                  record({ step: 'reembed', status: 'success', message: `Re-embedded ${reembedded} entries with new model` });
                   console.log(`[CogniStore] Re-embedded ${reembedded} entries`);
                 } catch (e: any) {
-                  results.push({ step: 'reembed', status: 'error', message: e.message });
+                  record({ step: 'reembed', status: 'error', message: e.message });
                 }
               } else {
-                results.push({ step: 'reembed', status: 'error', message: 'SDK re-init failed after dropping vec tables' });
+                record({ step: 'reembed', status: 'error', message: 'SDK re-init failed after dropping vec tables' });
               }
             }
           }
         }
       } catch (e: any) {
-        results.push({ step: 'reembed', status: 'error', message: e.message });
+        record({ step: 'reembed', status: 'error', message: e.message });
       }
 
       // Step 1c: Embedding integrity check — detect entries without embeddings
@@ -1186,6 +1233,7 @@ Pass an array to addKnowledge to create multiple entries at once.
             const embeddingCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_embeddings_rowids').get() as { c: number }).c;
 
             if (entryCount > 0 && embeddingCount < entryCount) {
+              upgradeProgress.setStep('integrity');
               console.log(`[CogniStore] Upgrade: embedding integrity mismatch — ${entryCount} entries but only ${embeddingCount} embeddings. Resyncing...`);
 
               try {
@@ -1200,34 +1248,40 @@ Pass an array to addKnowledge to create multiple entries at once.
               if (reinitOk) {
                 try {
                   const reembedded = await sdk.reembedAll();
-                  results.push({ step: 'integrity', status: 'success', message: `Re-embedded ${reembedded} entries (${entryCount - embeddingCount} were missing)` });
+                  record({ step: 'integrity', status: 'success', message: `Re-embedded ${reembedded} entries (${entryCount - embeddingCount} were missing)` });
                 } catch (e: any) {
-                  results.push({ step: 'integrity', status: 'error', message: e.message });
+                  record({ step: 'integrity', status: 'error', message: e.message });
                 }
               } else {
-                results.push({ step: 'integrity', status: 'error', message: 'SDK re-init failed after integrity resync' });
+                record({ step: 'integrity', status: 'error', message: 'SDK re-init failed after integrity resync' });
               }
             }
           }
         }
       } catch (e: any) {
-        results.push({ step: 'integrity', status: 'error', message: e.message });
+        record({ step: 'integrity', status: 'error', message: e.message });
       }
 
       // Steps 2-4b: re-deploy every on-disk artifact (shared with /api/redeploy).
-      results.push(...(await redeployArtifacts({ clearNpxCache: true })));
+      // Its steps are recorded through `onStep` as they complete — the returned
+      // array is the same list and is deliberately discarded here, so this run
+      // has exactly one append path. There is no single phase name to show while
+      // it runs.
+      upgradeProgress.setStep(null);
+      await redeployArtifacts({ clearNpxCache: true, onStep: record });
 
       // Step 5: Save new version. saveDeployedVersion() refuses to record a
       // version when any step above errored, so a partial upgrade re-runs.
+      upgradeProgress.setStep('version');
       try {
-        const wrote = saveDeployedVersion(results);
-        results.push({
+        const wrote = saveDeployedVersion(upgradeProgress.steps());
+        record({
           step: 'version',
           status: wrote ? 'success' : 'skipped',
           message: wrote ? `v${APP_VERSION}` : 'Not recorded (unknown version or a step failed)',
         });
       } catch (e: any) {
-        results.push({ step: 'version', status: 'error', message: e.message });
+        record({ step: 'version', status: 'error', message: e.message });
       }
     })();
 
@@ -1237,10 +1291,13 @@ Pass an array to addKnowledge to create multiple entries at once.
     } finally {
       upgradeRunning = false;
       inFlightDeploy = null;
+      upgradeProgress.finish();
     }
 
-    const allSuccess = results.every((r) => r.status === 'success' || r.status === 'warning');
-    return { success: allSuccess, fromVersion, toVersion: APP_VERSION, results };
+    // Read the results back from the single list that collected them.
+    const completed = upgradeProgress.lastRun();
+    const results = completed?.steps ?? [];
+    return { success: deployWentWell(results), fromVersion, toVersion: APP_VERSION, results };
   });
 
   // ─── Re-deploy configurations (no migration, no version bump) ──
@@ -1258,7 +1315,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       upgradeRunning = false;
     }
 
-    const allSuccess = results.every((r) => r.status === 'success' || r.status === 'warning');
+    const allSuccess = deployWentWell(results);
     return { success: allSuccess, results };
   });
 

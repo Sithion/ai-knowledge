@@ -340,6 +340,9 @@ skips the migration it actually needed. Consequences to respect when adding a mi
 | Plan lineage shape | `parent_plan_id` + denormalized `root_plan_id`, no foreign key | `ALTER TABLE` cannot add an FK in SQLite, so the graph is unenforced by definition. The cached root buys a one-index chain read; the cost is that the service maintains it on create, re-parent, delete and import, and that it may drift (readers fall back to a bounded parent walk). Rejected: recursive CTE only — cheaper to maintain but gives up the indexed read, and an unused column cannot be dropped later without a table rebuild |
 | Lineage traversal placement | One module, `packages/core/src/services/plan-lineage.ts`, always bounded | `better-sqlite3` is synchronous: one unbounded walk over a cyclic chain hangs the sidecar and every MCP server on the same file. Caps (`PLAN_CHAIN_MAX_DEPTH`, `PLAN_CHAIN_MAX_ENTRIES`) are the guard; write-time validation is only a convenience |
 | Lineage validation placement | `KnowledgeService` | MCP server, SDK and the dashboard `PUT` route all converge there and only the route runs a Zod schema — the service is the single choke point they share |
+| Upgrade execution owner | `UpgradePage` POSTs `/api/upgrade/run`; the boot sequence only decides which screen to show | Until v2.4.1 `App.tsx` ran the upgrade silently behind the loading screen and fell back to the upgrade screen only on failure, so a long run (re-embed, artifact redeploy) was indistinguishable from a frozen app. The screen that shows the operation now owns it — the same shape as `SetupPage`. Consequence to respect: nothing else may start an upgrade (the startup self-heal deliberately re-deploys artifacts only, under its own `.artifacts-version` marker), and `POST /api/upgrade/run` must stay idempotent for the boot, since a second window or a StrictMode remount will POST it again. Rejected: keeping the silent run and only adding a progress screen for the failure path — two runners for one operation, with the visible one exercised least |
+| Upgrade replay guard | `.version` marker equality plus the boot's last result, held in the sidecar process | A duplicate `POST /api/upgrade/run` must not repeat a re-embed or an npx cache wipe, but a *degraded* run (a `skipped` step still writes `.version`) must stay retryable, so the cached result is replayed only when every step was `success`/`warning`; `noop: true` distinguishes "already current, nothing ran" from "ran with no steps". The state is intentionally process-local and lost on restart — the marker on disk is what survives. Rejected: persisting the last result next to `.version` — durable state for a question only a live window asks |
+| Upgrade progress payload | `{step, status}` only — never `message` | `GET /api/upgrade/progress` is unauthenticated, like every sidecar route (loopback bind + a local-origin CORS allow-list is the app's accepted posture). A `DeployStep.message` carries raw `e.message` text from filesystem errors — absolute paths, and with them the OS username — plus template paths and the globally-installed MCP version. The projection is what keeps the poll payload harmless; the full messages ride the `POST /api/upgrade/run` response the app already consumes. Rejected: publishing the whole step — one field's convenience against every future disclosure review |
 
 ## Directory Structure
 
@@ -348,13 +351,19 @@ cognistore/
 ├── apps/
 │   ├── dashboard/              # Tauri v2 desktop application
 │   │   ├── src/                # React frontend
-│   │   │   ├── pages/          # HomePage, PlansPage, StatsPage, SettingsPage, SetupPage
-│   │   │   ├── components/     # Sidebar, UpdateChecker, LanguageSelector
+│   │   │   ├── pages/          # HomePage, PlansPage, StatsPage, TokenConsumptionPage, WidgetsPage,
+│   │   │   │                   #   ProvidersPage, SettingsPage + the boot screens SetupPage, UpgradePage
+│   │   │   ├── components/     # Layout (nav shell), UpdateChecker, ConfirmModal, knowledge modals/cards
 │   │   │   ├── store/          # Redux Toolkit (statsSlice)
 │   │   │   ├── i18n/           # Translations (EN, ES, PT)
 │   │   │   └── api/            # HTTP client for Fastify sidecar
 │   │   ├── server/             # Fastify sidecar
-│   │   │   └── index.ts        # API routes (setup, CRUD, stats, health, uninstall)
+│   │   │   ├── index.ts        # API routes (setup, CRUD, stats, health, uninstall); calls start() at import
+│   │   │   ├── cleanup-routes.ts     # Cleanup cycle routes + scheduling predicate
+│   │   │   ├── upgrade-progress.ts   # Upgrade step vocabulary, progress store, poll projection
+│   │   │   ├── mcp-entry.ts          # MCP entry generation + deployed-version bookkeeping
+│   │   │   ├── settings.ts           # settings.json read/write (honours COGNISTORE_HOME)
+│   │   │   └── llm-merge.ts          # Duplicate-merge prompt + response validation
 │   │   ├── src-tauri/          # Rust shell
 │   │   │   ├── src/main.rs     # App entry, plugin registration, sidecar spawn
 │   │   │   └── src/sidecar.rs  # Node.js finder, process spawner, port allocation

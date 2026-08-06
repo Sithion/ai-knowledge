@@ -42,8 +42,11 @@ Plan management with live task tracking.
 - Task list per plan with status icons: ○ pending, spinner in_progress, ✓ completed
 - Priority left-border colors: red (high), yellow (medium), gray (low)
 - Progress bars and mini progress counters (e.g., "3/5 tasks")
+- **Delete button** (red trash icon) per task row in the plan detail view — confirms with the task's own description, then refreshes the plan, its progress and the list counts. The read-only task lists on the active-plan cards carry no actions
 - Plan relations sections (input/output knowledge entries)
-- **Plan chain** section (hidden for standalone plans, where the chain is just the plan itself): the ORIGINAL plan and every follow-up, indented by server-computed depth, with an `Original` badge at depth 0 and a status badge per row; every row except the one being viewed is clickable and switches the detail view to that plan
+- **Origin** line at the top of the detail view for a plan that continues another one: names the parent and jumps to it. The title comes from the chain when present; the chain walk is bounded, so a distant parent falls back to a short id
+- **`↳ Continuation` chip** on the cards in both plan lists (active plans and the paginated list) when the plan has a parent — clicking it opens the parent instead of the card's own plan
+- **Plan chain** section (hidden for standalone plans, where the chain is just the plan itself): the ORIGINAL plan and every follow-up, indented by server-computed depth, with an `Original` badge at depth 0 and a status badge per row; every row except the one being viewed is clickable and switches the detail view to that plan. A note appears when the chain returned is only part of a longer one
 - Plan status lifecycle: draft → active → completed → archived
 - **Archive button** on completed plans — allows users to archive plans directly from the dashboard (agents cannot set `archived` status via MCP; this is a user-only action)
 - All destructive actions (delete plan, delete entry, etc.) use the shared **ConfirmModal** component
@@ -87,6 +90,17 @@ System health monitoring, updates, data management, maintenance, and uninstall.
 - Retry button on failure
 - "Open Dashboard" button on completion
 
+### UpgradePage (boot screen, not routed)
+
+Shown by `App.tsx` whenever `/api/upgrade/check` reports an upgrade is due — it both **runs** the upgrade (`POST /api/upgrade/run`) and shows its progress. It is not a failure screen: before v2.4.1 the upgrade ran silently behind the loading screen and this page was reached only when that failed.
+
+**Components:**
+- Version header (`from → to`) and a progress bar whose denominator adapts to the number of steps actually emitted (two of them are conditional)
+- Step rows fed by polling `GET /api/upgrade/progress` (750 ms) while the POST is in flight, plus a spinner row for the step in progress; the POST result replaces the list when it lands, since only it carries step messages
+- `Finishing previous update…` while a deploy that was already running has not released yet
+- Status icons cover `success` / `error` / `skipped` / `warning`
+- On success: brief "Update complete!" then the dashboard opens automatically; on failure: a static message and a Retry button
+
 ## State Management
 
 ### Redux Store
@@ -118,10 +132,12 @@ interface StatsState {
 ### Loading Strategy
 
 Following the project's "no blocking loading" rule:
-- No full-page spinners or blocking overlays
+- No full-page spinners or blocking overlays **inside the dashboard**
 - Small inline spinner next to section titles during background refresh
 - Data displays immediately from cache; refreshes happen silently
 - `isRefreshing` flag drives the inline spinner visibility
+
+The boot screens are the deliberate exception: SetupPage and UpgradePage are full-screen and block, because there is no dashboard to show until they finish. Both state what they are doing rather than spinning anonymously — the upgrade screen lists each step as it completes (see below).
 
 ## Internationalization
 
@@ -143,9 +159,11 @@ Following the project's "no blocking loading" rule:
 
 ```
 App Mount:
-  → GET /api/setup/status
-  → If all ready → show Dashboard layout with routes
+  → GET /api/setup/status        (loading screen: "Checking setup…")
   → If not ready → show SetupPage
+  → GET /api/upgrade/check       (loading screen: "Checking version…")
+  → If an upgrade is due → show UpgradePage (it runs the upgrade and shows progress)
+  → Otherwise → show Dashboard layout with routes
 
 Dashboard Routes:
   /          → HomePage
@@ -198,7 +216,7 @@ A portal-based modal used for all destructive action confirmations across the da
 - Backdrop blur effect for visual focus
 - Shows a loading spinner on the confirm button while the action is in progress (prevents double-clicks)
 - Accepts custom title, message, confirm/cancel labels, and an async `onConfirm` handler
-- Used by: delete knowledge entry, delete plan, bulk delete, uninstall wizard, cleanup orphan embeddings, plan archive
+- Used by: delete knowledge entry, delete plan, delete plan task, bulk delete, uninstall wizard, cleanup orphan embeddings, plan archive
 
 ### System Knowledge Filtering
 

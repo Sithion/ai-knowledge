@@ -1,5 +1,21 @@
 # Patch Notes
 
+## v2.4.1
+
+**The first launch after an update looked like a hang.** The app ran the whole upgrade — database re-init, re-embedding, artifact redeploy — behind a static "Loading…" screen with no indication that anything was happening. On a large knowledge base that is minutes of a frozen-looking brain emoji, and the natural reaction is to force-quit it. The upgrade now runs on a screen that shows what it is doing, step by step, as it happens.
+
+### Features
+- **The upgrade shows its work.** The update screen is no longer reached only when something failed: an upgrade always runs there, listing each step as it completes and marking the one in progress. The step list comes from the sidecar (new `GET /api/upgrade/progress`, polled while the upgrade runs) rather than from a hardcoded copy in the UI that had drifted to six entries while the server emitted up to eleven — including the long ones, `Re-embedding knowledge` and `Embedding integrity check`, which are exactly the steps that used to look like a freeze. Skipped and warning outcomes render as themselves instead of appearing stuck. On success the dashboard opens on its own, as before.
+- **The plain loading screen says what it is waiting on** — `Checking setup…`, then `Checking version…` — instead of a bare "Loading…".
+- **Delete a plan's tasks from the dashboard.** Task rows in the plan detail view now have a delete button. The confirmation names the task being removed, and the plan, its progress and the list counts refresh afterwards. The read-only task lists on the active-plan cards are unchanged.
+- **See where a plan came from.** A plan that continues another one now carries a `↳ Continuation` chip on its card in both plan lists, and its detail view opens with an **Origin** line naming the parent plan — both jump straight to it. Previously this was only inferable from the chain diagram further down the page, which is hidden entirely for a plan whose chain was cut short. The chain card now also says when it is showing only part of a longer chain.
+
+### Fixes
+- **A second upgrade request re-ran the entire upgrade.** `POST /api/upgrade/run` waits for an in-flight deploy rather than rejecting — but once that finished, the waiting request went on to run the whole thing again: database re-init, the re-embed probe, a full artifact redeploy and an npx cache wipe. It now returns the completed run's result instead of repeating it, and reports an explicit no-op when the app was already up to date. A run that did *not* complete cleanly is never replayed from that cache — retrying really retries it.
+
+### Notes
+- `GET /api/upgrade/progress` publishes step names and statuses only. Step *messages* are deliberately withheld from it — they embed raw filesystem errors, and with them absolute paths — and remain in the upgrade response the app itself consumes.
+
 ## v2.4.0
 
 **The knowledge base never shrank.** Nothing expired, nothing was ever retired, and near-duplicates could only be found manually in Settings — so a base that grows by a few hundred entries a month only ever got noisier. This introduces a periodic **cleanup report**, designed to run every 10 days and propose what could go — entries tagged `deprecated`, entries nobody has retrieved in six months, and groups of near-duplicates to consolidate into their newest member. **Nothing is deleted automatically.** The report is a proposal; you approve each item.

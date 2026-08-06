@@ -12,7 +12,7 @@ import { TokenConsumptionPage } from './pages/TokenConsumptionPage.js';
 import { ProvidersPage } from './pages/ProvidersPage.js';
 import { SetupPage } from './pages/SetupPage.js';
 import { UpgradePage } from './pages/UpgradePage.js';
-import { api, ApiError } from './api/client.js';
+import { api } from './api/client.js';
 import { UpdateChecker } from './components/UpdateChecker.js';
 
 const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
@@ -53,6 +53,8 @@ type AppState = 'loading' | 'setup' | 'upgrade' | 'ready';
 export function App() {
   const [state, setState] = useState<AppState>('loading');
   const [upgradeFrom, setUpgradeFrom] = useState<string>('');
+  // What the boot sequence is waiting on, so the loading screen says something.
+  const [loadingPhase, setLoadingPhase] = useState('Checking setup…');
 
   useEffect(() => {
     (async () => {
@@ -64,34 +66,13 @@ export function App() {
           return;
         }
 
-        // 2. Check if upgrade is needed
+        // 2. Check if upgrade is needed. The upgrade itself runs on the upgrade
+        // screen, which shows its progress — it used to run silently here, and a
+        // long one (re-embed, artifact redeploy) looked like a frozen app.
+        setLoadingPhase('Checking version…');
         const upgrade = await api.checkUpgrade();
         if (upgrade.needsUpgrade) {
           setUpgradeFrom(upgrade.fromVersion || '?');
-          // Silent upgrade — covers Tauri auto-update case
-          try {
-            let result;
-            try {
-              result = await api.runUpgrade();
-            } catch (e) {
-              // 409 means another deploy is already running (e.g. a second window).
-              // That is progress, not failure — wait it out and re-check once.
-              if (!(e instanceof ApiError && e.status === 409)) throw e;
-              await new Promise((r) => setTimeout(r, 3000));
-              const recheck = await api.checkUpgrade();
-              if (!recheck.needsUpgrade) {
-                setState('ready');
-                return;
-              }
-              result = await api.runUpgrade();
-            }
-            if (result.success) {
-              setState('ready');
-              return;
-            }
-          } catch {
-            // fall through to visible upgrade screen
-          }
           setState('upgrade');
           return;
         }
@@ -117,7 +98,7 @@ export function App() {
         flexDirection: 'column', gap: 8,
       }}>
         <div style={{ fontSize: 36 }}>🧠</div>
-        <span>Loading...</span>
+        <span>{loadingPhase}</span>
         <span style={{ fontSize: 10, opacity: 0.5 }}>v{__APP_VERSION__}</span>
       </div>
     );

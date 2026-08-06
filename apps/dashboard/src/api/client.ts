@@ -63,6 +63,37 @@ export interface SetupResult {
   path?: string;
 }
 
+/** Status of one upgrade step. Mirrors the sidecar's `DeployStep` — the two
+ *  sides are hand-kept in sync (nothing here imports from `server/`). */
+export type UpgradeStepStatus = 'success' | 'error' | 'skipped' | 'warning';
+
+export interface UpgradeStepResult {
+  step: string;
+  status: UpgradeStepStatus;
+  message?: string;
+}
+
+export interface UpgradeRunResult {
+  success: boolean;
+  /** True when the app was already up to date and nothing ran. */
+  noop?: boolean;
+  fromVersion: string | null;
+  toVersion: string;
+  results: UpgradeStepResult[];
+}
+
+/** Live upgrade state. `steps` carries no `message` on purpose — the sidecar
+ *  strips it before publishing here; the full text arrives with the POST result. */
+export interface UpgradeProgress {
+  running: boolean;
+  /** Identity of the run being described: latch it to ignore stale snapshots. */
+  startedAt: string | null;
+  fromVersion: string | null;
+  toVersion: string;
+  currentStep: string | null;
+  steps: { step: string; status: UpgradeStepStatus }[];
+}
+
 export const api = {
   // Setup — installs/downloads can take minutes; allow a long (but bounded) timeout.
   getSetupStatus: () => request<SetupStatus>('/api/setup/status'),
@@ -76,7 +107,10 @@ export const api = {
 
   // Upgrade — re-embed + model pull can take minutes.
   checkUpgrade: () => request<{ needsUpgrade: boolean; fromVersion: string | null; toVersion: string; isFirstInstall: boolean }>('/api/upgrade/check'),
-  runUpgrade: () => request<{ success: boolean; fromVersion: string; toVersion: string; results: { step: string; status: string; message?: string }[] }>('/api/upgrade/run', { method: 'POST' }, LONG_TIMEOUT_MS),
+  runUpgrade: () => request<UpgradeRunResult>('/api/upgrade/run', { method: 'POST' }, LONG_TIMEOUT_MS),
+  /** Live view of the upgrade `runUpgrade()` is performing. Deliberately never
+   *  503s, so it answers even while the database step has the SDK torn down. */
+  getUpgradeProgress: () => request<UpgradeProgress>('/api/upgrade/progress'),
 
   // Uninstall
   uninstallAll: () => request<SetupResult>('/api/uninstall', { method: 'POST' }, LONG_TIMEOUT_MS),
@@ -300,7 +334,7 @@ export const api = {
     request(`/api/plans/tasks/${taskId}`, { method: 'PUT', body: JSON.stringify(data) }),
 
   deletePlanTask: (taskId: string) =>
-    request(`/api/plans/tasks/${taskId}`, { method: 'DELETE' }),
+    request<{ deleted: boolean }>(`/api/plans/tasks/${taskId}`, { method: 'DELETE' }),
 
   // Plan Metrics
   getPlanMetrics: (from?: string, to?: string) =>
