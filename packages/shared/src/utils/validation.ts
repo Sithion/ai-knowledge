@@ -14,13 +14,26 @@ const scopeSchema = z.string().regex(
 
 // ─── Knowledge ────────────────────────────────────────────────
 
+// Upper bounds on the free-text knowledge fields.
+//
+// There were none. Every write triggers a synchronous Ollama embedding call, so
+// an unbounded `content` is both a CPU stall and unbounded growth of a local
+// SQLite file — reachable by anything that can call the API. The numbers are
+// generous (the import path already caps an entry at 500 KB) and sit well above
+// any real entry.
+export const MAX_TITLE_LENGTH = 500;
+export const MAX_CONTENT_LENGTH = 500_000;
+export const MAX_SOURCE_LENGTH = 500;
+export const MAX_TAG_LENGTH = 64;
+export const MAX_TAGS = 50;
+
 export const createKnowledgeSchema = z.object({
-  title: z.string().min(1, 'Title is required'),
-  content: z.string().min(1, 'Content is required'),
-  tags: z.array(z.string().min(1)).min(1, 'At least one tag is required'),
+  title: z.string().min(1, 'Title is required').max(MAX_TITLE_LENGTH),
+  content: z.string().min(1, 'Content is required').max(MAX_CONTENT_LENGTH),
+  tags: z.array(z.string().min(1).max(MAX_TAG_LENGTH)).min(1, 'At least one tag is required').max(MAX_TAGS),
   type: knowledgeTypeSchema,
   scope: scopeSchema,
-  source: z.string().min(1, 'Source is required'),
+  source: z.string().min(1, 'Source is required').max(MAX_SOURCE_LENGTH),
   confidenceScore: z.number().min(0).max(1).optional().default(1.0),
   expiresAt: z.date().nullable().optional().default(null),
   relatedIds: z.array(z.string().uuid()).nullable().optional().default(null),
@@ -29,9 +42,9 @@ export const createKnowledgeSchema = z.object({
 });
 
 export const updateKnowledgeSchema = z.object({
-  title: z.string().min(1).optional(),
-  content: z.string().min(1).optional(),
-  tags: z.array(z.string().min(1)).min(1).optional(),
+  title: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
+  content: z.string().min(1).max(MAX_CONTENT_LENGTH).optional(),
+  tags: z.array(z.string().min(1).max(MAX_TAG_LENGTH)).min(1).max(MAX_TAGS).optional(),
   type: knowledgeTypeSchema.optional(),
   scope: scopeSchema.optional(),
   source: z.string().min(1).optional(),
@@ -156,4 +169,17 @@ export const importSchema = z.object({
   include: z.array(z.string().max(50)).max(10).optional().default([]),
   knowledge: z.array(importKnowledgeEntrySchema).max(MAX_IMPORT_ITEMS).optional(),
   plans: z.array(z.record(z.unknown())).max(MAX_IMPORT_ITEMS).optional(),
+});
+
+// ─── Routes that previously took their body unvalidated ───────────
+
+/** POST /api/plans/:id/relations — relationType was written to the DB verbatim. */
+export const createPlanRelationSchema = z.object({
+  knowledgeId: z.string().uuid(),
+  relationType: z.enum(['input', 'output']),
+});
+
+/** DELETE /api/knowledge/bulk — was an unbounded array of arbitrary strings. */
+export const bulkDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(1000),
 });

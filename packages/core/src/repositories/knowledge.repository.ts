@@ -789,6 +789,11 @@ export class KnowledgeRepository {
     for (const [key, value] of Object.entries(updates)) {
       if (value === undefined) continue;
       const col = key === 'tags' ? 'tags' : key.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
+      // Values are bound, but a column name cannot be — it is spliced into the
+      // SQL text. The keys come from a strict zod object today, so this is
+      // defence in depth; it exists because one `.passthrough()` upstream would
+      // silently turn this line into identifier injection.
+      if (!/^[a-z_]+$/.test(col)) throw new Error(`refusing unexpected column name: ${key}`);
       setClauses.push(`${col} = ?`);
       values.push(key === 'tags' ? JSON.stringify(value) : value);
     }

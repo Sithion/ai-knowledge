@@ -174,8 +174,33 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect((await r.json()).error).toBe('Forbidden');
   });
 
+  test('~/.cognistore is no longer an allow-listed root (confused-deputy read)', async () => {
+    // It used to be. `planFilePath` is only validated as a non-empty string, so
+    // any caller able to POST a plan could aim it at oauth-tokens.json or
+    // providers.json and read the file back through this route. Nothing writes
+    // plan files there, so the root simply had no business being on the list.
+    for (const name of ['oauth-tokens.json', 'providers.json', 'settings.json']) {
+      const created = await authFetch(`${baseUrl}/api/plans`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: `Deputy ${name}`,
+          content: 'points at a cognistore secret file',
+          tags: ['t'],
+          scope: `workspace:deputy-${name}`,
+          planFilePath: join(homedir(), '.cognistore', name),
+        }),
+      });
+      expect(created.status).toBe(201);
+      const planId = (await created.json()).id;
+
+      const r = await authFetch(`${baseUrl}/api/plans/${planId}/file`);
+      expect(r.status, `${name} must not be readable`).toBe(403);
+    }
+  });
+
   test('reports exists:false for an allow-listed but missing file (fd ENOENT path)', async () => {
-    const missing = join(homedir(), '.cognistore', `httptest-missing-${Date.now()}.md`);
+    const missing = join(homedir(), '.claude', 'plans', `httptest-missing-${Date.now()}.md`);
     const created = await authFetch(`${baseUrl}/api/plans`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -190,7 +215,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('reads a real file under an allow-listed root via the fd', async () => {
-    const planFile = join(homedir(), '.cognistore', `httptest-plan-${Date.now()}.md`);
+    const planFile = join(homedir(), '.claude', 'plans', `httptest-plan-${Date.now()}.md`);
     mkdirSync(dirname(planFile), { recursive: true });
     const content = '# Plan\n\nfd-read content with "quotes" and a tail line.\n';
     writeFileSync(planFile, content);

@@ -1,19 +1,46 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "schedule": ["after 9am and before 12pm on monday"],
+  "extends": [
+    "config:recommended"
+  ],
+  "schedule": [
+    "after 9am and before 12pm on monday"
+  ],
   "timezone": "America/Sao_Paulo",
   "separateMajorMinor": false,
-  "prConcurrentLimit": 1,
+  "prConcurrentLimit": 3,
   "prHourlyLimit": 0,
   "packageRules": [
     {
-      "matchPackageNames": ["*"],
+      "description": "Security and patch updates get their own PR stream: with everything in one grouped PR at prConcurrentLimit 1, a single failing bump blocked every security fix behind it.",
+      "matchUpdateTypes": [
+        "patch",
+        "pin",
+        "digest"
+      ],
+      "groupName": "patch updates",
+      "prPriority": 5
+    },
+    {
+      "matchPackageNames": [
+        "*"
+      ],
       "groupName": "all dependencies"
     }
   ],
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["after 9am and before 12pm on monday"]
+    "schedule": [
+      "after 9am and before 12pm on monday"
+    ]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "groupName": null,
+    "schedule": [],
+    "prPriority": 10,
+    "labels": [
+      "security"
+    ]
   }
 }

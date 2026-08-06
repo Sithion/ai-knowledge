@@ -9,6 +9,22 @@ import { KnowledgeModal } from '../components/KnowledgeModal.js';
 import { FloatingAddButton } from '../components/FloatingAddButton.js';
 import { ConfirmModal } from '../components/ConfirmModal.js';
 
+/**
+ * External provider results carry a `url` chosen by a remote MCP server. React
+ * does not block `javascript:` in an href — it only warns — so a hostile or
+ * compromised provider could otherwise land one-click script execution inside
+ * the app's own webview. Anything that is not plain http(s) renders as text.
+ */
+function isSafeHttpUrl(u: unknown): u is string {
+  if (typeof u !== 'string') return false;
+  try {
+    const { protocol } = new URL(u);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 const STATUS_COLORS: Record<string, string> = {
   draft: '#6b7280',
   active: '#3b82f6',
@@ -612,7 +628,7 @@ export function HomePage() {
                 sec.results.map((r, i) => (
                   <div key={i} style={{ backgroundColor: 'var(--bg-card)', border: '1px dashed var(--border)', borderRadius: 8, padding: 12, marginBottom: 8 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
-                      {r.url
+                      {isSafeHttpUrl(r.url)
                         ? <a href={r.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{r.title}</a>
                         : r.title}
                       {typeof r.score === 'number' && <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 400 }}> · {r.score.toFixed(2)}</span>}

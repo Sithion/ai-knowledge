@@ -3,6 +3,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { execSync, execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
@@ -21,6 +22,8 @@ import {
   createPlanTaskSchema,
   updatePlanTaskSchema,
   isPlanStatus,
+  createPlanRelationSchema,
+  bulkDeleteSchema,
 } from '@cognistore/shared';
 import { registerAuth, isAllowedOrigin, TOKEN_HEADER, type AuthConfig } from './auth.js';
 import {
@@ -364,6 +367,25 @@ Pass an array to addKnowledge to create multiple entries at once.
   // is inherited by all of them — and it matches on the resolved path, never on
   // an `/api/` prefix, which would be allow-by-default.
   registerAuth(app, authConfig);
+
+  // Generic error responses in production.
+  //
+  // Fastify's default handler echoes the thrown message, and several routes
+  // return `e.message` themselves. Those messages embed execSync command lines,
+  // absolute paths (so, home directory names) and provider URLs. The detail goes
+  // to the log, and the caller gets a correlation id to quote.
+  const isProd = process.env.NODE_ENV === 'production';
+  app.setErrorHandler((error: any, request, reply) => {
+    const ref = randomUUID().slice(0, 8);
+    log('error', `[${ref}] ${request.method} ${request.url}: ${error?.message ?? error}`);
+    const status = error?.statusCode ?? 500;
+    reply.code(status);
+    return reply.send(
+      isProd && status >= 500
+        ? { error: 'Internal error', ref }
+        : { error: error?.message ?? 'Internal error', ref },
+    );
+  });
 
   // Content-Security-Policy.
   //
@@ -1977,12 +1999,14 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.delete<{ Body: { ids: string[] } }>('/api/knowledge/bulk', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    const { ids } = request.body;
-    if (!Array.isArray(ids) || ids.length === 0) {
+    // Bounded: this was an unbounded array of arbitrary strings driving a
+    // delete loop.
+    const parsed = bulkDeleteSchema.safeParse(request.body);
+    if (!parsed.success) {
       reply.code(400);
-      return { error: 'ids array is required' };
+      return { error: 'ids must be a non-empty array of at most 1000 UUIDs' };
     }
-    return sdk.bulkDeleteKnowledge(ids);
+    return sdk.bulkDeleteKnowledge(parsed.data.ids);
   });
 
   // ─── Export endpoint ──────────────────────────────────────
@@ -2132,7 +2156,12 @@ Pass an array to addKnowledge to create multiple entries at once.
   const PLAN_FILE_MAX_BYTES = 256 * 1024;
   const ALLOWED_PLAN_FILE_ROOTS = [
     resolve(homedir(), '.claude', 'plans'),
-    resolve(homedir(), '.cognistore'),
+    // ~/.cognistore is deliberately NOT here. It used to be, which made this a
+    // confused deputy: `planFilePath` is only `z.string().min(1)`, so any caller
+    // able to POST a plan could point it at ~/.cognistore/oauth-tokens.json or
+    // providers.json and read the file back through GET /api/plans/:id/file.
+    // Nothing writes plan files there anyway.
+    //
     // Copilot CLI writes plan files under its session dir
     // (~/.copilot/session-state/<sid>/files/<name>.md or .../plan.md).
     resolve(homedir(), '.copilot', 'session-state'),
@@ -2246,8 +2275,13 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post<{ Params: { id: string }; Body: { knowledgeId: string; relationType: 'input' | 'output' } }>('/api/plans/:id/relations', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    const { knowledgeId, relationType } = request.body;
-    sdk.addPlanRelation(request.params.id, knowledgeId, relationType);
+    // This route took its body unvalidated, and `relationType` is written to the
+    // DB verbatim — so any string ended up stored as a relation kind.
+    const parsed = createPlanRelationSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return sendError(reply, 400, 'knowledgeId must be a UUID and relationType one of input|output');
+    }
+    sdk.addPlanRelation(request.params.id, parsed.data.knowledgeId, parsed.data.relationType);
     return { success: true };
   });
 

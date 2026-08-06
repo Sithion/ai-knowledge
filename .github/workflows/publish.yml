@@ -20,6 +20,10 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
 
+# Default-deny at the top level; every job that needs more declares it.
+permissions:
+  contents: read
+
 jobs:
   # ── MCP Server → npm ──────────────────────────────────────────
   publish-mcp:

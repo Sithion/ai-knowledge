@@ -5,6 +5,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// The nvm installer we bootstrap Node with, pinned by tag AND by content hash.
+/// Recompute with: curl -fsSL <url> | shasum -a 256
+const NVM_INSTALL_URL: &str = "https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh";
+const NVM_INSTALL_SHA256: &str = "2d8359a64a3cb07c02389ad88ceecd43f2fa469c06104f92f98df5b6f315275f";
+
 pub struct SidecarState {
     child: Mutex<Option<Child>>,
 }
@@ -106,11 +111,27 @@ fn install_node_via_nvm(major: u32) -> Result<PathBuf, String> {
     // Install nvm if not present
     if !nvm_sh.exists() {
         eprintln!("Installing nvm...");
+        // Download, VERIFY, then run — rather than piping the network straight
+        // into bash. The URL is tag-pinned, but a tag can be moved and TLS alone
+        // does not tell us the bytes are the ones we reviewed. This is the same
+        // treatment ci.yml already gives the OSV-Scanner binary.
+        //
+        // A stable target makes a content hash safe here; contrast
+        // ollama.com/install.sh, a ROLLING url where pinning a hash would break
+        // setup on every upstream release.
         let status = Command::new("bash")
             .arg("-c")
             .arg(format!(
-                "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | NVM_DIR=\"{}\" bash",
-                nvm_dir.display()
+                r#"set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL {url} -o "$tmp/install.sh"
+echo "{sha}  $tmp/install.sh" | shasum -a 256 -c - >/dev/null 2>&1 || \
+  echo "{sha}  $tmp/install.sh" | sha256sum -c - >/dev/null
+NVM_DIR="{dir}" bash "$tmp/install.sh""#,
+                url = NVM_INSTALL_URL,
+                sha = NVM_INSTALL_SHA256,
+                dir = nvm_dir.display()
             ))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -118,7 +139,10 @@ fn install_node_via_nvm(major: u32) -> Result<PathBuf, String> {
             .map_err(|e| format!("Failed to run nvm installer: {}", e))?;
 
         if !status.success() {
-            return Err("nvm installation failed".to_string());
+            return Err(
+                "nvm installation failed (the installer download may have failed its checksum check)"
+                    .to_string(),
+            );
         }
 
         if !nvm_sh.exists() {
@@ -274,8 +298,9 @@ pub async fn wait_for_ready(stdout: std::process::ChildStdout, timeout: Duration
     }
 }
 
-/// Find an available port in a FIXED range, probing 127.0.0.1 to match the
-/// Fastify server's listen address.
+/// Find an available port in a FIXED range, probing 127.0.0.1 — the address the
+/// Fastify server actually binds (the comment here used to claim 0.0.0.0, which
+/// would be a world-reachable bind and is exactly the regression not to invite).
 ///
 /// There is deliberately no OS-assigned-port fallback. The sidecar's Origin and
 /// Host checks, and the Tauri capability's `remote.urls`, are all pinned to this
