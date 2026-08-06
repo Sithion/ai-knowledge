@@ -12,7 +12,10 @@ source "$(dirname "$0")/_common.sh"
 # the plan's own id rather than losing the chain cursor.
 PLAN_ID="$(cog_sanitize_id "$(cog_resp_field id)")"
 ROOT_PLAN_ID="$(cog_sanitize_id "$(cog_resp_field rootPlanId)")"
-PLAN_FILE="$(cog_field planFilePath)"
+# planFilePath comes from the tool payload, i.e. it is model-controlled, and it
+# is interpolated into the JSON response below. Escaped, unlike PLAN_ID which is
+# already reduced to a UUID by cog_sanitize_id.
+PLAN_FILE="$(cog_json_escape "$(cog_field planFilePath)")"
 
 if [ -n "$PLAN_ID" ]; then
   cog_write_marker "${COG_MARK}-active-plan" "$PLAN_ID"

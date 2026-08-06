@@ -4,6 +4,6 @@
 source "$(dirname "$0")/_common.sh"
 
 touch "${COG_MARK}-knowledge-captured"
-echo "0" > "${COG_MARK}-capture-nudge-count"
+cog_write_marker "${COG_MARK}-capture-nudge-count" "0"
 echo '{}'
 exit 0

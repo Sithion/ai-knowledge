@@ -74,8 +74,28 @@ cog_write_marker() {
 }
 
 # cog_json_escape <text> -> text safe to interpolate into a JSON string literal.
+# Control characters are DROPPED, not escaped: these values (plan ids, file paths
+# from a tool payload) are interpolated into a one-line JSON response on stdout,
+# and a raw newline or tab there produces invalid JSON regardless of quoting.
 cog_json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' 2>/dev/null || true
+  printf '%s' "$1" \
+    | tr -d '\000-\037' \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' 2>/dev/null || true
+}
+
+# cog_read_count <path> -> the counter in a marker file, as a bare integer.
+#
+# NEVER `cat` a counter straight into $(( )). Arithmetic evaluation of
+# attacker-controlled text is command execution: a file holding `a[$(curl …|sh)]`
+# runs it. These markers live in a shared /tmp, so the content is not ours to
+# trust. Strip to digits, cap the length, and default to 0.
+cog_read_count() {
+  [ -f "$1" ] || { printf '0'; return 0; }
+  [ -L "$1" ] && { printf '0'; return 0; }
+  local n
+  n="$(head -c 32 "$1" 2>/dev/null | tr -cd '0-9' | head -c 6)"
+  [ -z "$n" ] && n=0
+  printf '%s' "$n"
 }
 
 # --- session-keyed markers --------------------------------------------------
@@ -87,7 +107,13 @@ COG_SID="$(cog_field session_id)"
 # /tmp) and shell word-splitting issues.
 COG_SID="$(printf '%s' "$COG_SID" | tr -cd 'a-zA-Z0-9-' | cut -c1-64)"
 [ -z "$COG_SID" ] && COG_SID="default"
-COG_MARK="/tmp/.cognistore-${COG_SID}"   # suffix with -queried, -plan-persisted, etc.
+# Markers live in a per-USER directory, not directly in a shared /tmp: the old
+# layout put predictable paths in a namespace every account on the machine can
+# write to. 0700 so only we can read or plant them.
+COG_MARK_DIR="${TMPDIR:-/tmp}/.cognistore-$(id -u 2>/dev/null || echo 0)"
+mkdir -p "$COG_MARK_DIR" 2>/dev/null || true
+chmod 700 "$COG_MARK_DIR" 2>/dev/null || true
+COG_MARK="${COG_MARK_DIR}/${COG_SID}"   # suffix with -queried, -plan-persisted, etc.
 
 # --- knowledge DB path ------------------------------------------------------
 COG_DB="${SQLITE_PATH:-$HOME/.cognistore/knowledge.db}"

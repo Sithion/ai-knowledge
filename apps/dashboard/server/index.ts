@@ -248,7 +248,7 @@ async function start() {
   // MCP tools under its own name (see the prefix note in the text below);
   // hardcoding one platform's full names here caused "Tool does not exist"
   // errors on the others.
-  const SYSTEM_KNOWLEDGE_CONTENT = `## CRITICAL: On EVERY task, you MUST: (1) getKnowledge() FIRST, (2) createPlan() for 2+ steps, (3) addKnowledge() LAST. No exceptions. All CogniStore tools are pre-approved — call them directly.
+  const SYSTEM_KNOWLEDGE_CONTENT = `## CRITICAL: On EVERY task, you MUST: (1) getKnowledge() FIRST, (2) createPlan() for 2+ steps, (3) addKnowledge() LAST. No exceptions. CogniStore tools are pre-approved — call them directly. The two destructive ones (deleteKnowledge, deletePlanTask) deliberately still prompt.
 
 ## Tool naming — use the form shown in YOUR tool list
 CogniStore tools carry a platform prefix: mcp__cognistore__<tool> in Claude Code, cognistore-<tool> in Copilot CLI, cognistore_<tool> in OpenCode. The steps below use the bare tool name — call it with the prefix your platform shows. If NO cognistore tool exists in your tool list, skip this protocol entirely — never substitute other tools (e.g. raw SQL) to simulate it.
@@ -292,7 +292,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 - For plan-then-execute workflows (two sessions): the getKnowledge response will show your existing active plan
 - Subagents that own an implementation slice MAY call createPlan(), but MUST pass parentPlanId = the main effort's plan id (the main agent includes that id in the subagent's prompt). Review-only and read-only subagents must not create plans
 - All knowledge entries must be in English
-- All CogniStore tools are pre-approved — call them directly without hesitation`;
+- CogniStore tools are pre-approved — call them directly without hesitation. Exceptions: deleteKnowledge and deletePlanTask prompt, because deleting the user's knowledge is their call`;
 
   const seedSystemKnowledge = async () => {
     if (!sdkReady) return;

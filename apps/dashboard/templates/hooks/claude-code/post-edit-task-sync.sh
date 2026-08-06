@@ -13,19 +13,19 @@ TASK_UPDATED="${COG_MARK}-task-updated"
 PLAN_ID="$(cat "$PLAN_MARKER" 2>/dev/null || true)"
 [ -z "$PLAN_ID" ] && cog_allow
 
-COUNT="$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)"
+COUNT="$(cog_read_count "$COUNTER_FILE")"
 COUNT=$((COUNT + 1))
-echo "$COUNT" > "$COUNTER_FILE"
+cog_write_marker "$COUNTER_FILE" "$COUNT"
 
 # Recent task update → reset and stay quiet.
 if [ -f "$TASK_UPDATED" ]; then
   rm -f "$TASK_UPDATED"
-  echo "0" > "$COUNTER_FILE"
+  cog_write_marker "$COUNTER_FILE" "0"
   cog_allow
 fi
 
 if [ "$COUNT" -ge 15 ]; then
-  echo "0" > "$COUNTER_FILE"
+  cog_write_marker "$COUNTER_FILE" "0"
   printf '{"systemMessage":"[CogniStore] 15+ edits without updating plan tasks. Call mcp__cognistore__listPlanTasks(\\"%s\\") then updatePlanTask(taskId, {status: \\"completed\\"}) for finished tasks and {status: \\"in_progress\\"} for the next one NOW."}\n' "$PLAN_ID"
   exit 0
 fi

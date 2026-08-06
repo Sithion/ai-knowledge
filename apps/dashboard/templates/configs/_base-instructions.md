@@ -1,7 +1,7 @@
 <!-- COGNISTORE:BEGIN -->
 ## Knowledge Base Integration (cognistore)
 
-> **CRITICAL**: On EVERY task, you MUST: (1) `getKnowledge()` FIRST, (2) `createPlan()` for 2+ steps, (3) `addKnowledge()` LAST. No exceptions. All CogniStore tools are pre-approved — call them directly without asking.
+> **CRITICAL**: On EVERY task, you MUST: (1) `getKnowledge()` FIRST, (2) `createPlan()` for 2+ steps, (3) `addKnowledge()` LAST. No exceptions. CogniStore tools are pre-approved — call them directly without asking. The two destructive ones (`deleteKnowledge`, `deletePlanTask`) deliberately still prompt.
 
 > **If the CogniStore tools are unavailable**: when `mcp__cognistore__getKnowledge` is NOT among your available tools (server not connected), skip this entire protocol and proceed with the task normally. Do NOT substitute other tools (raw SQL, file reads, no-op calls) to simulate compliance — that only produces noise.
 
@@ -107,7 +107,7 @@ When a subagent completes, reconcile plan tracking:
 4. **Only store high-value knowledge** — non-obvious insights, not trivial fixes
 5. **Prefer global scope** — language/framework/tool knowledge should use `scope: "global"`, workspace scope is for project-specific decisions only
 6. **Persist every multi-step plan** — `createPlan()` for 2+ implementation steps, in ANY mode
-7. **All CogniStore tools are pre-approved** — call them directly without hesitation, they will not prompt the user
+7. **CogniStore tools are pre-approved** — call them directly without hesitation. The only exceptions are `deleteKnowledge` and `deletePlanTask`: deleting the user's knowledge is their call, so those two prompt.
 
 <!-- IF:claude-code -->
 ### Hooks

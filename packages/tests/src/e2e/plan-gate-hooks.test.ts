@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 // Behavioral test for the CogniStore ExitPlanMode gate handshake. The gate
 // (pre-exit-plan-check.sh) opens when the session marker
-// /tmp/.cognistore-<sid>-plan-persisted exists. Regression coverage for v2.3.5:
+// <marker-dir>/<sid>-plan-persisted exists. Regression coverage for v2.3.5:
 // updatePlan() must ALSO open the gate (not just createPlan+planFilePath), the
 // gate must NOT consume the marker (so retries stay open), and the marker must be
 // reset per plan-mode cycle by pre-enter-plan-check.sh.
@@ -15,7 +15,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = resolve(__dirname, '../../../../apps/dashboard/templates/hooks/claude-code');
 
 // _common.sh hardcodes the marker base to /tmp (not $TMPDIR).
-const markerBase = (sid: string) => `/tmp/.cognistore-${sid}`;
+// Markers moved out of the shared /tmp root into a per-user 0700 directory,
+// so this mirrors _common.sh's COG_MARK computation rather than a literal path.
+const markerDir = () => `${process.env.TMPDIR || '/tmp'}/.cognistore-${process.getuid?.() ?? 0}`;
+const markerBase = (sid: string) => `${markerDir()}/${sid}`;
 
 // Run a hook script with a JSON payload on stdin. The child env explicitly clears
 // COGNISTORE_DISABLE_HOOKS so a developer who muted hooks in their shell can't turn
@@ -69,7 +72,7 @@ let n = 0;
 
 test.beforeEach(() => {
   // Unique per test so we never collide with a real concurrent Claude session's
-  // /tmp/.cognistore-<uuid>-* markers.
+  // <marker-dir>/<uuid>-* markers.
   sid = `plan-gate-itest-${process.pid}-${n++}`;
 });
 

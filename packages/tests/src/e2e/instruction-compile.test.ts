@@ -47,7 +47,9 @@ test('compiler rewrites tool names per platform', () => {
 
 test('copilot post-tool-marker sets -queried for the REAL Copilot tool name', () => {
   const sid = `tooltest${process.pid}${Math.floor(Math.random() * 1e6)}`;
-  const marker = `/tmp/.cognistore-copilot-${sid}-queried`;
+  // Mirrors copilot/_common.sh: a per-user 0700 dir, not the shared /tmp root.
+  const markerDir = `${process.env.TMPDIR || '/tmp'}/.cognistore-${process.getuid?.() ?? 0}`;
+  const marker = `${markerDir}/copilot-${sid}-queried`;
   try {
     // Regression: the marker used to match only mcp__cognistore__getKnowledge,
     // a name that never occurs in Copilot — so the reminder never went quiet.
@@ -63,7 +65,7 @@ test('copilot post-tool-marker sets -queried for the REAL Copilot tool name', ()
     });
     expect(existsSync(marker)).toBe(true);
   } finally {
-    execSync(`rm -f /tmp/.cognistore-copilot-${sid}*`);
+    execSync(`rm -f "${process.env.TMPDIR || '/tmp'}/.cognistore-${process.getuid?.() ?? 0}/copilot-${sid}"*`);
   }
 });
 
@@ -89,7 +91,7 @@ test('copilot pre-tool-check exempts cognistore- tools and reminds with the righ
     expect(reminded).toContain('cognistore-getKnowledge');
     expect(reminded).not.toContain('mcp__cognistore__');
   } finally {
-    execSync(`rm -f /tmp/.cognistore-copilot-${sid}*`);
+    execSync(`rm -f "${process.env.TMPDIR || '/tmp'}/.cognistore-${process.getuid?.() ?? 0}/copilot-${sid}"*`);
   }
 });
 
@@ -124,7 +126,7 @@ test('copilot user-prompt-check escapes multi-line DB content into VALID JSON (m
     expect(parsed.systemMessage).toContain('line two with \\ backslash');
   } finally {
     try { unlinkSync(dbPath); } catch { /* ignore */ }
-    execSync(`rm -f /tmp/.cognistore-copilot-${sid}*`);
+    execSync(`rm -f "${process.env.TMPDIR || '/tmp'}/.cognistore-${process.getuid?.() ?? 0}/copilot-${sid}"*`);
   }
 });
 

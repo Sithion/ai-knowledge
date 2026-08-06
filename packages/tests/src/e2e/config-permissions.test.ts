@@ -86,19 +86,59 @@ test('injectPermissions is idempotent — no new backup once migrated', async ()
   expect(bakCount()).toBe(1);
 });
 
-test('injectPermissions skips a file already holding only the server-scope rule', async () => {
-  writeFileSync(settings, JSON.stringify({ permissions: { allow: [SERVER_RULE, USER_RULE] } }));
+test('injectPermissions skips a file already holding the server-scope rule AND the deny entries', async () => {
+  writeFileSync(settings, JSON.stringify({
+    permissions: {
+      allow: [SERVER_RULE, USER_RULE],
+      deny: [...ConfigManager.COGNISTORE_DENY_TOOLS],
+    },
+  }));
 
   const r = await cm.injectPermissions(settings, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS);
   expect(r.action).toBe('skipped');
   expect(bakCount()).toBe(0);
 });
 
-test('injectPermissions never reads or modifies permissions.deny / permissions.ask', async () => {
+test('injectPermissions denies the destructive tools back out of the whole-server allow', async () => {
+  // The allow rule stays whole-server on purpose: a per-tool allow list would
+  // match COGNISTORE_LEGACY_ALLOW_PREFIX and be stripped on the next deploy.
+  // `deny` beats `allow`, so this is what makes deleteKnowledge prompt.
+  writeFileSync(settings, JSON.stringify({ permissions: { allow: [USER_RULE] } }));
+
+  await cm.injectPermissions(settings, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS);
+
+  const cfg = JSON.parse(readFileSync(settings, 'utf-8'));
+  expect(cfg.permissions.allow).toContain(SERVER_RULE);
+  for (const rule of ConfigManager.COGNISTORE_DENY_TOOLS) {
+    expect(cfg.permissions.deny).toContain(rule);
+  }
+
+  // Idempotent: a second run adds nothing and takes no backup.
+  const again = await cm.injectPermissions(settings, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS);
+  expect(again.action).toBe('skipped');
+  const cfg2 = JSON.parse(readFileSync(settings, 'utf-8'));
+  expect(cfg2.permissions.deny).toEqual(cfg.permissions.deny);
+});
+
+test('removePermissions takes our deny entries away again but leaves the user\'s', async () => {
+  writeFileSync(settings, JSON.stringify({
+    permissions: {
+      allow: [SERVER_RULE, USER_RULE],
+      deny: [...ConfigManager.COGNISTORE_DENY_TOOLS, 'Bash(rm -rf /)'],
+    },
+  }));
+
+  await cm.removePermissions(settings, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS);
+
+  const cfg = JSON.parse(readFileSync(settings, 'utf-8'));
+  expect(cfg.permissions.deny).toEqual(['Bash(rm -rf /)']);
+});
+
+test('injectPermissions never touches permissions.ask, and only ADDS to deny', async () => {
   writeFileSync(settings, JSON.stringify({
     permissions: {
       allow: [...LEGACY_RULES],
-      deny: ['mcp__cognistore__deleteKnowledge'],
+      deny: ['Bash(curl)'],
       ask: ['Bash(rm)'],
     },
   }));
@@ -106,7 +146,11 @@ test('injectPermissions never reads or modifies permissions.deny / permissions.a
   await cm.injectPermissions(settings, ConfigManager.COGNISTORE_AUTO_ALLOW_TOOLS);
 
   const cfg = JSON.parse(readFileSync(settings, 'utf-8'));
-  expect(cfg.permissions.deny).toEqual(['mcp__cognistore__deleteKnowledge']);
+  // The user's own deny rule survives; ours are appended alongside it.
+  expect(cfg.permissions.deny).toContain('Bash(curl)');
+  for (const rule of ConfigManager.COGNISTORE_DENY_TOOLS) {
+    expect(cfg.permissions.deny).toContain(rule);
+  }
   expect(cfg.permissions.ask).toEqual(['Bash(rm)']);
 });
 
