@@ -26,7 +26,7 @@ const LONG_TIMEOUT_MS = 30 * 60_000;
  * embedded there would be readable by any page on any other local port.
  * In `pnpm dev` the shell is absent, so VITE_SIDECAR_TOKEN stands in.
  */
-const SIDECAR_TOKEN: string =
+export const SIDECAR_TOKEN: string =
   (globalThis as any).__COGNISTORE_TOKEN__ || import.meta.env.VITE_SIDECAR_TOKEN || '';
 
 async function request<T>(path: string, options?: RequestInit, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> {
@@ -537,7 +537,7 @@ export interface FederatedSearchResult { local: KnowledgeSearchResult[]; externa
 /** Store a provider credential in the OS keychain (Tauri only; no-op outside Tauri). */
 export async function setProviderSecret(id: string, value: string): Promise<void> {
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('set_provider_secret', { id, value });
+  await invoke('set_provider_secret', { token: SIDECAR_TOKEN, id, value });
 }
 
 /** UI-level token provider filter. Maps to the backend `token_usage.source` column. */

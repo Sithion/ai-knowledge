@@ -10,7 +10,7 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://github.com https://api.github.com https://objects.githubusercontent.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://github.com https://api.github.com https://objects.githubusercontent.com; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
     }
   },
   "plugins": {

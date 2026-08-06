@@ -23,17 +23,29 @@ pub struct QuitFlag(pub AtomicBool);
 
 /// Generate a user-friendly error page HTML for the webview.
 fn error_page_html(title: &str, detail: &str) -> String {
-    let escaped_detail = detail
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
+    // HTML-escape for the document, then let serde_json produce the JS string
+    // literal. The previous hand-rolled escaper covered \ ' < > " but NOT
+    // newlines — and `detail` is built from spawn/nvm error text and resource
+    // paths, so a single \n in an error message terminated the string literal
+    // and turned the rest of that message into executable JS in a privileged
+    // webview. Escaping a JS literal by hand is exactly the job serde_json does
+    // correctly, including \n, \r,   and  .
+    let html_escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+
+    let body = format!(
+        r#"<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:20px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a1a;padding:32px;text-align:center"><div style="font-size:48px">🧠</div><h2 style="color:#e2e8f0;margin:0;font-size:18px">{title}</h2><p style="color:#94a3b8;margin:0;font-size:13px">Something went wrong while starting CogniStore.</p><details style="color:#6b7280;font-size:11px;max-width:500px;text-align:left"><summary style="cursor:pointer;color:#94a3b8;font-size:12px;margin-bottom:8px">Show details</summary><pre style="background:#111827;padding:12px;border-radius:8px;overflow-x:auto;color:#fca5a5;font-size:10px;white-space:pre-wrap;word-break:break-all">{detail}</pre></details><div style="display:flex;gap:12px"><button onclick="location.reload()" style="padding:8px 20px;border-radius:6px;border:none;background:#6366f1;color:#fff;cursor:pointer;font-size:13px">Retry</button></div></div>"#,
+        title = html_escape(title),
+        detail = html_escape(detail),
+    );
 
     format!(
-        r#"document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:20px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a1a;padding:32px;text-align:center"><div style="font-size:48px">🧠</div><h2 style="color:#e2e8f0;margin:0;font-size:18px">{title}</h2><p style="color:#94a3b8;margin:0;font-size:13px">Something went wrong while starting CogniStore.</p><details style="color:#6b7280;font-size:11px;max-width:500px;text-align:left"><summary style="cursor:pointer;color:#94a3b8;font-size:12px;margin-bottom:8px">Show details</summary><pre style="background:#111827;padding:12px;border-radius:8px;overflow-x:auto;color:#fca5a5;font-size:10px;white-space:pre-wrap;word-break:break-all">{escaped_detail}</pre></details><div style="display:flex;gap:12px"><button onclick="location.reload()" style="padding:8px 20px;border-radius:6px;border:none;background:#6366f1;color:#fff;cursor:pointer;font-size:13px">Retry</button></div></div>';"#,
-        title = title,
-        escaped_detail = escaped_detail
+        "document.body.innerHTML = {};",
+        serde_json::to_string(&body).unwrap_or_else(|_| "\"\"".into())
     )
 }
 

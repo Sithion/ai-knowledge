@@ -53,6 +53,16 @@ pub async fn oauth_await(app: tauri::AppHandle, port: u16, authorize_url: String
         map.remove(&port).ok_or_else(|| format!("no reserved OAuth listener for port {}", port))?
     };
 
+    // `open::that` hands the string to the OS launcher, which will happily act on
+    // file://, smb:// or any registered custom scheme. The URL arrives from the
+    // frontend, so it is validated here rather than trusted: https only, and a
+    // host that is not loopback/private. The loopback REDIRECT uri is checked
+    // server-side, but this is the URL actually opened, and it was not.
+    match tauri::Url::parse(&authorize_url) {
+        Ok(u) if u.scheme() == "https" && !u.host_str().unwrap_or("").is_empty() => {}
+        _ => return Err("refusing to open a non-https authorization URL".to_string()),
+    }
+
     if let Err(e) = open::that(&authorize_url) {
         return Err(format!("failed to open browser: {}", e));
     }

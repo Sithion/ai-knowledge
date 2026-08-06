@@ -365,6 +365,40 @@ Pass an array to addKnowledge to create multiple entries at once.
   // an `/api/` prefix, which would be allow-by-default.
   registerAuth(app, authConfig);
 
+  // Content-Security-Policy.
+  //
+  // tauri.conf.json declares one, but that only covers the tauri:// asset
+  // protocol — and the UI is navigated to http://localhost:PORT, so in practice
+  // it ran with no CSP at all. This is the header that actually applies.
+  //
+  // `script-src 'self'` with no 'unsafe-inline': the bundle is external files,
+  // so nothing legitimate needs inline script. 'unsafe-inline' IS kept for
+  // styles, because React's style={{…}} attributes and Tailwind's injected
+  // styles genuinely require it. 'unsafe-eval' is not granted; the Rust error
+  // page reaches the DOM through window.eval, which is an IPC call rather than
+  // page script and is unaffected.
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header(
+      'Content-Security-Policy',
+      [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        // The sidecar itself, Ollama, and the GitHub endpoints the updater uses.
+        `connect-src 'self' http://localhost:${PORT} http://127.0.0.1:${PORT} http://localhost:11434 https://api.github.com https://github.com https://objects.githubusercontent.com`,
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'none'",
+        "object-src 'none'",
+      ].join('; '),
+    );
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Referrer-Policy', 'no-referrer');
+    return payload;
+  });
+
   const distPath = resolve(process.env.DASHBOARD_DIST_PATH || join(__dirname, '..', 'dist'));
   await app.register(fastifyStatic, {
     root: distPath,

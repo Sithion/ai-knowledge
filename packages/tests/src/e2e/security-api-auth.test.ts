@@ -202,6 +202,22 @@ test.describe.serial('sidecar API authorization (real sidecar)', () => {
     expect(await res.text()).not.toContain(TEST_TOKEN);
   });
 
+  test('responses carry a CSP that actually applies to the served origin', async () => {
+    // tauri.conf.json declares a CSP, but that one only covers the tauri:// asset
+    // protocol — and the UI is navigated to http://localhost:PORT, so in practice
+    // it ran with no CSP at all. This header is the one that applies.
+    const res = await fetch(`${baseUrl}/`);
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("script-src 'self'");
+    // No inline scripts: the bundle is external files.
+    expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+    // ...but React's style={{…}} and Tailwind genuinely need it for styles.
+    expect(csp).toMatch(/style-src[^;]*unsafe-inline/);
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
   test('a path that only looks like a public route is still refused', async () => {
     // Guards against an allow-list built on prefixes/normalisation quirks.
     for (const path of ['/api/health/../export', '/api/health/', '//api/export', '/API/EXPORT']) {
