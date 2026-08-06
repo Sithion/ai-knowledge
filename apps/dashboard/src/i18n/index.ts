@@ -145,7 +145,11 @@ const resources = {
       plans: {
         title: 'Plans', empty: 'No plans yet.', all: 'All', allScopes: 'All scopes', draft: 'Draft', active: 'Active', completed: 'Completed', archived: 'Archived',
         input: 'Consulted', output: 'Produced', noRelations: 'No related knowledge entries.', noPlans: 'No related plans.',
-        chain: { title: 'Plan Chain', original: 'Original', current: 'current' },
+        chain: {
+          title: 'Plan Chain', original: 'Original', current: 'current',
+          continuation: 'Continuation', origin: 'Origin',
+          truncated: 'Chain is longer than shown.',
+        },
         originPlan: 'Origin Plan', consultedBy: 'Plans That Consulted',
         tasks: 'Tasks', activePlans: 'Active Plans', noTasks: 'No tasks yet.', progress: 'completed',
         newPlan: 'New Plan', planTitle: 'Title', planTitlePlaceholder: 'What is this plan about?',
@@ -153,6 +157,7 @@ const resources = {
         tagsPlaceholder: 'tag1, tag2, tag3', addTask: 'Add Task', taskPlaceholder: 'Task',
         createDraft: 'Create Draft', template: 'Template',
         delete: 'Delete', confirmDelete: 'Are you sure you want to delete this plan? This action cannot be undone.',
+        deleteTask: 'Delete task', confirmDeleteTask: 'Delete the task "{{description}}"? This action cannot be undone.',
         archive: 'Archive', archiveTitle: 'Archive Plan', confirmArchive: 'Move this plan to archive?',
         backToPlans: 'Back to plans', notes: 'notes', addNotes: 'Click to add notes...', loading: 'Loading...',
       },
@@ -373,7 +378,11 @@ const resources = {
       plans: {
         title: 'Planes', empty: 'Aún no hay planes.', all: 'Todos', allScopes: 'Todos los ámbitos', draft: 'Borrador', active: 'Activo', completed: 'Completado', archived: 'Archivado',
         input: 'Consultados', output: 'Producidos', noRelations: 'Sin entradas relacionadas.', noPlans: 'Sin planes relacionados.',
-        chain: { title: 'Cadena de planes', original: 'Original', current: 'actual' },
+        chain: {
+          title: 'Cadena de planes', original: 'Original', current: 'actual',
+          continuation: 'Continuación', origin: 'Origen',
+          truncated: 'La cadena es más larga de lo que se muestra.',
+        },
         originPlan: 'Plan de Origen', consultedBy: 'Planes que Consultaron',
         tasks: 'Tareas', activePlans: 'Planes Activos', noTasks: 'Sin tareas aún.', progress: 'completadas',
         newPlan: 'Nuevo Plan', planTitle: 'Título', planTitlePlaceholder: '¿De qué trata este plan?',
@@ -381,6 +390,7 @@ const resources = {
         tagsPlaceholder: 'tag1, tag2, tag3', addTask: 'Agregar Tarea', taskPlaceholder: 'Tarea',
         createDraft: 'Crear Borrador', template: 'Plantilla',
         delete: 'Eliminar', confirmDelete: '¿Estás seguro de que quieres eliminar este plan? Esta acción no se puede deshacer.',
+        deleteTask: 'Eliminar tarea', confirmDeleteTask: '¿Eliminar la tarea "{{description}}"? Esta acción no se puede deshacer.',
         archive: 'Archivar', archiveTitle: 'Archivar Plan', confirmArchive: '¿Mover este plan al archivo?',
         backToPlans: 'Volver a planes', notes: 'notas', addNotes: 'Clic para agregar notas...', loading: 'Cargando...',
       },
@@ -601,7 +611,11 @@ const resources = {
       plans: {
         title: 'Planos', empty: 'Nenhum plano ainda.', all: 'Todos', allScopes: 'Todos os escopos', draft: 'Rascunho', active: 'Ativo', completed: 'Concluído', archived: 'Arquivado',
         input: 'Consultados', output: 'Produzidos', noRelations: 'Sem entradas relacionadas.', noPlans: 'Sem planos relacionados.',
-        chain: { title: 'Cadeia de planos', original: 'Original', current: 'atual' },
+        chain: {
+          title: 'Cadeia de planos', original: 'Original', current: 'atual',
+          continuation: 'Continuação', origin: 'Origem',
+          truncated: 'A cadeia é maior do que a exibida.',
+        },
         originPlan: 'Plano de Origem', consultedBy: 'Planos que Consultaram',
         tasks: 'Tarefas', activePlans: 'Planos Ativos', noTasks: 'Sem tarefas ainda.', progress: 'concluídas',
         newPlan: 'Novo Plano', planTitle: 'Título', planTitlePlaceholder: 'Sobre o que é este plano?',
@@ -609,6 +623,7 @@ const resources = {
         tagsPlaceholder: 'tag1, tag2, tag3', addTask: 'Adicionar Tarefa', taskPlaceholder: 'Tarefa',
         createDraft: 'Criar Rascunho', template: 'Modelo',
         delete: 'Excluir', confirmDelete: 'Tem certeza que deseja excluir este plano? Esta ação não pode ser desfeita.',
+        deleteTask: 'Excluir tarefa', confirmDeleteTask: 'Excluir a tarefa "{{description}}"? Esta ação não pode ser desfeita.',
         archive: 'Arquivar', archiveTitle: 'Arquivar Plano', confirmArchive: 'Mover este plano para o arquivo?',
         backToPlans: 'Voltar aos planos', notes: 'notas', addNotes: 'Clique para adicionar notas...', loading: 'Carregando...',
       },

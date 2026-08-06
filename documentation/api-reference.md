@@ -407,7 +407,39 @@ Run the upgrade pipeline. Compares `~/.cognistore/.version` with the running app
 
 `results[].status` is `success`, `warning`, `skipped` or `error`; `success` is `true` when every step is `success` or `warning`.
 
-**Concurrency:** if a deploy is already running (startup self-heal or `/api/redeploy`), the request **waits** for it and then runs. A `409 Upgrade already in progress` is returned only if another deploy starts in between.
+`results[].step` is one of the names in the `DeployStepName` union declared in `apps/dashboard/server/upgrade-progress.ts` — the source of truth for the step vocabulary. `reembed` and `integrity` are conditional (an embedding-dimension change and an embedding shortfall respectively), so a healthy upgrade emits nine steps and at most eleven.
+
+**Concurrency:** if a deploy is already running (startup self-heal or `/api/redeploy`), the request **waits** for it, then checks whether the upgrade it was waiting for was the one it wanted:
+
+- Already at the running version and an upgrade completed this boot → returns that run's `results` verbatim, without repeating any work.
+- Already at the running version and nothing ran this boot → returns `{ "success": true, "noop": true, "results": [] }`. Treat `noop` as "nothing to do", not as a completed upgrade with no steps.
+- Otherwise the upgrade runs normally.
+
+A `409 Upgrade already in progress` is returned only when another deploy holds the lock without an awaitable promise — in practice a concurrent `/api/redeploy`.
+
+### GET /api/upgrade/progress
+
+Live view of the upgrade `POST /api/upgrade/run` is performing, for a client that wants to show progress while it waits. Poll it (the upgrade screen polls every 750 ms).
+
+**Response:**
+```json
+{
+  "running": true,
+  "startedAt": "2026-08-06T12:00:00.000Z",
+  "fromVersion": "2.4.0",
+  "toVersion": "2.4.1",
+  "currentStep": "reembed",
+  "steps": [
+    { "step": "database", "status": "success" }
+  ]
+}
+```
+
+- `steps` mirrors the `results` of the in-flight run, **without `message`**. Step messages embed raw filesystem errors — absolute paths, and with them the OS username — plus template paths and the globally-installed MCP version. This endpoint is unauthenticated like every route here, so it publishes names and statuses only; the full messages come back with the `POST` response the app already consumes.
+- `currentStep` names the phase about to run, and is `null` while the artifact steps run (they are published individually as they complete) and once the run ends.
+- **No readiness guard:** this endpoint never returns `503`, deliberately — it has to answer while the `database` step has the SDK torn down. It reads in-memory state only.
+- **Between runs** it keeps `running: false` with the previous run's `steps` still populated, so a client that connects late can still render what happened. `startedAt` identifies which run a snapshot describes: latch it to tell a fresh snapshot from a stale one.
+- The startup self-heal deliberately publishes nothing here — only user-visible upgrades do.
 
 ### POST /api/redeploy
 

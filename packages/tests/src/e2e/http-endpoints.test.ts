@@ -1,12 +1,17 @@
 import { test, expect } from '@playwright/test';
-import { createServer, type Server } from 'node:http';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type Server } from 'node:http';
+import { type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync, existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { join, dirname } from 'node:path';
+import {
+  SERVER_ENTRY,
+  getFreePort,
+  startMockOllama,
+  spawnSidecar,
+  waitForSidecar,
+  stopSidecar,
+} from '../sidecar-helpers.js';
 
 /**
  * Boots the REAL dashboard sidecar (apps/dashboard/dist-server/index.js) as a
@@ -19,73 +24,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * (CI runs it before the test step) so dist-server/index.js is current.
  */
 
-const SERVER_ENTRY = resolve(__dirname, '../../../../apps/dashboard/dist-server/index.js');
-const EMBED_DIMS_NATIVE = 768; // nomic-embed-text native width; server truncates to 256 via Matryoshka
-
-function getFreePort(): Promise<number> {
-  return new Promise((res, rej) => {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      if (addr && typeof addr === 'object') {
-        const { port } = addr;
-        srv.close(() => res(port));
-      } else {
-        srv.close(() => rej(new Error('could not get a free port')));
-      }
-    });
-    srv.on('error', rej);
-  });
-}
-
-/** Deterministic 768-d unit-ish vector derived from the prompt text. */
-function fakeEmbedding(prompt: string): number[] {
-  const vec = new Array(EMBED_DIMS_NATIVE).fill(0);
-  for (let i = 0; i < prompt.length; i++) vec[i % EMBED_DIMS_NATIVE] += prompt.charCodeAt(i) / 1000;
-  const mag = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-  return vec.map((v) => v / mag);
-}
-
-function startMockOllama(model: string): Promise<{ server: Server; port: number }> {
-  return new Promise((res, rej) => {
-    const server = createServer((req, reply) => {
-      if (req.method === 'GET' && req.url?.startsWith('/api/tags')) {
-        reply.writeHead(200, { 'content-type': 'application/json' });
-        reply.end(JSON.stringify({ models: [{ name: model }] }));
-        return;
-      }
-      if (req.method === 'POST' && req.url?.startsWith('/api/embeddings')) {
-        let raw = '';
-        req.on('data', (c) => (raw += c));
-        req.on('end', () => {
-          let prompt = '';
-          try { prompt = JSON.parse(raw).prompt ?? ''; } catch { /* ignore */ }
-          reply.writeHead(200, { 'content-type': 'application/json' });
-          reply.end(JSON.stringify({ embedding: fakeEmbedding(prompt) }));
-        });
-        return;
-      }
-      if (req.method === 'POST' && req.url?.startsWith('/api/pull')) {
-        reply.writeHead(200, { 'content-type': 'application/x-ndjson' });
-        reply.end(JSON.stringify({ status: 'success' }) + '\n');
-        return;
-      }
-      reply.writeHead(404).end();
-    });
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (addr && typeof addr === 'object') res({ server, port: addr.port });
-      else rej(new Error('mock ollama: no port'));
-    });
-    server.on('error', rej);
-  });
-}
-
 let child: ChildProcess;
 let mock: { server: Server; port: number };
 let baseUrl: string;
 let tmpRoot: string;
-let serverLog = '';
+let readServerLog: () => string = () => '';
 const createdPlanFiles: string[] = [];
 
 test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', () => {
@@ -103,47 +46,28 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     const port = await getFreePort();
     baseUrl = `http://127.0.0.1:${port}`;
 
-    child = spawn(process.execPath, [SERVER_ENTRY], {
-      env: {
-        ...process.env,
-        SQLITE_PATH: join(tmpRoot, 'knowledge.db'),
-        // SQLITE_PATH only moves the DATABASE. Config paths still resolve from
-        // homedir(), so without this any route that persists a setting rewrites
-        // the developer's real ~/.cognistore on every test run.
-        COGNISTORE_HOME: join(tmpRoot, 'cognistore-home'),
-        OLLAMA_HOST: `http://127.0.0.1:${mock.port}`,
-        OLLAMA_MODEL: model,
-        DASHBOARD_PORT: String(port),
-        DASHBOARD_DIST_PATH: distDir,
-        SIDECAR_TOKEN: 'test-token',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const spawned = spawnSidecar({
+      SQLITE_PATH: join(tmpRoot, 'knowledge.db'),
+      // SQLITE_PATH only moves the DATABASE. Config paths still resolve from
+      // homedir(), so without this any route that persists a setting rewrites
+      // the developer's real ~/.cognistore on every test run.
+      COGNISTORE_HOME: join(tmpRoot, 'cognistore-home'),
+      OLLAMA_HOST: `http://127.0.0.1:${mock.port}`,
+      OLLAMA_MODEL: model,
+      DASHBOARD_PORT: String(port),
+      DASHBOARD_DIST_PATH: distDir,
+      SIDECAR_TOKEN: 'test-token',
     });
-    child.stdout?.on('data', (d) => (serverLog += d));
-    child.stderr?.on('data', (d) => (serverLog += d));
+    child = spawned.child;
+    readServerLog = spawned.readLog;
 
     // Poll health until the SDK has initialized against the mock Ollama.
-    const deadline = Date.now() + 45_000;
-    let ready = false;
-    while (Date.now() < deadline) {
-      try {
-        const r = await fetch(`${baseUrl}/api/health`);
-        if (r.ok) {
-          const h = await r.json();
-          if (h?.database?.connected === true) { ready = true; break; }
-        }
-      } catch { /* not up yet */ }
-      await new Promise((res) => setTimeout(res, 300));
-    }
-    if (!ready) throw new Error(`sidecar never became ready.\n--- server log ---\n${serverLog}`);
+    const ready = await waitForSidecar(baseUrl);
+    if (!ready) throw new Error(`sidecar never became ready.\n--- server log ---\n${readServerLog()}`);
   });
 
   test.afterAll(async () => {
-    if (child && !child.killed) {
-      child.kill('SIGTERM');
-      await new Promise((res) => setTimeout(res, 300));
-      if (!child.killed) child.kill('SIGKILL');
-    }
+    await stopSidecar(child);
     await new Promise<void>((res) => (mock?.server ? mock.server.close(() => res()) : res()));
     for (const f of createdPlanFiles) { try { unlinkSync(f); } catch { /* ignore */ } }
     try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }

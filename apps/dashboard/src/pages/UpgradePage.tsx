@@ -1,26 +1,40 @@
-import { useState, useEffect, useCallback } from 'react';
-import { api } from '../api/client.js';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { api, ApiError, type UpgradeStepStatus } from '../api/client.js';
 
 declare const __APP_VERSION__: string;
 
 interface UpgradeStep {
   step: string;
-  status: 'pending' | 'running' | 'success' | 'error';
+  status: UpgradeStepStatus | 'pending' | 'running';
   message?: string;
 }
 
+const POLL_MS = 750;
+/** Steps a healthy upgrade emits (`reembed` and `integrity` are conditional, so
+ *  the real total can be higher — the bar widens instead of overflowing). */
+const BASE_STEP_COUNT = 9;
+
 const STEP_LABELS: Record<string, string> = {
   database: 'Database Schema',
+  reembed: 'Re-embedding knowledge',
+  integrity: 'Embedding integrity check',
   'instructions-claude': 'Claude Code Instructions',
   'instructions-copilot': 'Copilot Instructions',
+  'instructions-opencode': 'OpenCode Instructions',
   'mcp-configs': 'MCP Configurations',
-  skills: 'Skills & Hooks',
+  'mcp-shadow-check': 'MCP Install Check',
+  skills: 'Skills',
+  hooks: 'Hooks',
   version: 'Save Version',
 };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function StepIcon({ status }: { status: string }) {
   if (status === 'success') return <span style={{ color: '#22c55e', fontSize: 18 }}>✓</span>;
   if (status === 'error') return <span style={{ color: '#ef4444', fontSize: 18 }}>✗</span>;
+  if (status === 'warning') return <span style={{ color: '#f59e0b', fontSize: 16 }}>!</span>;
+  if (status === 'skipped') return <span style={{ color: 'var(--text-secondary)', fontSize: 16 }}>–</span>;
   if (status === 'running') {
     return (
       <span style={{ display: 'inline-block', width: 16, height: 16 }}>
@@ -35,53 +49,110 @@ function StepIcon({ status }: { status: string }) {
 }
 
 export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; onComplete: () => void }) {
-  const [steps, setSteps] = useState<UpgradeStep[]>([
-    { step: 'database', status: 'pending' },
-    { step: 'instructions-claude', status: 'pending' },
-    { step: 'instructions-copilot', status: 'pending' },
-    { step: 'mcp-configs', status: 'pending' },
-    { step: 'skills', status: 'pending' },
-    { step: 'version', status: 'pending' },
-  ]);
+  const [steps, setSteps] = useState<UpgradeStep[]>([]);
+  const [currentStep, setCurrentStep] = useState<string | null>(null);
+  const [polling, setPolling] = useState(false);
   const [done, setDone] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** The POST is fired exactly once per attempt. Without this, StrictMode's
+   *  double-mount in dev would start two upgrades. */
+  const startedRef = useRef(false);
+  /** `startedAt` of the run we are showing. The progress object outlives a run
+   *  by design, so this is what tells a fresh snapshot from a stale one. */
+  const latchedRef = useRef<string | null>(null);
+
+  // Polling lives in its own effect so it survives a StrictMode remount: the
+  // cleanup cancels the in-flight timer and the effect immediately restarts it.
+  useEffect(() => {
+    if (!polling) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const tick = async () => {
+      try {
+        const p = await api.getUpgradeProgress();
+        if (!cancelled) {
+          if (p.running && p.startedAt && latchedRef.current === null) latchedRef.current = p.startedAt;
+          if (latchedRef.current !== null && p.startedAt === latchedRef.current) {
+            setSteps(p.steps.map((s) => ({ step: s.step, status: s.status })));
+            setCurrentStep(p.running ? p.currentStep : null);
+          }
+        }
+      } catch {
+        // Transient: the sidecar tears the SDK down mid-upgrade. Keep polling.
+      }
+      if (!cancelled) timer = setTimeout(tick, POLL_MS);
+    };
+
+    void tick();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [polling]);
 
   const runUpgrade = useCallback(async () => {
-    // Mark all as running
-    setSteps((prev) => prev.map((s) => ({ ...s, status: 'running' as const })));
+    setSteps([]);
+    setCurrentStep(null);
+    setDone(false);
+    setError(null);
+    latchedRef.current = null;
+    setPolling(true);
+
+    const succeed = () => {
+      setDone(true);
+      setCurrentStep(null);
+      setTimeout(onComplete, 1500);
+    };
 
     try {
-      const result = await api.runUpgrade();
-
-      // Map results to steps
-      setSteps((prev) =>
-        prev.map((s) => {
-          const r = result.results.find((r) => r.step === s.step);
-          if (r) return { ...s, status: r.status as 'success' | 'error', message: r.message };
-          return { ...s, status: 'success' as const };
-        })
-      );
-
-      if (result.success) {
-        setDone(true);
-        setTimeout(onComplete, 1500);
-      } else {
-        setError(true);
+      let result;
+      try {
+        result = await api.runUpgrade();
+      } catch (e) {
+        // 409 only happens when something else holds the deploy lock (the
+        // Settings redeploy button). That is progress, not failure: wait for it
+        // to finish, then see whether an upgrade is still needed.
+        if (!(e instanceof ApiError && e.status === 409)) throw e;
+        for (let i = 0; i < 240; i++) {
+          await sleep(POLL_MS);
+          const p = await api.getUpgradeProgress().catch(() => null);
+          if (p && !p.running) break;
+        }
+        const recheck = await api.checkUpgrade();
+        if (!recheck.needsUpgrade) { succeed(); return; }
+        result = await api.runUpgrade();
       }
-    } catch (e: any) {
-      setSteps((prev) => prev.map((s) => s.status === 'running' ? { ...s, status: 'error' as const, message: e.message } : s));
-      setError(true);
+
+      // Already up to date and nothing ran — never paint an empty step list.
+      if (result.noop) { onComplete(); return; }
+
+      // The POST result is authoritative: it carries the messages the polled
+      // snapshots omit, and the last poll may be a tick behind (or, on a fast
+      // upgrade, may never have seen the run at all).
+      setSteps(result.results.map((r) => ({ step: r.step, status: r.status, message: r.message })));
+      setCurrentStep(null);
+
+      if (result.success) succeed();
+      else setError('Some steps did not complete. You can retry the update.');
+    } catch {
+      setError('The update could not be completed. You can retry it.');
+    } finally {
+      setPolling(false);
     }
   }, [onComplete]);
 
   useEffect(() => {
-    // Start upgrade automatically after a brief delay
-    const timer = setTimeout(runUpgrade, 500);
-    return () => clearTimeout(timer);
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void runUpgrade();
   }, [runUpgrade]);
 
-  const completed = steps.filter((s) => s.status === 'success').length;
-  const pct = Math.round((completed / steps.length) * 100);
+  const retry = useCallback(() => { void runUpgrade(); }, [runUpgrade]);
+
+  // A run we have not seen start yet: the POST may still be waiting on a deploy
+  // that was already in flight when the window opened.
+  const preparing = !done && !error && latchedRef.current === null && steps.length === 0;
+  const runningRow = currentStep && !steps.some((s) => s.step === currentStep) ? currentStep : null;
+  const total = Math.max(BASE_STEP_COUNT, steps.length + (runningRow ? 1 : 0));
+  const pct = done ? 100 : Math.min(95, Math.round((steps.length / total) * 100));
 
   return (
     <div style={{
@@ -127,6 +198,18 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
 
         {/* Steps */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {preparing && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '10px 14px', borderRadius: 8,
+              backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)',
+            }}>
+              <StepIcon status="running" />
+              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+                Finishing previous update…
+              </span>
+            </div>
+          )}
           {steps.map((s) => (
             <div key={s.step} style={{
               display: 'flex', alignItems: 'center', gap: 12,
@@ -147,6 +230,18 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
               )}
             </div>
           ))}
+          {runningRow && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '10px 14px', borderRadius: 8,
+              backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)',
+            }}>
+              <StepIcon status="running" />
+              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+                {STEP_LABELS[runningRow] || runningRow}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -157,15 +252,18 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
             </p>
           )}
           {error && (
-            <button
-              onClick={runUpgrade}
-              style={{
-                padding: '8px 20px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-                backgroundColor: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer',
-              }}
-            >
-              Retry
-            </button>
+            <>
+              <p style={{ color: 'var(--error)', fontSize: 13, marginBottom: 12 }}>{error}</p>
+              <button
+                onClick={retry}
+                style={{
+                  padding: '8px 20px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                  backgroundColor: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer',
+                }}
+              >
+                Retry
+              </button>
+            </>
           )}
         </div>
       </div>

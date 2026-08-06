@@ -145,11 +145,32 @@ function MiniProgress({ completed, total }: { completed: number; total: number }
 
 /* ── Task Item ── */
 
-function TaskItem({ task, expandedNotes, onToggleNotes, onUpdateTask }: {
+/** Marks a plan that continues another one, and jumps to that origin. Shown on
+ *  the list cards so lineage is visible without opening the plan. */
+function OriginChip({ parentPlanId, onOpenParent }: { parentPlanId: string; onOpenParent: (planId: string) => void }) {
+  const { t } = useTranslation();
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onOpenParent(parentPlanId); }}
+      title={t('plans.chain.origin')}
+      style={{
+        padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: 0.3,
+        border: 'none', cursor: 'pointer', flexShrink: 0,
+        backgroundColor: 'var(--accent)22', color: 'var(--accent)',
+      }}
+    >
+      ↳ {t('plans.chain.continuation')}
+    </button>
+  );
+}
+
+function TaskItem({ task, expandedNotes, onToggleNotes, onUpdateTask, onDeleteTask }: {
   task: PlanTask;
   expandedNotes: boolean;
   onToggleNotes: () => void;
   onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => Promise<void>;
+  /** Omitted on read-only surfaces (the active-plan cards), which show no actions. */
+  onDeleteTask?: (task: PlanTask) => void;
 }) {
   const { t } = useTranslation();
   const [editingDesc, setEditingDesc] = useState(false);
@@ -298,6 +319,23 @@ function TaskItem({ task, expandedNotes, onToggleNotes, onUpdateTask }: {
           </>
         )}
       </div>
+      {onDeleteTask && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDeleteTask(task); }}
+          title={t('plans.deleteTask')}
+          aria-label={t('plans.deleteTask')}
+          style={{
+            width: 24, height: 24, flexShrink: 0, alignSelf: 'flex-start',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backgroundColor: '#ef4444', border: 'none', borderRadius: 4, cursor: 'pointer',
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
@@ -539,6 +577,8 @@ export function PlansPage() {
   const [tasks, setTasks] = useState<PlanTask[]>([]);
   const [relations, setRelations] = useState<PlanRelation[]>([]);
   const [chain, setChain] = useState<PlanChainEntry[]>([]);
+  // The chain walk is bounded, so a long lineage comes back cut off.
+  const [chainTruncated, setChainTruncated] = useState(false);
   const [activePlans, setActivePlans] = useState<PlanEntry[]>([]);
   const [activeTasksMap, setActiveTasksMap] = useState<Record<string, PlanTask[]>>({});
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
@@ -551,6 +591,12 @@ export function PlansPage() {
   const [mutationError, setMutationError] = useState<string | null>(null);
   // Transient inline error for task updates in the detail view.
   const [taskError, setTaskError] = useTransientMessage(5000);
+  // Task pending deletion (kept whole so the confirm can name it).
+  const [deleteTaskTarget, setDeleteTaskTarget] = useState<PlanTask | null>(null);
+  const [deletingTask, setDeletingTask] = useState(false);
+  // Separate from `mutationError`: that one belongs to the plan delete/archive
+  // modals, and sharing it would surface an error in the wrong dialog.
+  const [taskMutationError, setTaskMutationError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   // Snapshot of the whole plan set (status + task aggregates) for the 5s poll below.
   // Seeded on the first tick; the list only resets when this string changes.
@@ -690,6 +736,7 @@ export function PlansPage() {
       setTasks(t as PlanTask[]);
       setRelations(r as PlanRelation[]);
       setChain((c?.chain ?? []) as PlanChainEntry[]);
+      setChainTruncated(Boolean(c?.truncated));
     } catch { /* silent — don't clear on transient errors */ }
   }, []);
 
@@ -712,10 +759,12 @@ export function PlansPage() {
       setTasks(t as PlanTask[]);
       setRelations(r as PlanRelation[]);
       setChain((c?.chain ?? []) as PlanChainEntry[]);
+      setChainTruncated(Boolean(c?.truncated));
     } catch {
       setTasks([]);
       setRelations([]);
       setChain([]);
+      setChainTruncated(false);
     }
   };
 
@@ -745,6 +794,33 @@ export function PlansPage() {
       setTaskError(t('errors.saveFailed'));
     }
   };
+
+  const handleDeleteTask = async () => {
+    if (!deleteTaskTarget || !selectedPlan) return;
+    setDeletingTask(true);
+    try {
+      const res = await api.deletePlanTask(deleteTaskTarget.id);
+      if (!res?.deleted) throw new Error('not deleted');
+      setTaskMutationError(null);
+      setDeleteTaskTarget(null);
+      // Deleting the last incomplete task can auto-complete the plan, and the
+      // list cards show task counts — refresh all three surfaces.
+      refreshSelectedPlan(selectedPlan.id);
+      list.reset();
+      loadActivePlans();
+    } catch {
+      // Keep the modal open: the task still exists server-side.
+      setTaskMutationError(t('errors.deleteFailed'));
+    }
+    setDeletingTask(false);
+  };
+
+  // Title of the plan this one continues. The chain is the only place a title is
+  // available, and it is a bounded walk — a distant parent may be missing from
+  // it entirely, so callers fall back to the id.
+  const parentTitle = selectedPlan?.parentPlanId
+    ? chain.find((n) => n.id === selectedPlan.parentPlanId)?.title ?? null
+    : null;
 
   const completedTasks = tasks.filter((t) => t.status === 'completed').length;
   const inputRelations = relations.filter((r) => r.relationType === 'input');
@@ -879,6 +955,7 @@ export function PlansPage() {
                   expandedNotes={expandedNotes.has(task.id)}
                   onToggleNotes={() => toggleNotes(task.id)}
                   onUpdateTask={handleUpdateTask}
+                  onDeleteTask={(task) => { setTaskMutationError(null); setDeleteTaskTarget(task); }}
                 />
               ))}
             </div>
@@ -896,6 +973,32 @@ export function PlansPage() {
             ))}
           </div>
         </div>
+
+        {/* Origin — answers "which plan did this one come from?" directly, without
+            making the reader parse the chain (which may not even contain the
+            parent: the traversal is bounded). */}
+        {selectedPlan.parentPlanId && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            backgroundColor: 'var(--bg-card)', borderRadius: 10, border: '1px solid var(--border)',
+            padding: '12px 20px', marginBottom: 20,
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-secondary)' }}>
+              {t('plans.chain.origin')}
+            </span>
+            <button
+              onClick={() => selectPlanById(selectedPlan.parentPlanId!)}
+              title={parentTitle ?? undefined}
+              style={{
+                background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                fontSize: 13, color: 'var(--accent)', textAlign: 'left',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%',
+              }}
+            >
+              {parentTitle ?? `${selectedPlan.parentPlanId.slice(0, 8)}…`}
+            </button>
+          </div>
+        )}
 
         {/* Plan chain — hidden for a standalone plan, where the chain is just itself. */}
         {chain.length > 1 && (
@@ -933,6 +1036,11 @@ export function PlansPage() {
                 </button>
               ))}
             </div>
+            {chainTruncated && (
+              <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 8 }}>
+                {t('plans.chain.truncated')}
+              </p>
+            )}
           </div>
         )}
 
@@ -963,6 +1071,17 @@ export function PlansPage() {
             )}
           </div>
         </div>
+
+        {/* Delete Task Confirm Modal */}
+        <ConfirmModal
+          isOpen={deleteTaskTarget !== null}
+          onClose={() => { setDeleteTaskTarget(null); setTaskMutationError(null); }}
+          onConfirm={handleDeleteTask}
+          title={t('plans.deleteTask')}
+          message={t('plans.confirmDeleteTask', { description: deleteTaskTarget?.description ?? '' })}
+          loading={deletingTask}
+          errorText={taskMutationError}
+        />
 
         {/* Delete Confirm Modal */}
         <ConfirmModal
@@ -1070,6 +1189,7 @@ export function PlansPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plan.title}</h3>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                      {plan.parentPlanId && <OriginChip parentPlanId={plan.parentPlanId} onOpenParent={selectPlanById} />}
                       <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{plan.scope}</span>
                       <StatusBadge status="active" />
                     </div>
@@ -1163,6 +1283,7 @@ export function PlansPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                       <StatusBadge status={plan.status} />
                       <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{plan.scope}</span>
+                      {plan.parentPlanId && <OriginChip parentPlanId={plan.parentPlanId} onOpenParent={selectPlanById} />}
                     </div>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
                       {plan.title || 'Untitled Plan'}
