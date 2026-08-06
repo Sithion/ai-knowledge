@@ -8,7 +8,7 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { KnowledgeSDK } from '@cognistore/sdk';
 import { ConfigManager } from '@cognistore/config';
-import { providersConfigSchema, providerEntrySchema, buildProvider, migrateProvidersConfig, EnvSecretStore, FileTokenStore, InteractiveOAuthFlow, secretRefToEnvKey } from '@cognistore/providers';
+import { providersConfigSchema, providerEntrySchema, buildProvider, migrateProvidersConfig, EnvSecretStore, FileTokenStore, InteractiveOAuthFlow, secretRefToEnvKey, assertProviderPolicy, resolveProviderPolicy, type ProviderPolicy } from '@cognistore/providers';
 import type {
   CreateKnowledgeInput,
   UpdateKnowledgeInput,
@@ -182,11 +182,23 @@ function readProvidersConfig(): ProvidersConfig {
   }
 }
 
+/**
+ * The installation's provider policy. Read from settings.json on every call
+ * rather than cached, so a change takes effect without restarting the sidecar —
+ * and so the sidecar and the MCP server, which read the same file, always agree.
+ */
+function currentProviderPolicy(): ProviderPolicy {
+  return resolveProviderPolicy(readSettings());
+}
+
 function writeProvidersConfig(config: ProvidersConfig): void {
   const validated = providersConfigSchema.parse(config);
   mkdirSync(INSTALL_DIR, { recursive: true });
   const tmp = PROVIDERS_FILE + '.tmp';
-  writeFileSync(tmp, JSON.stringify(validated, null, 2));
+  // 0600 on the tmp file, which the rename preserves. A stdio provider's `env`
+  // can hold literal secrets (the docs steer to secretRef, nothing enforces it),
+  // and the default umask left this world-readable.
+  writeFileSync(tmp, JSON.stringify(validated, null, 2), { mode: 0o600 });
   try {
     renameSync(tmp, PROVIDERS_FILE);
   } catch {
@@ -2300,6 +2312,7 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post<{ Body: unknown }>('/api/providers', async (request, reply) => {
     try {
       const entry = providerEntrySchema.parse(request.body);
+      assertProviderPolicy(entry, currentProviderPolicy());
       const cfg = readProvidersConfig();
       if (cfg.providers.some((p) => p.id === entry.id)) {
         reply.code(409);
@@ -2321,6 +2334,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       const idx = cfg.providers.findIndex((p) => p.id === request.params.id);
       if (idx === -1) { return sendError(reply, 404, 'Not found'); }
       const entry = providerEntrySchema.parse({ ...request.body, id: request.params.id });
+      assertProviderPolicy(entry, currentProviderPolicy());
       cfg.providers[idx] = entry;
       writeProvidersConfig(cfg);
       sdk.reloadProviders();
@@ -2416,6 +2430,14 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post<{ Params: { id: string } }>('/api/providers/:id/test', async (request, reply) => {
     const entry = readProvidersConfig().providers.find((p) => p.id === request.params.id);
     if (!entry) { return sendError(reply, 404, 'Not found'); }
+    // /test BUILDS and runs the provider, so a stdio entry executes its command
+    // here. An entry can predate the policy (or be hand-written into the file),
+    // so re-check rather than trusting that the write path vetted it.
+    try {
+      assertProviderPolicy(entry, currentProviderPolicy());
+    } catch (e: any) {
+      return sendError(reply, 403, e?.message ?? 'Provider not permitted by policy');
+    }
     // OAuth providers can't authorize from a headless route (no browser). If no
     // tokens are stored yet, tell the UI to run the interactive Connect flow.
     if (entry.transport === 'http' && entry.auth?.type === 'oauth') {

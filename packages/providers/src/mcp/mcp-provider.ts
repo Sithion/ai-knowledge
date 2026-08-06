@@ -5,7 +5,7 @@ import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.
 import type { ExternalResult } from '@cognistore/shared';
 import type { KnowledgeProvider, ProviderKind } from '../types.js';
 import type { ISecretStore } from '../secrets/secret-store.js';
-import { guardRemoteMcpUrl } from './url-guard.js';
+import { guardRemoteMcpUrl, assertResolvesToPublicHost } from './url-guard.js';
 
 type ClientTransport = Parameters<Client['connect']>[0];
 
@@ -94,6 +94,9 @@ export class McpKnowledgeProvider implements KnowledgeProvider {
     if (!this.opts.url) throw new Error('mcp http provider requires `url`');
     // SSRF/egress guard: require https + public host unless allowInsecure (dev).
     const url = guardRemoteMcpUrl(this.opts.url, this.opts.auth?.allowInsecure);
+    // ...and again after resolution: a public NAME can still answer with an
+    // internal address (169.254.169.254 and friends).
+    await assertResolvesToPublicHost(url.hostname, this.opts.auth?.allowInsecure);
     if (this.opts.auth?.type === 'oauth') {
       if (!this.opts.oauthProvider) throw new Error('mcp oauth provider requires an oauthProvider');
       return new StreamableHTTPClientTransport(url, { authProvider: this.opts.oauthProvider }) as ClientTransport;

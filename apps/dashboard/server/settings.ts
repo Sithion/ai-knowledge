@@ -33,6 +33,15 @@ export interface AppSettings {
   tokenProviderFilter: 'all' | 'claude' | 'copilot';
   alwaysSearchExternalProviders: boolean;
 
+  // ─── External-provider security policy ───
+  // Installation-scoped on purpose: the sidecar and the MCP server both load the
+  // same providers.json, so a per-process env flag would make them disagree
+  // about which providers exist. See packages/providers/src/policy.ts.
+  /** Permit `transport: 'stdio'` providers — these run an arbitrary local command. */
+  allowStdioProviders: boolean;
+  /** Permit `auth.allowInsecure` — this disables the https and private-network guards. */
+  allowInsecureProviderUrls: boolean;
+
   // ─── Cleanup cycle ───
   /** Master switch for the periodic cleanup report. */
   cleanupEnabled: boolean;
@@ -54,6 +63,9 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   lastSelectedRange: null,
   tokenProviderFilter: 'all',
   alwaysSearchExternalProviders: false,
+  // Both default OFF: each one re-opens a capability this release closed.
+  allowStdioProviders: false,
+  allowInsecureProviderUrls: false,
   cleanupEnabled: true,
   cleanupIntervalDays: 10,
   cleanupUnreadDays: 180,

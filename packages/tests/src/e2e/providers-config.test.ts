@@ -55,12 +55,39 @@ test('loadProviders: rewrites a v1 file to v2 on disk and lists providers', () =
       version: 1,
       providers: [{ id: 'docs', name: 'Docs', kind: 'mcp', enabled: true, mcp: { transport: 'stdio', command: 'npx', mode: 'tool', toolName: 'search' } }],
     }));
-    const mgr = loadProviders(f, new EnvSecretStore());
+    // stdio needs the installation opt-in now (it runs an arbitrary command).
+    const mgr = loadProviders(f, new EnvSecretStore(), undefined, {
+      allowStdio: true,
+      allowInsecureUrls: false,
+    });
     expect(mgr.list().map((p) => p.id)).toEqual(['docs']);
     // file rewritten in place to v2
     const rewritten = JSON.parse(readFileSync(f, 'utf-8'));
     expect(rewritten.version).toBe(2);
     expect(rewritten.providers[0].transport).toBe('stdio');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('loadProviders: a policy-gated entry is dropped WITHOUT taking the others down', () => {
+  // The whole reason policy is not enforced in the zod schema: migrate parses
+  // the entire file, and loadProviders catches into an empty manager
+  // ("offline-first"), so a schema-level rejection would let one stdio entry
+  // silently disable every remote provider the user has.
+  const dir = mkdtempSync(join(tmpdir(), 'cog-prov-policy-'));
+  try {
+    const f = join(dir, 'providers.json');
+    writeFileSync(f, JSON.stringify({
+      version: 2,
+      providers: [
+        { id: 'risky', name: 'Risky', enabled: true, transport: 'stdio', command: 'sh', mode: 'tool', toolName: 'search' },
+        { id: 'safe', name: 'Safe', enabled: true, transport: 'http', url: 'https://example.com/mcp', mode: 'tool', toolName: 'search' },
+      ],
+    }));
+    const mgr = loadProviders(f, new EnvSecretStore(), undefined, {
+      allowStdio: false,
+      allowInsecureUrls: false,
+    });
+    expect(mgr.list().map((p) => p.id)).toEqual(['safe']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
