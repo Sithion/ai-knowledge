@@ -1,8 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, sep } from 'node:path';
 import { execSync, execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
@@ -751,9 +751,23 @@ Pass an array to addKnowledge to create multiple entries at once.
     }
   });
 
+  /**
+   * Record that WE installed Ollama, so uninstall may offer to remove it.
+   * Written only on a path that actually installed it — never when it was
+   * already present — because that flag is the difference between removing our
+   * own dependency and deleting a tool the user set up for something else.
+   */
+  /** The `ollama serve` we spawned, so uninstall can target it precisely. */
+  let ollamaProcess: ReturnType<typeof spawn> | null = null;
+
+  const markOllamaInstalledByUs = () => {
+    try { writeSettings({ installedOllama: true }); }
+    catch (e) { log('warn', `Could not record Ollama ownership: ${e instanceof Error ? e.message : String(e)}`); }
+  };
+
   app.post('/api/setup/ollama', async () => {
     try {
-      // Check if already installed
+      // Already present: not ours, so uninstall must never offer to remove it.
       try { execSync('which ollama', { stdio: 'pipe' }); log('info', 'Ollama already installed'); return { success: true, message: 'Already installed' }; } catch { /* not installed */ }
       log('info', `Installing Ollama on ${process.platform}...`);
 
@@ -772,42 +786,61 @@ Pass an array to addKnowledge to create multiple entries at once.
 
         if (hasBrew) {
           execSync('brew install ollama', { stdio: 'pipe', timeout: 180000 });
+          markOllamaInstalledByUs();
           return { success: true, message: 'Installed via Homebrew' };
         }
 
         // No brew: try install script (may need sudo but worth trying)
         try {
           execSync('curl -fsSL https://ollama.com/install.sh | sh', { stdio: 'pipe', timeout: 180000 });
+          markOllamaInstalledByUs();
           return { success: true, message: 'Installed via install script' };
         } catch {
           return { success: false, message: 'Could not install Ollama automatically. Please install Homebrew (brew.sh) and retry, or download Ollama manually from ollama.com/download' };
         }
       } else if (platform === 'linux') {
-        // Linux: install script needs sudo. Try pkexec (graphical sudo prompt) first.
-        const installScript = '/tmp/cognistore-ollama-install.sh';
-        writeFileSync(installScript, '#!/bin/sh\ncurl -fsSL https://ollama.com/install.sh | sh\n');
-        execSync(`chmod +x "${installScript}"`, { stdio: 'pipe' });
-
-        // 1. Try pkexec (graphical sudo — works on GNOME, KDE, XFCE)
-        let hasPkexec = false;
-        try { execSync('which pkexec', { stdio: 'pipe' }); hasPkexec = true; } catch { /* no pkexec */ }
-        if (hasPkexec) {
-          try {
-            log('info', 'Installing Ollama via pkexec (graphical sudo prompt)...');
-            execSync(`pkexec "${installScript}"`, { stdio: 'pipe', timeout: 300000 });
-            return { success: true, message: 'Installed via install script (pkexec)' };
-          } catch (e) {
-            log('warn', `pkexec install failed: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-
-        // 2. Try without sudo (works on some distros)
+        // Linux: the install script needs root, so this ends in `pkexec <script>`.
+        //
+        // The script therefore MUST NOT live at a predictable path in a shared
+        // directory. It used to be /tmp/cognistore-ollama-install.sh, written and
+        // chmod'd before pkexec ran it: on a multi-user box another user could
+        // pre-create or symlink that path and have their content executed AS
+        // ROOT. mkdtemp gives a 0700 directory with an unguessable name, `wx`
+        // refuses to follow anything already there, and execFileSync passes the
+        // path as an argument rather than through a shell.
+        const scriptDir = mkdtempSync(join(tmpdir(), 'cognistore-setup-'));
+        const installScript = join(scriptDir, 'ollama-install.sh');
         try {
-          log('info', 'Trying Ollama install without sudo...');
-          execSync(`"${installScript}"`, { stdio: 'pipe', timeout: 180000 });
-          return { success: true, message: 'Installed via install script' };
-        } catch {
-          return { success: false, message: 'Could not install Ollama automatically. Please run this command in your terminal:\n\ncurl -fsSL https://ollama.com/install.sh | sudo sh\n\nThen click "Retry" to continue setup.' };
+          writeFileSync(installScript, '#!/bin/sh\ncurl -fsSL https://ollama.com/install.sh | sh\n', {
+            mode: 0o700,
+            flag: 'wx',
+          });
+
+          // 1. Try pkexec (graphical sudo — works on GNOME, KDE, XFCE)
+          let hasPkexec = false;
+          try { execFileSync('which', ['pkexec'], { stdio: 'pipe' }); hasPkexec = true; } catch { /* no pkexec */ }
+          if (hasPkexec) {
+            try {
+              log('info', 'Installing Ollama via pkexec (graphical sudo prompt)...');
+              execFileSync('pkexec', [installScript], { stdio: 'pipe', timeout: 300000 });
+              markOllamaInstalledByUs();
+              return { success: true, message: 'Installed via install script (pkexec)' };
+            } catch (e) {
+              log('warn', `pkexec install failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+
+          // 2. Try without sudo (works on some distros)
+          try {
+            log('info', 'Trying Ollama install without sudo...');
+            execFileSync(installScript, [], { stdio: 'pipe', timeout: 180000 });
+            markOllamaInstalledByUs();
+            return { success: true, message: 'Installed via install script' };
+          } catch {
+            return { success: false, message: 'Could not install Ollama automatically. Please run this command in your terminal:\n\ncurl -fsSL https://ollama.com/install.sh | sudo sh\n\nThen click "Retry" to continue setup.' };
+          }
+        } finally {
+          try { rmSync(scriptDir, { recursive: true, force: true }); } catch { /* ignore */ }
         }
       }
       return { success: false, message: 'Unsupported platform. Download Ollama from ollama.com/download' };
@@ -831,6 +864,9 @@ Pass an array to addKnowledge to create multiple entries at once.
 
       // Start ollama serve in background
       const child = spawn(ollamaBin, ['serve'], { detached: true, stdio: 'ignore' });
+      // Remembered so uninstall can kill THIS process instead of pkill-ing every
+      // command line matching "ollama serve", including the user's own.
+      ollamaProcess = child;
       child.unref();
 
       // Wait up to 15s for it to be ready
@@ -1343,7 +1379,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Uninstall endpoint ────────────────────────────────────────
 
-  app.post('/api/uninstall', async (_request, reply) => {
+  app.post<{ Body: { removeOllama?: boolean } | undefined }>('/api/uninstall', async (_request, reply) => {
     const step = async (label: string, fn: () => unknown, results: string[], errors: string[]) => {
       try { await fn(); results.push(label); }
       catch (e) { errors.push(`${label}: ${e}`); }
@@ -1418,13 +1454,44 @@ Pass an array to addKnowledge to create multiple entries at once.
         } catch { /* never pulled, or Ollama already gone */ }
       }
 
-      // 5. Uninstall Ollama
-      try { execSync('pkill -f "ollama serve"', { stdio: 'pipe' }); } catch { /* may not be running */ }
+      // 5. Uninstall Ollama — OPT-IN, and only what we installed.
+      //
+      // Ollama is a SHARED dependency. Removing the binary, ~/.ollama and the
+      // brew formula unconditionally destroyed a tool the user may have
+      // installed themselves and may be using for something else entirely — all
+      // as a side effect of uninstalling CogniStore. Two guards now:
+      //   - `removeOllama` in the request body, defaulting to false;
+      //   - `installedOllama`, recorded by the setup path when WE installed it.
+      // Every install upgraded from <=2.4.1 has no such record, so the default
+      // there is "leave it alone". Erring toward keeping a tool the user still
+      // has is recoverable; erring the other way is not.
+      const uninstallBody = (_request.body ?? {}) as { removeOllama?: boolean };
+      const weInstalledOllama = (() => {
+        try { return readSettings().installedOllama === true; } catch { return false; }
+      })();
+      const removeOllama = uninstallBody.removeOllama === true && weInstalledOllama;
+
+      if (removeOllama) {
+        // Prefer the process WE spawned. `pkill -f "ollama serve"` matches on the
+        // command line, so it also kills instances started by the user or by
+        // another tool.
+        if (ollamaProcess?.pid) {
+          try { process.kill(ollamaProcess.pid); } catch { /* already gone */ }
+        } else {
+          try { execSync('pkill -f "ollama serve"', { stdio: 'pipe' }); } catch { /* may not be running */ }
+        }
+      }
 
       const ollamaBinDir = resolve(home, '.ollama-bin');
       const ollamaDataDir = resolve(home, '.ollama');
 
-      if (process.platform === 'darwin') {
+      if (!removeOllama) {
+        results.push(
+          weInstalledOllama
+            ? 'Ollama kept (not selected for removal)'
+            : 'Ollama kept (it was not installed by CogniStore)',
+        );
+      } else if (process.platform === 'darwin') {
         try { execSync('brew list ollama', { stdio: 'pipe' }); execSync('brew uninstall ollama', { stdio: 'pipe', timeout: 60000 }); results.push('Ollama uninstalled (brew)'); } catch { /* not brew */ }
         for (const p of ['/usr/local/bin/ollama', '/opt/homebrew/bin/ollama', ollamaDataDir, ollamaBinDir]) {
           if (existsSync(p)) { rmSync(p, { recursive: true, force: true }); }
@@ -1446,26 +1513,15 @@ Pass an array to addKnowledge to create multiple entries at once.
       if (sdkReady) { await sdk.close(); sdkReady = false; }
       if (existsSync(INSTALL_DIR)) { rmSync(INSTALL_DIR, { recursive: true, force: true }); results.push('Install dir removed'); }
 
-      // 8. Clean backup files
-      const backupTargets = [
-        { dir: resolve(home, '.claude'), prefix: 'CLAUDE.md.bak.' },
-        { dir: resolve(home, '.claude'), prefix: 'mcp-config.json.bak.' },
-        { dir: resolve(home, '.claude'), prefix: 'settings.json.bak.' },
-        { dir: home, prefix: '.claude.json.bak.' },
-        { dir: resolve(home, '.github'), prefix: 'copilot-instructions.md.bak.' },
-        { dir: resolve(home, '.copilot'), prefix: 'copilot-instructions.md.bak.' },
-        { dir: resolve(home, '.copilot'), prefix: 'mcp-config.json.bak.' },
-        { dir: resolve(home, '.copilot', 'hooks'), prefix: 'hooks.json.bak.' },
-      ];
-      for (const target of backupTargets) {
-        try {
-          if (!existsSync(target.dir)) continue;
-          for (const file of readdirSync(target.dir)) {
-            if (file.startsWith(target.prefix)) { unlinkSync(resolve(target.dir, file)); }
-          }
-        } catch { /* skip */ }
-      }
-      results.push('Backup files cleaned');
+      // 8. Backups are KEPT.
+      //
+      // This step used to delete every *.bak.* copy of the user's ~/.claude and
+      // ~/.copilot config — which are precisely the rollback copies the
+      // injection paths took before editing those files. Uninstall destroying
+      // the only way back to a pre-CogniStore config is the opposite of what a
+      // backup is for. They are small, they are the user's, and they are theirs
+      // to delete.
+      results.push('Config backups kept (*.bak.* under ~/.claude and ~/.copilot)');
 
       // 9. Self-delete app (increased timeout for response flush)
       reply.send({ success: true, results, errors: errors.length > 0 ? errors : undefined });
@@ -1476,7 +1532,11 @@ Pass an array to addKnowledge to create multiple entries at once.
           const appPaths = ['/Applications/CogniStore.app', resolve(home, 'Applications', 'CogniStore.app')];
           for (const p of appPaths) {
             if (existsSync(p)) {
-              try { execSync(`rm -rf "${p}"`, { stdio: 'pipe' }); } catch { /* best effort */ }
+              // rmSync, not `execSync('rm -rf ...')`: this was the one recursive
+              // delete in the file that went through a shell, next to a dozen
+              // that do not. The paths are hardcoded so it was not injectable,
+              // but it is one refactor away from being so.
+              try { rmSync(p, { recursive: true, force: true }); } catch { /* best effort */ }
             }
           }
         }
