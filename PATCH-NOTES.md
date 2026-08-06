@@ -11,7 +11,7 @@
 - **See where a plan came from.** A plan that continues another one now carries a `↳ Continuation` chip on its card in both plan lists, and its detail view opens with an **Origin** line naming the parent plan — both jump straight to it. Previously this was only inferable from the chain diagram further down the page, which is hidden entirely for a plan whose chain was cut short. The chain card now also says when it is showing only part of a longer chain.
 
 ### Fixes
-- **A second upgrade request re-ran the entire upgrade.** `POST /api/upgrade/run` waits for an in-flight deploy rather than rejecting — but once that finished, the waiting request went on to run the whole thing again: database re-init, the re-embed probe, a full artifact redeploy and an npx cache wipe. It now returns the completed run's result instead of repeating it, and reports an explicit no-op when the app was already up to date.
+- **A second upgrade request re-ran the entire upgrade.** `POST /api/upgrade/run` waits for an in-flight deploy rather than rejecting — but once that finished, the waiting request went on to run the whole thing again: database re-init, the re-embed probe, a full artifact redeploy and an npx cache wipe. It now returns the completed run's result instead of repeating it, and reports an explicit no-op when the app was already up to date. A run that did *not* complete cleanly is never replayed from that cache — retrying really retries it.
 
 ### Notes
 - `GET /api/upgrade/progress` publishes step names and statuses only. Step *messages* are deliberately withheld from it — they embed raw filesystem errors, and with them absolute paths — and remain in the upgrade response the app itself consumes.

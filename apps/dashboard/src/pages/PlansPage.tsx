@@ -156,7 +156,11 @@ function OriginChip({ parentPlanId, onOpenParent }: { parentPlanId: string; onOp
       style={{
         padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: 0.3,
         border: 'none', cursor: 'pointer', flexShrink: 0,
-        backgroundColor: 'var(--accent)22', color: 'var(--accent)',
+        // `var(--accent)22` does NOT work — var() substitutes a whole token, so
+        // the trailing alpha digits make the declaration invalid and it is
+        // dropped. (Several older spots in this file have that bug.)
+        backgroundColor: 'color-mix(in srgb, var(--accent) 13%, transparent)',
+        color: 'var(--accent)',
       }}
     >
       ↳ {t('plans.chain.continuation')}

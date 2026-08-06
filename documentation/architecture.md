@@ -349,8 +349,9 @@ cognistore/
 ├── apps/
 │   ├── dashboard/              # Tauri v2 desktop application
 │   │   ├── src/                # React frontend
-│   │   │   ├── pages/          # HomePage, PlansPage, StatsPage, SettingsPage, SetupPage, UpgradePage
-│   │   │   ├── components/     # Sidebar, UpdateChecker, LanguageSelector
+│   │   │   ├── pages/          # HomePage, PlansPage, StatsPage, TokenConsumptionPage, WidgetsPage,
+│   │   │   │                   #   ProvidersPage, SettingsPage + the boot screens SetupPage, UpgradePage
+│   │   │   ├── components/     # Layout (nav shell), UpdateChecker, ConfirmModal, knowledge modals/cards
 │   │   │   ├── store/          # Redux Toolkit (statsSlice)
 │   │   │   ├── i18n/           # Translations (EN, ES, PT)
 │   │   │   └── api/            # HTTP client for Fastify sidecar

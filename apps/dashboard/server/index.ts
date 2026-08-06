@@ -1071,6 +1071,15 @@ Pass an array to addKnowledge to create multiple entries at once.
   /** Full results (messages included) of the last upgrade completed this boot,
    *  so a request that arrives after it can be answered without re-running. */
   let lastUpgradeResults: DeployStep[] | null = null;
+  /** The version that run started from. Captured, not re-read: by the time a
+   *  replay happens the marker holds the new version, so re-reading it would
+   *  report `fromVersion === toVersion` and lose the run's real origin. */
+  let lastUpgradeFromVersion: string | null = null;
+  /** A deploy "went well" when nothing failed outright. `warning` is advisory
+   *  (the global-MCP shadow check); `skipped` is a real shortfall, so it does
+   *  NOT count — the caller is told to retry. */
+  const deployWentWell = (steps: DeployStep[]) =>
+    steps.every((r) => r.status === 'success' || r.status === 'warning');
 
   app.get('/api/upgrade/progress', async () => upgradeProgress.snapshot());
 
@@ -1086,17 +1095,19 @@ Pass an array to addKnowledge to create multiple entries at once.
     // thing again — re-embed probe, npx cache wipe and all.
     if (VERSION_RESOLVED && getDeployedVersion() === APP_VERSION) {
       const fromVersion = getDeployedVersion();
-      if (lastUpgradeResults) {
-        return {
-          success: lastUpgradeResults.every((r) => r.status === 'success' || r.status === 'warning'),
-          fromVersion,
-          toVersion: APP_VERSION,
-          results: lastUpgradeResults,
-        };
+      if (lastUpgradeResults === null) {
+        // Nothing ran this boot: already current. Say so explicitly rather than
+        // returning an empty list, which reads as a completed upgrade with no steps.
+        return { success: true, noop: true, fromVersion, toVersion: APP_VERSION, results: [] as DeployStep[] };
       }
-      // Nothing ran this boot: already current. Say so explicitly rather than
-      // returning an empty list, which reads as a completed upgrade with no steps.
-      return { success: true, noop: true, fromVersion, toVersion: APP_VERSION, results: [] as DeployStep[] };
+      if (deployWentWell(lastUpgradeResults)) {
+        return { success: true, fromVersion: lastUpgradeFromVersion, toVersion: APP_VERSION, results: lastUpgradeResults };
+      }
+      // A degraded run is NOT replayable: `.version` is written whenever no step
+      // hard-errored, so a `skipped` step (re-embed with Ollama still starting)
+      // leaves us here reporting success:false forever — the upgrade screen's
+      // Retry button would be permanently dead for the rest of the boot. Fall
+      // through and genuinely run it again, which is what Retry means.
     }
     upgradeRunning = true;
     const results: DeployStep[] = [];
@@ -1297,9 +1308,10 @@ Pass an array to addKnowledge to create multiple entries at once.
       inFlightDeploy = null;
       upgradeProgress.finish();
       lastUpgradeResults = results;
+      lastUpgradeFromVersion = fromVersion;
     }
 
-    const allSuccess = results.every((r) => r.status === 'success' || r.status === 'warning');
+    const allSuccess = deployWentWell(results);
     return { success: allSuccess, fromVersion, toVersion: APP_VERSION, results };
   });
 
@@ -1318,7 +1330,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       upgradeRunning = false;
     }
 
-    const allSuccess = results.every((r) => r.status === 'success' || r.status === 'warning');
+    const allSuccess = deployWentWell(results);
     return { success: allSuccess, results };
   });
 

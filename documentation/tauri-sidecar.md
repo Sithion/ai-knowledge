@@ -85,7 +85,7 @@ Scans ports starting from 3210, testing each with a TCP bind. Returns the first 
 - **Health check:** Poll `GET /api/health` every 500ms for 15 seconds
 - **Cleanup:** On window `Destroyed` event, `SidecarState.kill()` terminates the child process
 - **Degraded mode:** If SDK initialization fails on startup, server enters degraded mode — endpoints return 503, retry every 10 seconds
-- **Artifact self-heal:** Right after `listen()`, the sidecar re-deploys agent instructions, MCP configs, skills and global hooks when the on-disk artifacts lag the running version — so an app that is never opened does not keep stale hooks/skills. See [API reference — Upgrade](./api-reference.md#upgrade).
+- **Artifact self-heal:** Right after `listen()`, the sidecar re-deploys agent instructions, MCP configs, skills and global hooks when the on-disk artifacts lag the running version — so an app that is never opened does not keep stale hooks/skills. It publishes nothing to `GET /api/upgrade/progress` — that endpoint describes the user-visible upgrade only, and a self-heal has no screen waiting on it. See [API reference — Upgrade](./api-reference.md#upgrade).
 
 ## Auto-Update
 

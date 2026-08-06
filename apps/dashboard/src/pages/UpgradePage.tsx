@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { api, ApiError, type UpgradeStepStatus } from '../api/client.js';
+import { api, ApiError, type UpgradeStepStatus, type UpgradeRunResult } from '../api/client.js';
 
 declare const __APP_VERSION__: string;
 
@@ -52,6 +52,11 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
   const [steps, setSteps] = useState<UpgradeStep[]>([]);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
+  /** Server-reported `running` for the latched run, and whether we have latched
+   *  one at all. Kept as state (not just the ref) so the screen re-renders when
+   *  the run is picked up. */
+  const [running, setRunning] = useState(false);
+  const [latched, setLatched] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** The POST is fired exactly once per attempt. Without this, StrictMode's
@@ -72,10 +77,14 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
       try {
         const p = await api.getUpgradeProgress();
         if (!cancelled) {
-          if (p.running && p.startedAt && latchedRef.current === null) latchedRef.current = p.startedAt;
+          if (p.running && p.startedAt && latchedRef.current === null) {
+            latchedRef.current = p.startedAt;
+            setLatched(true);
+          }
           if (latchedRef.current !== null && p.startedAt === latchedRef.current) {
             setSteps(p.steps.map((s) => ({ step: s.step, status: s.status })));
             setCurrentStep(p.running ? p.currentStep : null);
+            setRunning(p.running);
           }
         }
       } catch {
@@ -93,6 +102,8 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
     setCurrentStep(null);
     setDone(false);
     setError(null);
+    setRunning(false);
+    setLatched(false);
     latchedRef.current = null;
     setPolling(true);
 
@@ -108,17 +119,25 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
         result = await api.runUpgrade();
       } catch (e) {
         // 409 only happens when something else holds the deploy lock (the
-        // Settings redeploy button). That is progress, not failure: wait for it
-        // to finish, then see whether an upgrade is still needed.
+        // Settings redeploy button). That is progress, not failure. Retry the
+        // POST itself rather than polling for `running` to clear: a redeploy
+        // deliberately publishes no progress, so there would be nothing to wait
+        // on and we would just 409 again on the first tick.
         if (!(e instanceof ApiError && e.status === 409)) throw e;
-        for (let i = 0; i < 240; i++) {
-          await sleep(POLL_MS);
-          const p = await api.getUpgradeProgress().catch(() => null);
-          if (p && !p.running) break;
+        let retried: UpgradeRunResult | undefined;
+        for (let i = 0; i < 40 && !retried; i++) {
+          await sleep(1500);
+          try {
+            retried = await api.runUpgrade();
+          } catch (err) {
+            if (!(err instanceof ApiError && err.status === 409)) throw err;
+          }
         }
-        const recheck = await api.checkUpgrade();
-        if (!recheck.needsUpgrade) { succeed(); return; }
-        result = await api.runUpgrade();
+        if (!retried) {
+          setError('Another update is still running. You can retry in a moment.');
+          return;
+        }
+        result = retried;
       }
 
       // Already up to date and nothing ran — never paint an empty step list.
@@ -147,9 +166,12 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
 
   const retry = useCallback(() => { void runUpgrade(); }, [runUpgrade]);
 
-  // A run we have not seen start yet: the POST may still be waiting on a deploy
-  // that was already in flight when the window opened.
-  const preparing = !done && !error && latchedRef.current === null && steps.length === 0;
+  // Two gaps where there is nothing to list yet but work is happening: before we
+  // have latched a run (the POST may be waiting on a deploy that was already in
+  // flight), and right after it starts, before the first phase is named.
+  const waitingForOther = !done && !error && !latched && steps.length === 0;
+  const startingUp = !done && !error && latched && running && !currentStep && steps.length === 0;
+  const preparingLabel = waitingForOther ? 'Finishing previous update…' : 'Preparing update…';
   const runningRow = currentStep && !steps.some((s) => s.step === currentStep) ? currentStep : null;
   const total = Math.max(BASE_STEP_COUNT, steps.length + (runningRow ? 1 : 0));
   const pct = done ? 100 : Math.min(95, Math.round((steps.length / total) * 100));
@@ -198,7 +220,7 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
 
         {/* Steps */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {preparing && (
+          {(waitingForOther || startingUp) && (
             <div style={{
               display: 'flex', alignItems: 'center', gap: 12,
               padding: '10px 14px', borderRadius: 8,
@@ -206,7 +228,7 @@ export function UpgradePage({ fromVersion, onComplete }: { fromVersion: string; 
             }}>
               <StepIcon status="running" />
               <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
-                Finishing previous update…
+                {preparingLabel}
               </span>
             </div>
           )}

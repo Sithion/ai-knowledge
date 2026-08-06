@@ -57,11 +57,19 @@ let appVersion: string;
 /** existsSync + mtimeMs of files this suite must never touch. */
 let realHomeSnapshot: Record<string, string> = {};
 
+/** Every real-home path this upgrade would write if the HOME override failed.
+ *  Mirrors redeployArtifacts + clearNpxMcpCache — keep it in step with them. */
 const WATCHED = () => [
   join(homedir(), '.claude.json'),
   join(homedir(), '.claude', 'settings.json'),
   join(homedir(), '.claude', 'CLAUDE.md'),
+  join(homedir(), '.claude', 'skills'),
+  join(homedir(), '.claude', 'mcp-config.json'),
+  join(homedir(), '.copilot'),
+  join(homedir(), '.copilot', 'mcp-config.json'),
+  join(homedir(), '.config', 'opencode'),
   join(homedir(), '.cognistore', '.version'),
+  join(homedir(), '.cognistore', 'hooks'),
   join(homedir(), '.npm', '_npx'),
 ];
 
@@ -188,20 +196,28 @@ test.describe.serial('upgrade progress (real sidecar, sandboxed HOME)', () => {
   });
 
   test('a second run does not repeat the upgrade', async () => {
+    const versionFile = join(tmpRoot, '.cognistore', '.version');
+    const wroteVersion = existsSync(versionFile)
+      && readFileSync(versionFile, 'utf-8').trim() === appVersion;
+
     const before = await getProgress();
     const res = await fetch(`${baseUrl}/api/upgrade/run`, { method: 'POST' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as RunResult;
-
-    // Either the cached results of the run that just happened, or an explicit
-    // no-op — never a fresh full upgrade.
-    if (existsSync(join(tmpRoot, '.cognistore', '.version'))
-        && readFileSync(join(tmpRoot, '.cognistore', '.version'), 'utf-8').trim() === appVersion) {
-      expect(body.results.length > 0 || body.noop === true).toBe(true);
-    }
     const after = await getProgress();
+
+    if (wroteVersion) {
+      // The marker says we are current, so this request must have been answered
+      // from cache — the strongest available proof is that no new run started.
+      expect(after.startedAt).toBe(before.startedAt);
+      expect(after.steps).toEqual(before.steps);
+      expect(body.success).toBe(true);
+      expect(body.toVersion).toBe(appVersion);
+    } else {
+      // The first run was degraded, so `.version` was not written and a retry is
+      // supposed to genuinely re-run: a new run identity is the correct outcome.
+      expect(after.startedAt).not.toBe(before.startedAt);
+    }
     expect(after.running).toBe(false);
-    // No new run started: the run identity is unchanged.
-    expect(after.startedAt).toBe(before.startedAt);
   });
 });
