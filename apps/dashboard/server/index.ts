@@ -20,6 +20,7 @@ import {
   updatePlanSchema,
   createPlanTaskSchema,
   updatePlanTaskSchema,
+  isPlanStatus,
 } from '@cognistore/shared';
 import {
   UNKNOWN_VERSION,
@@ -1956,9 +1957,20 @@ Pass an array to addKnowledge to create multiple entries at once.
     const q = request.query as any;
     const limit = Math.min(Math.max(Number(q.limit) || 20, 1), 200);
     const offset = Math.max(Number(q.offset) || 0, 0);
-    const status = q.status || undefined;
+    // `status` accepts a comma-separated list (the Plans page sends the set of
+    // selected chips; empty selection omits the param entirely = no filter).
+    // A single `?status=active` keeps behaving exactly as before.
+    const statuses = String(q.status ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
+    const unknown = statuses.filter((s: string) => !isPlanStatus(s));
+    if (unknown.length) {
+      // The offending values are echoed so the caller can see WHICH one is wrong,
+      // but bounded: they are raw query input and the message must not become a
+      // way to make the server render an arbitrarily large string back.
+      const shown = unknown.slice(0, 3).map((s: string) => (s.length > 32 ? `${s.slice(0, 32)}…` : s));
+      return sendError(reply, 400, `Unknown plan status: ${shown.join(', ')}${unknown.length > 3 ? ', …' : ''}`);
+    }
     const scope = q.scope || undefined;
-    const plans = sdk.listPlans(limit, status, scope, offset);
+    const plans = sdk.listPlans(limit, statuses.length ? statuses : undefined, scope, offset);
     return plans.map((plan: any) => {
       const tasks = sdk.listPlanTasks(plan.id);
       return {

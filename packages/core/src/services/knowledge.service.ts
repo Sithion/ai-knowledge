@@ -1327,7 +1327,7 @@ export class KnowledgeService {
     return rows.map((r) => this.toPlan(r));
   }
 
-  listPlans(limit = 20, status?: string, scope?: string, offset = 0): Plan[] {
+  listPlans(limit = 20, status?: readonly string[], scope?: string, offset = 0): Plan[] {
     const rows = this.repository.listPlans(limit, status, scope, offset);
     return rows.map((r) => this.toPlan(r));
   }

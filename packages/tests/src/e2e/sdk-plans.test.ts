@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createTestContext, destroyTestContext, createFactory, type TestContext } from '../test-helpers.js';
-import { KnowledgeStatus } from '@cognistore/shared';
+import { KnowledgeStatus, PLAN_STATUS_VALUES } from '@cognistore/shared';
 
 let ctx: TestContext;
 let factory: ReturnType<typeof createFactory>;
@@ -125,12 +125,12 @@ test('listPlans with status filter', async () => {
   const activePlan = await factory.plan({ title: 'Active Filter Plan' });
   ctx.service.updatePlan(activePlan.id, { status: KnowledgeStatus.ACTIVE });
 
-  const drafts = ctx.service.listPlans(50, KnowledgeStatus.DRAFT);
+  const drafts = ctx.service.listPlans(50, [KnowledgeStatus.DRAFT]);
   const draftIds = drafts.map((p) => p.id);
   expect(draftIds).toContain(draftPlan.id);
   expect(draftIds).not.toContain(activePlan.id);
 
-  const actives = ctx.service.listPlans(50, KnowledgeStatus.ACTIVE);
+  const actives = ctx.service.listPlans(50, [KnowledgeStatus.ACTIVE]);
   const activeIds = actives.map((p) => p.id);
   expect(activeIds).toContain(activePlan.id);
   expect(activeIds).not.toContain(draftPlan.id);
@@ -193,6 +193,61 @@ test('multiple plans can exist', async () => {
 
 // ─── Fix v1.0.12: Plan dedup + scope filter + stale archive ─────
 
+test('listPlans with several statuses returns the union of them', async () => {
+  const scope = 'workspace:multi-status';
+  const draft = await factory.plan({ title: 'Multi Draft', scope });
+  const active = await factory.plan({ title: 'Multi Active', scope });
+  const completed = await factory.plan({ title: 'Multi Completed', scope });
+  ctx.service.updatePlan(active.id, { status: KnowledgeStatus.ACTIVE });
+  ctx.service.updatePlan(completed.id, { status: KnowledgeStatus.COMPLETED });
+
+  const ids = ctx.service
+    .listPlans(50, [KnowledgeStatus.DRAFT, KnowledgeStatus.ACTIVE], scope)
+    .map((p) => p.id);
+
+  expect(ids).toContain(draft.id);
+  expect(ids).toContain(active.id);
+  expect(ids).not.toContain(completed.id);
+});
+
+test('listPlans with an empty status list means no status filter', async () => {
+  const scope = 'workspace:empty-status';
+  const draft = await factory.plan({ title: 'Empty Draft', scope });
+  const archived = await factory.plan({ title: 'Empty Archived', scope });
+  ctx.service.updatePlan(archived.id, { status: KnowledgeStatus.ARCHIVED });
+
+  // [] and undefined must behave identically: deselecting every chip is "all".
+  for (const status of [[], undefined] as (string[] | undefined)[]) {
+    const ids = ctx.service.listPlans(50, status, scope).map((p) => p.id);
+    expect(ids).toContain(draft.id);
+    expect(ids).toContain(archived.id);
+  }
+});
+
+test('PLAN_STATUS_VALUES matches the plans table CHECK constraint', async () => {
+  // The SoT is only a convention until something enforces it. Adding a status
+  // means editing the CHECK in BOTH packages/core/src/db/migrate.ts and
+  // packages/core/src/db/migrations/0.9.0.sql; this fails if either drifts from
+  // PLAN_STATUS_VALUES.
+  const row = ctx.sqlite
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='plans'")
+    .get() as { sql: string } | undefined;
+  expect(row?.sql).toBeTruthy();
+
+  const check = row!.sql.match(/status[^,]*CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)/i);
+  expect(check).toBeTruthy();
+  const inSchema = check![1].split(',').map((s) => s.trim().replace(/^'|'$/g, ''));
+
+  expect([...inSchema].sort()).toEqual([...PLAN_STATUS_VALUES].sort());
+});
+
+test('listPlans rejects a status outside the shared vocabulary', async () => {
+  // Values reaching the IN-clause are bound as placeholders, but the repository
+  // also refuses anything not in PLAN_STATUS_VALUES rather than silently
+  // returning an empty set.
+  expect(() => ctx.service.listPlans(50, ['draft', 'bogus'])).toThrow(/bogus/);
+});
+
 test('listPlans with scope filter', async () => {
   const planA = await factory.plan({ title: 'Scope Plan A', scope: 'workspace:project-a' });
   const planB = await factory.plan({ title: 'Scope Plan B', scope: 'workspace:project-b' });
@@ -214,7 +269,7 @@ test('listPlans with status + scope filter combined', async () => {
   ctx.service.updatePlan(active.id, { status: KnowledgeStatus.ACTIVE });
   const other = await factory.plan({ title: 'Combo Other Scope', scope: 'workspace:other' });
 
-  const result = ctx.service.listPlans(50, KnowledgeStatus.DRAFT, 'workspace:combo-test');
+  const result = ctx.service.listPlans(50, [KnowledgeStatus.DRAFT], 'workspace:combo-test');
   const ids = result.map((p) => p.id);
   expect(ids).toContain(draft.id);
   expect(ids).not.toContain(active.id);

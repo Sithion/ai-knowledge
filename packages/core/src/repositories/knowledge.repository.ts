@@ -21,7 +21,7 @@ import {
   type FtsResult,
 } from '../db/schema/fts.js';
 import type { CreateKnowledgeInput, UpdateKnowledgeInput, SearchOptions } from '@cognistore/shared';
-import { DEFAULT_SEARCH_LIMIT, DEFAULT_SIMILARITY_THRESHOLD } from '@cognistore/shared';
+import { DEFAULT_SEARCH_LIMIT, DEFAULT_SIMILARITY_THRESHOLD, isPlanStatus } from '@cognistore/shared';
 
 // Retention window for the operations_log table. Must exceed the largest
 // window the dashboard can request: /api/metrics/activity clamps its range to
@@ -913,10 +913,23 @@ export class KnowledgeRepository {
     return this.sqlite.prepare('SELECT * FROM plans ORDER BY created_at DESC').all() as any[];
   }
 
-  listPlans(limit = 20, status?: string, scope?: string, offset = 0): any[] {
+  /**
+   * @param status Zero or more plan statuses. The SDK normalises the single-string
+   *   form to an array before it reaches here, so this layer handles one shape only.
+   *   Values are always bound as placeholders, so the vocabulary check is NOT an
+   *   injection guard — it enforces the contract for callers that never pass through
+   *   an HTTP route (the SDK and the MCP server consume this service directly), so
+   *   an unknown status fails loudly instead of silently returning nothing.
+   */
+  listPlans(limit = 20, status?: readonly string[], scope?: string, offset = 0): any[] {
     const conditions: string[] = [];
     const params: any[] = [];
-    if (status) { conditions.push('status = ?'); params.push(status); }
+    if (status?.length) {
+      const invalid = status.filter((s) => !isPlanStatus(s));
+      if (invalid.length) throw new Error(`unknown plan status: ${invalid.join(', ')}`);
+      conditions.push(`status IN (${status.map(() => '?').join(',')})`);
+      params.push(...status);
+    }
     if (scope) { conditions.push('scope = ?'); params.push(scope); }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
     // Param order must match `LIMIT ? OFFSET ?` exactly.

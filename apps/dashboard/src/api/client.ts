@@ -286,9 +286,10 @@ export const api = {
   createPlan: (data: { title: string; content: string; tags?: string[]; scope?: string; source?: string; parentPlanId?: string | null; tasks?: { description: string; priority?: string }[] }) =>
     request('/api/plans', { method: 'POST', body: JSON.stringify(data) }),
 
-  listPlans: (limit = 20, status?: string, offset = 0, scope?: string) => {
+  listPlans: (limit = 20, status?: string | string[], offset = 0, scope?: string) => {
     const params = new URLSearchParams({ limit: String(limit) });
-    if (status) params.set('status', status);
+    const statuses = (Array.isArray(status) ? status : status ? [status] : []).filter(Boolean);
+    if (statuses.length) params.set('status', statuses.join(','));
     if (offset) params.set('offset', String(offset));
     if (scope) params.set('scope', scope);
     return request<any[]>(`/api/plans?${params}`);

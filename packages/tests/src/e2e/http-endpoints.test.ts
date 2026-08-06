@@ -214,6 +214,42 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
 
   // ─── Plan lineage over HTTP ──────────────────────────────────────
 
+  // ─── GET /api/plans multi-status filter (§10) ────────────────────
+
+  test('GET /api/plans accepts a comma-separated status list and 400s on an unknown one', async () => {
+    // Single value: unchanged behaviour, the form every existing caller uses.
+    const one = await fetch(`${baseUrl}/api/plans?status=draft`);
+    expect(one.status).toBe(200);
+    for (const p of await one.json()) expect(p.status).toBe('draft');
+
+    // Several values: union, not intersection.
+    const many = await fetch(`${baseUrl}/api/plans?status=draft,active`);
+    expect(many.status).toBe(200);
+    for (const p of await many.json()) expect(['draft', 'active']).toContain(p.status);
+
+    // Omitted / empty: no filter at all — this is what an empty chip selection sends.
+    const none = await fetch(`${baseUrl}/api/plans`);
+    expect(none.status).toBe(200);
+    const empty = await fetch(`${baseUrl}/api/plans?status=`);
+    expect(empty.status).toBe(200);
+    expect((await empty.json()).length).toBe((await none.json()).length);
+
+    // Repeats collapse (the SDK de-duplicates) instead of growing the IN-clause.
+    const dupes = await fetch(`${baseUrl}/api/plans?status=draft,draft,draft`);
+    expect(dupes.status).toBe(200);
+    expect((await dupes.json()).length).toBe((await (await fetch(`${baseUrl}/api/plans?status=draft`)).json()).length);
+
+    // Unknown value is rejected outright rather than silently returning nothing.
+    const bad = await fetch(`${baseUrl}/api/plans?status=draft,bogus`);
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toMatch(/bogus/);
+
+    // The echoed offending values are bounded — a 5KB status must not come back whole.
+    const huge = await fetch(`${baseUrl}/api/plans?status=${'x'.repeat(5000)}`);
+    expect(huge.status).toBe(400);
+    expect((await huge.json()).error.length).toBeLessThan(200);
+  });
+
   test('POST /api/plans persists parentPlanId and GET :id/chain returns the whole chain', async () => {
     // Distinct content per plan on purpose: near-identical plans in one scope are
     // legitimately merged by dedup, which would hide what this test checks.

@@ -533,14 +533,16 @@ Full teardown: remove configs, skills, data, Ollama, and self-delete app. See [S
 
 ### GET /api/plans
 
-List plans with optional status filter.
+List plans with optional status and scope filters.
 
 | Query Param | Type | Default | Description |
 |-------------|------|---------|-------------|
-| `limit` | number | 20 | Max plans to return |
-| `status` | string | — | Filter by status: `draft`, `active`, `completed`, `archived` |
+| `limit` | number | 20 | Max plans to return (clamped to 1–200) |
+| `offset` | number | 0 | Pagination offset (the dashboard's infinite scroll) |
+| `status` | string | — | Filter by status. One value (`?status=active`) or a comma-separated list (`?status=draft,active`), which returns the **union** of them. Valid values: `draft`, `active`, `completed`, `archived`. Omitting the parameter — or sending it empty — applies no status filter. An unrecognised value returns `400`. |
+| `scope` | string | — | Filter by exact scope (e.g. `workspace:my-app`); combines with `status` as AND |
 
-**Response:** `Plan[]`
+**Response:** `Plan[]` · **Errors:** `400` when `status` contains a value outside the plan status vocabulary (the message names the offending values)
 
 ### POST /api/plans
 

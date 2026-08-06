@@ -26,3 +26,4 @@ export const DEFAULT_OLLAMA_PORT = 11434;
 export const DEFAULT_SQLITE_PATH = '~/.cognistore/knowledge.db';
 
 export const KNOWLEDGE_TYPES = Object.values(KnowledgeType);
+

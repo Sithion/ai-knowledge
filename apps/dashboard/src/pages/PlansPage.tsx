@@ -3,6 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+// Subpath import on purpose: the package root barrel pulls zod in, which the
+// browser bundle has no other reason to carry.
+import { PLAN_STATUS_VALUES, type PlanStatus } from '@cognistore/shared/constants';
 import { api, ApiError } from '../api/client.js';
 import { useInfiniteList, PAGE_SIZE } from '../hooks/useInfiniteScroll.js';
 import { useTransientMessage } from '../hooks/useTransientMessage.js';
@@ -574,7 +577,8 @@ export function PlansPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
-  const [statusFilter, setStatusFilter] = useState<string>('');
+  // Status chips are a multi-select toggle group: an empty selection means "all".
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [scopeFilter, setScopeFilter] = useState<string>('');
   const [allScopes, setAllScopes] = useState<string[]>([]);
   const [selectedPlan, setSelectedPlan] = useState<PlanEntry | null>(null);
@@ -614,9 +618,13 @@ export function PlansPage() {
   const filePreviewPlanIdRef = useRef<string | null>(null);
 
   // Main plans list — infinite scroll, server-side status + scope filters.
+  // The selection travels as an array; this sorted+joined form exists ONLY as the
+  // effect dependency, so that click ORDER cannot re-create the loader — only the
+  // selected SET matters.
+  const statusFilterKey = [...statusFilter].sort().join(',');
   const list = useInfiniteList<PlanEntry>(
-    (offset) => api.listPlans(PAGE_SIZE, statusFilter || undefined, offset, scopeFilter || undefined) as Promise<PlanEntry[]>,
-    [statusFilter, scopeFilter],
+    (offset) => api.listPlans(PAGE_SIZE, statusFilter, offset, scopeFilter || undefined) as Promise<PlanEntry[]>,
+    [statusFilterKey, scopeFilter],
   );
 
   // Load available scopes for the scope filter dropdown.
@@ -719,7 +727,7 @@ export function PlansPage() {
     if ((location.state as any)?.reset) {
       setSelectedPlan(null);
       setShowCreateForm(false);
-      setStatusFilter('');
+      setStatusFilter([]);
       setScopeFilter('');
       setSearchParams({}, { replace: true });
       window.history.replaceState({}, '');
@@ -829,7 +837,20 @@ export function PlansPage() {
   const completedTasks = tasks.filter((t) => t.status === 'completed').length;
   const inputRelations = relations.filter((r) => r.relationType === 'input');
   const outputRelations = relations.filter((r) => r.relationType === 'output');
-  const statusFilters = ['', 'draft', 'active', 'completed', 'archived'];
+  // No "all" entry: deselecting every chip IS "all".
+  const statusFilters = PLAN_STATUS_VALUES;
+  // Explicit key map rather than t(`plans.${s}`): a fifth status then fails to
+  // compile here instead of silently rendering a raw key in all three locales.
+  const STATUS_LABEL_KEY: Record<PlanStatus, string> = {
+    draft: 'plans.draft',
+    active: 'plans.active',
+    completed: 'plans.completed',
+    archived: 'plans.archived',
+  };
+  const toggleStatus = (s: string) => {
+    setStatusFilter((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+    setSelectedPlan(null);
+  };
 
   // ── Detail View (full page) ──
   if (selectedPlan) {
@@ -1225,21 +1246,25 @@ export function PlansPage() {
 
       {/* ── Status + Scope Filters ── */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap' }}>
-        {statusFilters.map((s) => (
-          <button
-            key={s || 'all'}
-            onClick={() => { setStatusFilter(s); setSelectedPlan(null); }}
-            style={{
-              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-              border: statusFilter === s ? '1px solid var(--accent)' : '1px solid var(--border)',
-              backgroundColor: statusFilter === s ? 'var(--accent)' : 'var(--bg-card)',
-              color: statusFilter === s ? '#fff' : 'var(--text-secondary)',
-              cursor: 'pointer',
-            }}
-          >
-            {s ? t(`plans.${s}`) : t('plans.all')}
-          </button>
-        ))}
+        {statusFilters.map((s) => {
+          const on = statusFilter.includes(s);
+          return (
+            <button
+              key={s}
+              onClick={() => toggleStatus(s)}
+              aria-pressed={on}
+              style={{
+                padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                border: on ? '1px solid var(--accent)' : '1px solid var(--border)',
+                backgroundColor: on ? 'var(--accent)' : 'var(--bg-card)',
+                color: on ? '#fff' : 'var(--text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              {t(STATUS_LABEL_KEY[s])}
+            </button>
+          );
+        })}
         <select
           value={scopeFilter}
           onChange={(e) => { setScopeFilter(e.target.value); setSelectedPlan(null); }}

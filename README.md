@@ -275,7 +275,7 @@ The desktop app includes a full dashboard with seven pages:
 ### Plans
 
 - Active plans section showing live task lists with progress bars
-- Browse all plans with status/scope filters and infinite scroll; full-page detail view with tasks, relations, and a collapsible plan-file preview
+- Browse all plans with multi-select status chips (`Draft` / `Active` / `Completed` / `Archived` — pick several to combine them, pick none to see everything), a scope filter and infinite scroll; full-page detail view with tasks, relations, and a collapsible plan-file preview
 - Origin line on the detail view naming the plan this one continues, and a `↳ Continuation` chip on the list cards — both open the parent plan
 - Plan chain section on the detail view (shown only when the plan is part of a chain): the ORIGINAL plan and every follow-up, indented by depth, each other member clickable to navigate the chain
 - Task status icons: pending (circle), in_progress (spinner), completed (checkmark)

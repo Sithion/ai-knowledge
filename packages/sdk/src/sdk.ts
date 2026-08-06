@@ -552,9 +552,19 @@ export class KnowledgeSDK {
     return this.service!.deletePlan(id);
   }
 
-  listPlans(limit = 20, status?: string, scope?: string, offset = 0): Plan[] {
+  /**
+   * Both entry points converge here — the HTTP route (which may pass several
+   * statuses) and the MCP `listPlans` tool (which passes at most one). This is
+   * therefore the single place the `string | string[]` shape is normalised; every
+   * layer below takes an array only. Duplicates are dropped here too: the list is
+   * caller-supplied (an HTTP query string), and repeats would otherwise grow the
+   * `IN (?,?,…)` placeholder list without changing the result.
+   */
+  listPlans(limit = 20, status?: string | readonly string[], scope?: string, offset = 0): Plan[] {
     this.ensureInitialized();
-    return this.service!.listPlans(limit, status, scope, offset);
+    const statuses = status === undefined ? undefined
+      : [...new Set((typeof status === 'string' ? [status] : [...status]).filter(Boolean))];
+    return this.service!.listPlans(limit, statuses?.length ? statuses : undefined, scope, offset);
   }
 
   async addPlanRelation(planId: string, knowledgeId: string, relationType: 'input' | 'output'): Promise<void> {

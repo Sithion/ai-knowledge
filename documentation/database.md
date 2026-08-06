@@ -67,7 +67,7 @@ This is a **sqlite-vec** virtual table that stores 768-dimensional float32 vecto
 | `content` | TEXT NOT NULL | — | Full plan content (steps, approach, considerations) |
 | `tags` | TEXT NOT NULL | `'[]'` | JSON array of string tags |
 | `scope` | TEXT NOT NULL | — | `global` or `workspace:<project-name>` |
-| `status` | TEXT NOT NULL | `'draft'` | One of: `draft`, `active`, `completed`, `archived` |
+| `status` | TEXT NOT NULL | `'draft'` | One of: `draft`, `active`, `completed`, `archived` — enforced by a `CHECK` constraint and mirrored in code by `PLAN_STATUS_VALUES` (`@cognistore/shared`), the source of truth every validator quotes. Changing the vocabulary means editing this `CHECK` in **both** `migrate.ts` and `migrations/0.9.0.sql` plus that constant |
 | `source` | TEXT NOT NULL | `''` | Origin of the plan |
 | `parent_plan_id` | TEXT | `NULL` | Plan that spawned this one. `NULL` means this plan is the ORIGINAL (root) of its chain |
 | `root_plan_id` | TEXT | `NULL` | Cached first plan of the chain. `NULL` means this plan **is** the root |

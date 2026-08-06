@@ -1,5 +1,11 @@
 # Patch Notes
 
+## v2.5.0
+
+### Improvements
+- **The plan status filter combines instead of replacing.** The chips above the plan list (`Draft`, `Active`, `Completed`, `Archived`) are now a multi-select toggle group: click two and you get both, click one again to drop it. The `All` chip is gone because it no longer means anything — with nothing selected the list already shows everything. The filter is applied server-side (`GET /api/plans?status=draft,active`), so it still composes with the scope dropdown and still pages correctly on scroll. A single `?status=active` behaves exactly as before, and the MCP `listPlans` tool is unchanged. One contract change if you script against the endpoint: an unrecognised `status` value now returns `400` instead of an empty `200`.
+- **The plan status vocabulary has one definition.** `draft` / `active` / `completed` / `archived` lived as separate hardcoded copies in the MCP server and the dashboard; both now import `PLAN_STATUS_VALUES` from `@cognistore/shared`, which mirrors the `plans` table's `CHECK` constraint. The repository rejects any status outside it, and `GET /api/plans` answers `400` rather than silently returning an empty list.
+
 ## v2.4.1
 
 **The first launch after an update looked like a hang.** The app ran the whole upgrade — database re-init, re-embedding, artifact redeploy — behind a static "Loading…" screen with no indication that anything was happening. On a large knowledge base that is minutes of a frozen-looking brain emoji, and the natural reaction is to force-quit it. The upgrade now runs on a screen that shows what it is doing, step by step, as it happens.

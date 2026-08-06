@@ -143,7 +143,7 @@ const resources = {
         uninstallSuccess: 'Data removed successfully. This page will stop working shortly.',
       },
       plans: {
-        title: 'Plans', empty: 'No plans yet.', all: 'All', allScopes: 'All scopes', draft: 'Draft', active: 'Active', completed: 'Completed', archived: 'Archived',
+        title: 'Plans', empty: 'No plans yet.', allScopes: 'All scopes', draft: 'Draft', active: 'Active', completed: 'Completed', archived: 'Archived',
         input: 'Consulted', output: 'Produced', noRelations: 'No related knowledge entries.', noPlans: 'No related plans.',
         chain: {
           title: 'Plan Chain', original: 'Original', current: 'current',
@@ -376,7 +376,7 @@ const resources = {
         uninstallSuccess: 'Monitoreo eliminado exitosamente. Esta página dejará de funcionar en breve.',
       },
       plans: {
-        title: 'Planes', empty: 'Aún no hay planes.', all: 'Todos', allScopes: 'Todos los ámbitos', draft: 'Borrador', active: 'Activo', completed: 'Completado', archived: 'Archivado',
+        title: 'Planes', empty: 'Aún no hay planes.', allScopes: 'Todos los ámbitos', draft: 'Borrador', active: 'Activo', completed: 'Completado', archived: 'Archivado',
         input: 'Consultados', output: 'Producidos', noRelations: 'Sin entradas relacionadas.', noPlans: 'Sin planes relacionados.',
         chain: {
           title: 'Cadena de planes', original: 'Original', current: 'actual',
@@ -609,7 +609,7 @@ const resources = {
         uninstallSuccess: 'Monitoramento removido com sucesso. Esta página vai parar de funcionar em breve.',
       },
       plans: {
-        title: 'Planos', empty: 'Nenhum plano ainda.', all: 'Todos', allScopes: 'Todos os escopos', draft: 'Rascunho', active: 'Ativo', completed: 'Concluído', archived: 'Arquivado',
+        title: 'Planos', empty: 'Nenhum plano ainda.', allScopes: 'Todos os escopos', draft: 'Rascunho', active: 'Ativo', completed: 'Concluído', archived: 'Arquivado',
         input: 'Consultados', output: 'Produzidos', noRelations: 'Sem entradas relacionadas.', noPlans: 'Sem planos relacionados.',
         chain: {
           title: 'Cadeia de planos', original: 'Original', current: 'atual',
