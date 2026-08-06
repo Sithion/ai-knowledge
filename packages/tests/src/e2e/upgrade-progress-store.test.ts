@@ -23,6 +23,8 @@ type Store = {
     toVersion: string; currentStep: string | null;
     steps: { step: string; status: string }[];
   };
+  steps(): DeployStep[];
+  lastRun(): { fromVersion: string | null; steps: DeployStep[] } | null;
   begin(fromVersion: string | null): void;
   setStep(step: string | null): void;
   record(step: DeployStep): void;
@@ -32,6 +34,7 @@ type Store = {
 async function loadStore(): Promise<{
   createUpgradeProgress: (toVersion: string) => Store;
   toProgressStep: (s: DeployStep) => { step: string; status: string };
+  deployWentWell: (steps: DeployStep[]) => boolean;
 }> {
   return (await import(STORE_MODULE)) as any;
 }
@@ -66,6 +69,10 @@ test.describe('upgrade progress store', () => {
     expect(published).toHaveLength(1);
     expect(published[0]).not.toHaveProperty('message');
     expect(JSON.stringify(published)).not.toContain('someone');
+
+    // Redaction happens on the way OUT, so the message is still available to
+    // the upgrade response — nothing can append a step that bypasses it.
+    expect(p.steps()[0].message).toBe(leaky.message);
   });
 
   test('begin marks the run, records accumulate, finish leaves them readable', async () => {
@@ -109,6 +116,41 @@ test.describe('upgrade progress store', () => {
     expect(second.startedAt).not.toBe(first.startedAt);
   });
 
+  test('lastRun is null until a run finishes, then carries the full steps and its origin version', async () => {
+    const { createUpgradeProgress } = await loadStore();
+    const p = createUpgradeProgress('2.4.1');
+    expect(p.lastRun()).toBeNull();
+
+    p.begin('2.4.0');
+    p.record({ step: 'database', status: 'success', message: 'Schema up to date' });
+    // Still running: nothing to replay yet.
+    expect(p.lastRun()).toBeNull();
+
+    p.finish();
+    const last = p.lastRun();
+    expect(last).not.toBeNull();
+    // The origin version is captured, not re-read — the run overwrote the marker.
+    expect(last!.fromVersion).toBe('2.4.0');
+    expect(last!.steps[0].message).toBe('Schema up to date');
+  });
+
+  test('deployWentWell is the replay guard: skipped blocks a replay, warning does not', async () => {
+    const { deployWentWell } = await loadStore();
+    expect(deployWentWell([{ step: 'database', status: 'success' }])).toBe(true);
+    // The global-MCP shadow check is advisory.
+    expect(deployWentWell([
+      { step: 'database', status: 'success' },
+      { step: 'mcp-shadow-check', status: 'warning' },
+    ])).toBe(true);
+    // A skipped re-embed (Ollama still starting) must NOT be replayed, or Retry
+    // would return the same failure forever.
+    expect(deployWentWell([
+      { step: 'database', status: 'success' },
+      { step: 'reembed', status: 'skipped' },
+    ])).toBe(false);
+    expect(deployWentWell([{ step: 'skills', status: 'error' }])).toBe(false);
+  });
+
   test('snapshot is a copy — callers cannot mutate the live state', async () => {
     const { createUpgradeProgress } = await loadStore();
     const p = createUpgradeProgress('2.4.1');
@@ -118,5 +160,12 @@ test.describe('upgrade progress store', () => {
     const s = p.snapshot();
     s.steps.push({ step: 'hooks', status: 'error' });
     expect(p.snapshot().steps).toHaveLength(1);
+
+    p.steps().push({ step: 'hooks', status: 'error' });
+    expect(p.steps()).toHaveLength(1);
+
+    p.finish();
+    p.lastRun()!.steps.push({ step: 'hooks', status: 'error' });
+    expect(p.lastRun()!.steps).toHaveLength(1);
   });
 });

@@ -40,6 +40,7 @@ import {
 import { registerCleanupRoutes, maybeGenerateReport } from './cleanup-routes.js';
 import {
   createUpgradeProgress,
+  deployWentWell,
   type DeployStep as UpgradeDeployStep,
 } from './upgrade-progress.js';
 
@@ -1068,19 +1069,6 @@ Pass an array to addKnowledge to create multiple entries at once.
   let inFlightDeploy: Promise<unknown> | null = null;
   /** Live view of the running upgrade, polled by the upgrade screen. */
   const upgradeProgress = createUpgradeProgress(APP_VERSION);
-  /** Full results (messages included) of the last upgrade completed this boot,
-   *  so a request that arrives after it can be answered without re-running. */
-  let lastUpgradeResults: DeployStep[] | null = null;
-  /** The version that run started from. Captured, not re-read: by the time a
-   *  replay happens the marker holds the new version, so re-reading it would
-   *  report `fromVersion === toVersion` and lose the run's real origin. */
-  let lastUpgradeFromVersion: string | null = null;
-  /** A deploy "went well" when nothing failed outright. `warning` is advisory
-   *  (the global-MCP shadow check); `skipped` is a real shortfall, so it does
-   *  NOT count — the caller is told to retry. */
-  const deployWentWell = (steps: DeployStep[]) =>
-    steps.every((r) => r.status === 'success' || r.status === 'warning');
-
   app.get('/api/upgrade/progress', async () => upgradeProgress.snapshot());
 
   app.post('/api/upgrade/run', async (request, reply) => {
@@ -1094,35 +1082,33 @@ Pass an array to addKnowledge to create multiple entries at once.
     // get here, so a second window (or a StrictMode remount) would run the whole
     // thing again — re-embed probe, npx cache wipe and all.
     if (VERSION_RESOLVED && getDeployedVersion() === APP_VERSION) {
-      const fromVersion = getDeployedVersion();
-      if (lastUpgradeResults === null) {
+      const last = upgradeProgress.lastRun();
+      if (last === null) {
         // Nothing ran this boot: already current. Say so explicitly rather than
         // returning an empty list, which reads as a completed upgrade with no steps.
-        return { success: true, noop: true, fromVersion, toVersion: APP_VERSION, results: [] as DeployStep[] };
+        return { success: true, noop: true, fromVersion: getDeployedVersion(), toVersion: APP_VERSION, results: [] as DeployStep[] };
       }
-      if (deployWentWell(lastUpgradeResults)) {
-        return { success: true, fromVersion: lastUpgradeFromVersion, toVersion: APP_VERSION, results: lastUpgradeResults };
+      if (deployWentWell(last.steps)) {
+        // `last.fromVersion` is the version that run started from — re-reading
+        // the marker here would report `fromVersion === toVersion`, since the
+        // run itself overwrote it.
+        return { success: true, fromVersion: last.fromVersion, toVersion: APP_VERSION, results: last.steps };
       }
-      // A degraded run is NOT replayable: `.version` is written whenever no step
-      // hard-errored, so a `skipped` step (re-embed with Ollama still starting)
-      // leaves us here reporting success:false forever — the upgrade screen's
-      // Retry button would be permanently dead for the rest of the boot. Fall
-      // through and genuinely run it again, which is what Retry means.
+      // A degraded run is NOT replayable (see deployWentWell): the upgrade
+      // screen's Retry button would be permanently dead for the rest of the
+      // boot. Fall through and genuinely run it again, which is what Retry means.
     }
     upgradeRunning = true;
-    const results: DeployStep[] = [];
     // Captured before Step 5 overwrites the marker.
     const fromVersion = getDeployedVersion();
     // Only now that this request owns the upgrade: a reset before the guard
     // above would wipe a live run's steps out from under a polling client.
     upgradeProgress.begin(fromVersion);
-    /** Records a step in the response and publishes it to the progress store.
-     *  The only bare `results.push` left in this handler is the spread of
-     *  `redeployArtifacts()`, whose steps arrive through its `onStep` callback. */
-    const record = (step: DeployStep) => {
-      results.push(step);
-      upgradeProgress.record(step);
-    };
+    /** The single append path for this run's results — the store owns the list,
+     *  and the response is read back from it at the end. `redeployArtifacts`
+     *  feeds the same function through its `onStep` callback, so there is no
+     *  second list to keep in sync. */
+    const record = (step: DeployStep) => upgradeProgress.record(step);
     const run = (async () => {
 
       // Step 1: Database migrations (handled automatically by createDbClient, but log it)
@@ -1277,19 +1263,18 @@ Pass an array to addKnowledge to create multiple entries at once.
       }
 
       // Steps 2-4b: re-deploy every on-disk artifact (shared with /api/redeploy).
-      // Its steps reach the progress store through onStep as they complete, so
-      // there is no single phase name to show while it runs.
+      // Its steps are recorded through `onStep` as they complete — the returned
+      // array is the same list and is deliberately discarded here, so this run
+      // has exactly one append path. There is no single phase name to show while
+      // it runs.
       upgradeProgress.setStep(null);
-      results.push(...(await redeployArtifacts({
-        clearNpxCache: true,
-        onStep: (step) => upgradeProgress.record(step),
-      })));
+      await redeployArtifacts({ clearNpxCache: true, onStep: record });
 
       // Step 5: Save new version. saveDeployedVersion() refuses to record a
       // version when any step above errored, so a partial upgrade re-runs.
       upgradeProgress.setStep('version');
       try {
-        const wrote = saveDeployedVersion(results);
+        const wrote = saveDeployedVersion(upgradeProgress.steps());
         record({
           step: 'version',
           status: wrote ? 'success' : 'skipped',
@@ -1307,12 +1292,12 @@ Pass an array to addKnowledge to create multiple entries at once.
       upgradeRunning = false;
       inFlightDeploy = null;
       upgradeProgress.finish();
-      lastUpgradeResults = results;
-      lastUpgradeFromVersion = fromVersion;
     }
 
-    const allSuccess = deployWentWell(results);
-    return { success: allSuccess, fromVersion, toVersion: APP_VERSION, results };
+    // Read the results back from the single list that collected them.
+    const completed = upgradeProgress.lastRun();
+    const results = completed?.steps ?? [];
+    return { success: deployWentWell(results), fromVersion, toVersion: APP_VERSION, results };
   });
 
   // ─── Re-deploy configurations (no migration, no version bump) ──
