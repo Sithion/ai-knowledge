@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync, existsSync }
 import { tmpdir, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
+  authFetch,
   SERVER_ENTRY,
   getFreePort,
   startMockOllama,
@@ -76,7 +77,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   // ─── /api/import zod gate (B6) ───────────────────────────────────
 
   test('rejects an invalid knowledge type with 400', async () => {
-    const r = await fetch(`${baseUrl}/api/import`, {
+    const r = await authFetch(`${baseUrl}/api/import`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ include: ['knowledge'], knowledge: [{ content: 'x', type: 'bogus', scope: 'global' }] }),
@@ -86,7 +87,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('rejects over-long content (>500KB) with 400', async () => {
-    const r = await fetch(`${baseUrl}/api/import`, {
+    const r = await authFetch(`${baseUrl}/api/import`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ include: ['knowledge'], knowledge: [{ content: 'x'.repeat(500_001), type: 'pattern', scope: 'global' }] }),
@@ -95,7 +96,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('rejects too many tags (>200) with 400', async () => {
-    const r = await fetch(`${baseUrl}/api/import`, {
+    const r = await authFetch(`${baseUrl}/api/import`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ include: ['knowledge'], knowledge: [{ content: 'x', type: 'pattern', scope: 'global', tags: new Array(201).fill('t') }] }),
@@ -104,7 +105,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('rejects an empty body (no data types) with 400', async () => {
-    const r = await fetch(`${baseUrl}/api/import`, {
+    const r = await authFetch(`${baseUrl}/api/import`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
@@ -113,7 +114,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('accepts a valid import and strips unknown keys', async () => {
-    const r = await fetch(`${baseUrl}/api/import`, {
+    const r = await authFetch(`${baseUrl}/api/import`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -129,7 +130,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
 
   test('rewrites an imported type:"system" entry to pattern (second guard)', async () => {
     const token = `sysguard${Date.now()}`;
-    const imp = await fetch(`${baseUrl}/api/import`, {
+    const imp = await authFetch(`${baseUrl}/api/import`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -140,7 +141,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect(imp.status).toBe(200);
     expect((await imp.json()).knowledge.imported).toBe(1);
 
-    const search = await fetch(`${baseUrl}/api/knowledge/search`, {
+    const search = await authFetch(`${baseUrl}/api/knowledge/search`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query: token, threshold: 0, limit: 10 }),
@@ -155,12 +156,12 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   // ─── /api/plans/:id/file allow-list + fd read (B7) ───────────────
 
   test('returns 404 for an unknown plan id', async () => {
-    const r = await fetch(`${baseUrl}/api/plans/does-not-exist/file`);
+    const r = await authFetch(`${baseUrl}/api/plans/does-not-exist/file`);
     expect(r.status).toBe(404);
   });
 
   test('rejects a plan whose file path is outside the allow-list with 403', async () => {
-    const created = await fetch(`${baseUrl}/api/plans`, {
+    const created = await authFetch(`${baseUrl}/api/plans`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'Escape', content: 'tries to read /etc/passwd', tags: ['t'], planFilePath: '/etc/passwd' }),
@@ -168,14 +169,14 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect(created.status).toBe(201);
     const planId = (await created.json()).id;
 
-    const r = await fetch(`${baseUrl}/api/plans/${planId}/file`);
+    const r = await authFetch(`${baseUrl}/api/plans/${planId}/file`);
     expect(r.status).toBe(403);
     expect((await r.json()).error).toBe('Forbidden');
   });
 
   test('reports exists:false for an allow-listed but missing file (fd ENOENT path)', async () => {
     const missing = join(homedir(), '.cognistore', `httptest-missing-${Date.now()}.md`);
-    const created = await fetch(`${baseUrl}/api/plans`, {
+    const created = await authFetch(`${baseUrl}/api/plans`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'Missing', content: 'points at a non-existent allowed file', tags: ['t'], planFilePath: missing }),
@@ -183,7 +184,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect(created.status).toBe(201);
     const planId = (await created.json()).id;
 
-    const r = await fetch(`${baseUrl}/api/plans/${planId}/file`);
+    const r = await authFetch(`${baseUrl}/api/plans/${planId}/file`);
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ exists: false });
   });
@@ -195,7 +196,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     writeFileSync(planFile, content);
     createdPlanFiles.push(planFile);
 
-    const created = await fetch(`${baseUrl}/api/plans`, {
+    const created = await authFetch(`${baseUrl}/api/plans`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'Real', content: 'has a real on-disk file', tags: ['t'], planFilePath: planFile }),
@@ -203,7 +204,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect(created.status).toBe(201);
     const planId = (await created.json()).id;
 
-    const r = await fetch(`${baseUrl}/api/plans/${planId}/file`);
+    const r = await authFetch(`${baseUrl}/api/plans/${planId}/file`);
     expect(r.status).toBe(200);
     const body = await r.json();
     expect(body.exists).toBe(true);
@@ -218,34 +219,34 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
 
   test('GET /api/plans accepts a comma-separated status list and 400s on an unknown one', async () => {
     // Single value: unchanged behaviour, the form every existing caller uses.
-    const one = await fetch(`${baseUrl}/api/plans?status=draft`);
+    const one = await authFetch(`${baseUrl}/api/plans?status=draft`);
     expect(one.status).toBe(200);
     for (const p of await one.json()) expect(p.status).toBe('draft');
 
     // Several values: union, not intersection.
-    const many = await fetch(`${baseUrl}/api/plans?status=draft,active`);
+    const many = await authFetch(`${baseUrl}/api/plans?status=draft,active`);
     expect(many.status).toBe(200);
     for (const p of await many.json()) expect(['draft', 'active']).toContain(p.status);
 
     // Omitted / empty: no filter at all — this is what an empty chip selection sends.
-    const none = await fetch(`${baseUrl}/api/plans`);
+    const none = await authFetch(`${baseUrl}/api/plans`);
     expect(none.status).toBe(200);
-    const empty = await fetch(`${baseUrl}/api/plans?status=`);
+    const empty = await authFetch(`${baseUrl}/api/plans?status=`);
     expect(empty.status).toBe(200);
     expect((await empty.json()).length).toBe((await none.json()).length);
 
     // Repeats collapse (the SDK de-duplicates) instead of growing the IN-clause.
-    const dupes = await fetch(`${baseUrl}/api/plans?status=draft,draft,draft`);
+    const dupes = await authFetch(`${baseUrl}/api/plans?status=draft,draft,draft`);
     expect(dupes.status).toBe(200);
-    expect((await dupes.json()).length).toBe((await (await fetch(`${baseUrl}/api/plans?status=draft`)).json()).length);
+    expect((await dupes.json()).length).toBe((await (await authFetch(`${baseUrl}/api/plans?status=draft`)).json()).length);
 
     // Unknown value is rejected outright rather than silently returning nothing.
-    const bad = await fetch(`${baseUrl}/api/plans?status=draft,bogus`);
+    const bad = await authFetch(`${baseUrl}/api/plans?status=draft,bogus`);
     expect(bad.status).toBe(400);
     expect((await bad.json()).error).toMatch(/bogus/);
 
     // The echoed offending values are bounded — a 5KB status must not come back whole.
-    const huge = await fetch(`${baseUrl}/api/plans?status=${'x'.repeat(5000)}`);
+    const huge = await authFetch(`${baseUrl}/api/plans?status=${'x'.repeat(5000)}`);
     expect(huge.status).toBe(400);
     expect((await huge.json()).error.length).toBeLessThan(200);
   });
@@ -258,7 +259,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
       // A scope per plan: this suite's mock Ollama returns a constant embedding,
       // so two plans in one scope always look like duplicates and dedup merges
       // them. Chains are allowed to cross scopes, which keeps this realistic.
-      const r = await fetch(`${baseUrl}/api/plans`, {
+      const r = await authFetch(`${baseUrl}/api/plans`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ title, content, tags: ['lineage-http'], scope: `workspace:lineage-http-${stamp}-${title.split(' ')[1]}`, parentPlanId }),
@@ -283,7 +284,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     expect(child.parentPlanId).toBe(root.id);
     expect(child.rootPlanId).toBe(root.id);
 
-    const r = await fetch(`${baseUrl}/api/plans/${child.id}/chain`);
+    const r = await authFetch(`${baseUrl}/api/plans/${child.id}/chain`);
     expect(r.status).toBe(200);
     const chain = await r.json();
     expect(chain.rootPlanId).toBe(root.id);
@@ -293,14 +294,14 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('GET /api/plans/:id/chain returns 404 for an unknown plan', async () => {
-    const r = await fetch(`${baseUrl}/api/plans/does-not-exist/chain`);
+    const r = await authFetch(`${baseUrl}/api/plans/does-not-exist/chain`);
     expect(r.status).toBe(404);
   });
 
   test('PUT /api/plans/:id rejects a lineage cycle with 400 {error}', async () => {
     const stamp = Date.now();
     const create = async (title: string, content: string, parentPlanId?: string) => {
-      const r = await fetch(`${baseUrl}/api/plans`, {
+      const r = await authFetch(`${baseUrl}/api/plans`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ title, content, tags: ['lineage-http'], scope: `workspace:cycle-http-${stamp}-${title.split(' ')[1]}`, parentPlanId }),
@@ -311,7 +312,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     const child = await create(`Cycle child ${stamp}`, 'Add keyboard navigation and focus traps to the settings dialog.', root.id);
     expect(child.parentPlanId).toBe(root.id);
 
-    const r = await fetch(`${baseUrl}/api/plans/${root.id}`, {
+    const r = await authFetch(`${baseUrl}/api/plans/${root.id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ parentPlanId: child.id }),
@@ -323,7 +324,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   // ─── CRUD error shapes ───────────────────────────────────────────
 
   test('POST /api/plans with an empty title returns 400 {error}', async () => {
-    const r = await fetch(`${baseUrl}/api/plans`, {
+    const r = await authFetch(`${baseUrl}/api/plans`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: '', content: 'no title', tags: ['t'] }),
@@ -333,7 +334,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('GET /api/knowledge/:id returns 404 {error} for an unknown id', async () => {
-    const r = await fetch(`${baseUrl}/api/knowledge/00000000-0000-0000-0000-000000000000`);
+    const r = await authFetch(`${baseUrl}/api/knowledge/00000000-0000-0000-0000-000000000000`);
     expect(r.status).toBe(404);
     expect((await r.json()).error).toBe('Not found');
   });
@@ -344,7 +345,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     const DAY = 24 * 60 * 60 * 1000;
     const from = encodeURIComponent(new Date(Date.now() - 900 * DAY).toISOString());
     const to = encodeURIComponent(new Date().toISOString());
-    const r = await fetch(`${baseUrl}/api/metrics/activity?from=${from}&to=${to}`);
+    const r = await authFetch(`${baseUrl}/api/metrics/activity?from=${from}&to=${to}`);
     expect(r.status).toBe(200);
     const body = await r.json();
     // HTTP layer intersects zero-fill (local dates) with buildDateSeries (UTC) —
@@ -357,7 +358,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
     const DAY = 24 * 60 * 60 * 1000;
     const from = encodeURIComponent(new Date(Date.now() - 29 * DAY).toISOString());
     const to = encodeURIComponent(new Date().toISOString());
-    const r = await fetch(`${baseUrl}/api/metrics/plans?from=${from}&to=${to}`);
+    const r = await authFetch(`${baseUrl}/api/metrics/plans?from=${from}&to=${to}`);
     expect(r.status).toBe(200);
     const body = await r.json();
     // daysBetween is inclusive: 29d span → 30 buckets; tolerate 29 for the
@@ -368,7 +369,7 @@ test.describe.serial('dashboard HTTP endpoints (real sidecar + mock Ollama)', ()
   });
 
   test('GET /api/metrics/plans without params keeps the legacy 15-day window', async () => {
-    const r = await fetch(`${baseUrl}/api/metrics/plans`);
+    const r = await authFetch(`${baseUrl}/api/metrics/plans`);
     expect(r.status).toBe(200);
     expect((await r.json()).plansByDay.length).toBe(15);
   });

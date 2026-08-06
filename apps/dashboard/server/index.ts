@@ -22,6 +22,7 @@ import {
   updatePlanTaskSchema,
   isPlanStatus,
 } from '@cognistore/shared';
+import { registerAuth, isAllowedOrigin, TOKEN_HEADER, type AuthConfig } from './auth.js';
 import {
   UNKNOWN_VERSION,
   buildMcpEntry as buildMcpEntryPure,
@@ -327,22 +328,30 @@ Pass an array to addKnowledge to create multiple entries at once.
   }, 5 * 60 * 1000);
 
   const app = Fastify({ logger: true });
-  // Restrict CORS to local origins only (the webview loads same-origin from
-  // http://localhost:PORT; Vite dev runs on :5173). Reject external websites so
-  // they can't reach local endpoints (esp. the plan-file read/open ones).
+
+  const authConfig: AuthConfig = {
+    token: process.env.SIDECAR_TOKEN || '',
+    port: PORT,
+    // Explicit positive opt-in. `NODE_ENV !== 'production'` would fail OPEN for
+    // any sidecar started without that variable.
+    dev: process.env.COGNISTORE_DEV === '1',
+  };
+  if (!authConfig.token && !authConfig.dev) {
+    log('warn', 'SIDECAR_TOKEN is unset and COGNISTORE_DEV is not 1 — every API request will be refused.');
+  }
+
+  // CORS is pinned to THIS server's exact origin. The previous predicate accepted
+  // any localhost origin on any port, so a dev server, a notebook, or another
+  // desktop app's webview on the same machine qualified as same-origin.
   await app.register(cors, {
-    origin: (origin, cb) => {
-      // Same-origin / non-browser requests omit Origin → allow.
-      if (!origin) return cb(null, true);
-      try {
-        const { hostname, protocol } = new URL(origin);
-        const ok = protocol === 'tauri:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
-        return cb(null, ok);
-      } catch {
-        return cb(null, false);
-      }
-    },
+    origin: (origin, cb) => cb(null, origin === undefined || isAllowedOrigin(origin, PORT)),
+    allowedHeaders: ['content-type', TOKEN_HEADER],
   });
+
+  // Deny by default. Registered BEFORE the static plugin and every route so it
+  // is inherited by all of them — and it matches on the resolved path, never on
+  // an `/api/` prefix, which would be allow-by-default.
+  registerAuth(app, authConfig);
 
   const distPath = resolve(process.env.DASHBOARD_DIST_PATH || join(__dirname, '..', 'dist'));
   await app.register(fastifyStatic, {
@@ -1495,8 +1504,11 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Health ────────────────────────────────────────────────────
 
-  const SIDECAR_TOKEN = process.env.SIDECAR_TOKEN || '';
-
+  // NOTE: this route no longer returns the sidecar token. It used to, because
+  // the Tauri shell proved the server on the port was ours by matching the
+  // echoed token — which meant publishing the credential to every caller. That
+  // handshake now runs over the child process's own stdout (READY_MARKER), a
+  // channel nothing else can write to, so the token never leaves the shell.
   app.get('/api/health', async () => {
     const health = sdkReady
       ? await sdk.healthCheck()
@@ -1504,7 +1516,7 @@ Pass an array to addKnowledge to create multiple entries at once.
           database: { connected: false, error: sdkError || 'Not initialized' },
           ollama: { connected: false, model: null, error: sdkError || 'Not initialized' },
         };
-    return { ...health, token: SIDECAR_TOKEN };
+    return health;
   });
 
   // ─── Knowledge CRUD ────────────────────────────────────────────
@@ -2030,22 +2042,12 @@ Pass an array to addKnowledge to create multiple entries at once.
     try { if (existsSync(abs) && !isUnderAllowedRoot(realpathSync(abs))) return { error: 'disallowed' }; } catch { /* ignore */ }
     return { path: abs };
   };
-  const rejectForeignOrigin = (request: any, reply: any): boolean => {
-    const origin = request.headers?.origin;
-    if (!origin) return false; // same-origin / non-browser
-    try {
-      const { hostname, protocol } = new URL(origin);
-      if (protocol === 'tauri:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return false;
-    } catch { /* fallthrough */ }
-    reply.code(403); return true;
-  };
-
-  // Registered here rather than beside the other health routes: these handlers
-  // need rejectForeignOrigin, which is declared just above.
+  // The per-route origin guard that used to live here is gone: it covered 7 of
+  // 76 routes and took a security policy in as a route-module dependency. The
+  // global onRequest hook from ./auth.ts now covers everything by default.
   registerCleanupRoutes(app, {
     sdk,
     ensureReady,
-    rejectForeignOrigin,
     sendError,
     log,
     ollamaHost: process.env.OLLAMA_HOST,
@@ -2054,7 +2056,6 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   app.get<{ Params: { id: string } }>('/api/plans/:id/file', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const plan = sdk.getPlanById(request.params.id);
     if (!plan) { return sendError(reply, 404, 'Not found'); }
     const r = resolvePlanFilePath(plan.planFilePath);
@@ -2092,7 +2093,6 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   app.post<{ Params: { id: string } }>('/api/plans/:id/open', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const plan = sdk.getPlanById(request.params.id);
     if (!plan) { return sendError(reply, 404, 'Not found'); }
     const r = resolvePlanFilePath(plan.planFilePath);
@@ -2439,6 +2439,11 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   log('info', `Server listening on http://localhost:${PORT}`);
+  // Readiness handshake with the Tauri shell. It reads this on the child's own
+  // stdout pipe, which no other process can write to — that unforgeability is
+  // what replaced echoing the identity token from /api/health.
+  // Must stay identical to READY_MARKER in src-tauri/src/sidecar.rs.
+  console.log('COGNISTORE_SIDECAR_READY');
 
   /**
    * Catch up on the cleanup report shortly after boot, so a machine that is never

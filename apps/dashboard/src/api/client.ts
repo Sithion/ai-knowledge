@@ -17,17 +17,34 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 // minutes — bound them generously rather than at the 30s default.
 const LONG_TIMEOUT_MS = 30 * 60_000;
 
+/**
+ * The sidecar authorization token.
+ *
+ * Seeded by the Tauri shell through an initialization script, which runs before
+ * any page script and is re-injected on every navigation. It is deliberately NOT
+ * served in the HTML: the SPA route has to answer unauthenticated, so anything
+ * embedded there would be readable by any page on any other local port.
+ * In `pnpm dev` the shell is absent, so VITE_SIDECAR_TOKEN stands in.
+ */
+const SIDECAR_TOKEN: string =
+  (globalThis as any).__COGNISTORE_TOKEN__ || import.meta.env.VITE_SIDECAR_TOKEN || '';
+
 async function request<T>(path: string, options?: RequestInit, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> {
   const headers: Record<string, string> = {};
   if (options?.body) {
     headers['Content-Type'] = 'application/json';
   }
+  if (SIDECAR_TOKEN) {
+    headers['x-cognistore-token'] = SIDECAR_TOKEN;
+  }
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
-      headers,
       signal: options?.signal ?? AbortSignal.timeout(timeoutMs),
       ...options,
+      // AFTER the spread on purpose: a caller passing its own `headers` would
+      // otherwise drop the auth token and get a 403.
+      headers: { ...headers, ...(options?.headers as Record<string, string> | undefined) },
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === 'TimeoutError') {

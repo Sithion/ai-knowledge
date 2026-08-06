@@ -6,6 +6,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  authFetch,
   SERVER_ENTRY,
   getFreePort,
   startMockOllama,
@@ -83,7 +84,7 @@ function snapshotPaths(paths: string[]): Record<string, string> {
 }
 
 const getProgress = async (): Promise<Progress> =>
-  (await (await fetch(`${baseUrl}/api/upgrade/progress`)).json()) as Progress;
+  (await (await authFetch(`${baseUrl}/api/upgrade/progress`)).json()) as Progress;
 
 test.describe.configure({ timeout: 180_000 });
 
@@ -143,7 +144,7 @@ test.describe.serial('upgrade progress (real sidecar, sandboxed HOME)', () => {
   });
 
   test('reports an upgrade is due and starts idle with no steps', async () => {
-    const check = await (await fetch(`${baseUrl}/api/upgrade/check`)).json();
+    const check = await (await authFetch(`${baseUrl}/api/upgrade/check`)).json();
     expect(check.needsUpgrade).toBe(true);
     expect(check.fromVersion).toBe('2.0.0');
     expect(check.toVersion).toBe(appVersion);
@@ -155,7 +156,7 @@ test.describe.serial('upgrade progress (real sidecar, sandboxed HOME)', () => {
   });
 
   test('publishes live progress while the upgrade runs, and never leaks step messages', async () => {
-    const runPromise = fetch(`${baseUrl}/api/upgrade/run`, { method: 'POST' })
+    const runPromise = authFetch(`${baseUrl}/api/upgrade/run`, { method: 'POST' })
       .then((r) => r.json() as Promise<RunResult>);
 
     // Sample the progress while the POST is still in flight.
@@ -201,7 +202,7 @@ test.describe.serial('upgrade progress (real sidecar, sandboxed HOME)', () => {
       && readFileSync(versionFile, 'utf-8').trim() === appVersion;
 
     const before = await getProgress();
-    const res = await fetch(`${baseUrl}/api/upgrade/run`, { method: 'POST' });
+    const res = await authFetch(`${baseUrl}/api/upgrade/run`, { method: 'POST' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as RunResult;
     const after = await getProgress();

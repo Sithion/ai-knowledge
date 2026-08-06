@@ -97,12 +97,30 @@ export function spawnSidecar(env: NodeJS.ProcessEnv): { child: ChildProcess; rea
   return { child, readLog: () => log };
 }
 
+/**
+ * The token the suites spawn the sidecar with. Every request needs it now that
+ * the server denies by default — see apps/dashboard/server/auth.ts.
+ */
+export const TEST_TOKEN = 'test-token';
+export const TOKEN_HEADER = 'x-cognistore-token';
+
+/**
+ * `fetch` with the sidecar token attached. Suites that talk to a spawned sidecar
+ * must go through this; a bare `fetch` gets a 403.
+ */
+export function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    headers: { ...(init?.headers as Record<string, string> | undefined), [TOKEN_HEADER]: TEST_TOKEN },
+  });
+}
+
 /** Poll /api/health until the SDK has initialized (database connected). */
 export async function waitForSidecar(baseUrl: string, timeoutMs = 45_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(`${baseUrl}/api/health`);
+      const r = await authFetch(`${baseUrl}/api/health`);
       if (r.ok) {
         const h = (await r.json()) as { database?: { connected?: boolean } };
         if (h?.database?.connected === true) return true;

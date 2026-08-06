@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Manager;
 use widget_config::WidgetPositions;
-use widgets::{PortState, WidgetRegistry};
+use widgets::{PortState, TokenState, WidgetRegistry};
 
 /// Set to true by the tray Quit handler before calling app.exit(0). The
 /// ExitRequested listener checks this flag so it only calls prevent_exit()
@@ -60,10 +60,16 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
     let sqlite_path = home.join(".cognistore").join("knowledge.db");
 
     // 4. Find available port
-    let port = sidecar::find_available_port(3210);
+    // No ephemeral fallback: the Origin/Host checks and the Tauri capability's
+    // remote.urls are pinned to this range, so a port outside it would be
+    // reachable but unprotected by any of them.
+    let port = sidecar::find_available_port(3210).ok_or_else(|| {
+        "No free port in 3210-3309. Close whatever is occupying that range and reopen CogniStore."
+            .to_string()
+    })?;
 
-    // 5. Spawn sidecar (returns child process + identity token)
-    let (child, token) = sidecar::spawn_node(
+    // 5. Spawn sidecar (returns child process, identity token, and its stdout)
+    let (child, token, stdout) = sidecar::spawn_node(
         &node_bin,
         &script_path,
         &resource_dir,
@@ -73,22 +79,46 @@ fn run_setup(app: &mut tauri::App) -> Result<(), String> {
 
     app.manage(SidecarState::new(child));
     app.manage(PortState { port });
+    app.manage(TokenState { token: token.clone() });
     app.manage(WidgetRegistry::default());
     app.manage(WidgetPositions::default());
 
     // 6. Set up system tray
     tray::setup_tray(app.handle()).map_err(|e| format!("Tray setup failed: {}", e))?;
 
-    // 7. Wait for OUR server to be ready (verifies sidecar token), then navigate WebView
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+    // 7. Build the main window with the sidecar token seeded into it.
+    //
+    // The window is created here rather than declared in tauri.conf.json purely
+    // so it can carry an initialization script. The token has to reach the
+    // webview out of band: serving it inside index.html would not work, because
+    // the SPA route is unauthenticated by necessity (the webview fetches the
+    // document before any script of ours has run), so any page on any other
+    // local port could fetch `/` and read the credential out of the HTML.
+    //
+    // An initialization script runs before every page's own scripts and, unlike
+    // `eval`, SURVIVES the navigate() below — it is re-injected on each
+    // navigation. It is scoped to this webview and never crosses the network.
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("CogniStore")
+    .inner_size(1200.0, 800.0)
+    .resizable(true)
+    .center()
+    .initialization_script(&format!(
+        "window.__COGNISTORE_TOKEN__ = {};",
+        serde_json::to_string(&token).unwrap_or_else(|_| "\"\"".into())
+    ))
+    .build()
+    .map_err(|e| format!("Failed to create main window: {}", e))?;
 
     let app_handle_for_restore = app.handle().clone();
     tauri::async_runtime::spawn(async move {
         // Allow up to 120s: a first launch / upgrade without Node 24 present triggers a
         // cold `nvm install 24` before the sidecar can bind, which can exceed 30s.
-        let ready = sidecar::wait_for_ready(port, &token, Duration::from_secs(120)).await;
+        let ready = sidecar::wait_for_ready(stdout, Duration::from_secs(120)).await;
         if ready {
             let url = format!("http://localhost:{}", port);
             let _ = window.navigate(url.parse().unwrap());
