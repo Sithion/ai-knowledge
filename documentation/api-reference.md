@@ -2,7 +2,29 @@
 
 ## Overview
 
-The Fastify sidecar server exposes a REST API consumed by the React frontend. It runs on `localhost:3210+` (dynamic port) and is only accessible locally.
+The Fastify sidecar server exposes a REST API consumed by the React frontend. It binds `127.0.0.1` on a port in the 3210-3309 range.
+
+## Authentication
+
+**Every route requires the sidecar token** (since v2.5.0). Loopback is not a trust boundary: any other local process, and any page served by any other local HTTP server, sits inside it — and `POST /api/uninstall` takes no body, so a body-less `fetch(..., {mode:'no-cors'})` from an ordinary web page was a CORS-simple request that ran the whole teardown.
+
+Three checks, all of which must pass:
+
+| Check | Rule |
+|---|---|
+| `x-cognistore-token` header | Must equal the sidecar's `SIDECAR_TOKEN`. |
+| `Origin` (when present) | Must be this server's exact origin — `http://localhost:<PORT>`, `http://127.0.0.1:<PORT>` or `tauri:`. Any other localhost port is a foreign origin. |
+| `Host` | Must be `localhost:<PORT>` or `127.0.0.1:<PORT>`, which defeats DNS rebinding. |
+
+A **missing** `Origin` (curl, the Tauri shell, tests) is accepted only alongside a valid token — a browser cannot forge that header cross-origin.
+
+Failures return **403** with `{ "error": "Forbidden" }`.
+
+Exempt: static assets and the SPA shell, which the webview must fetch before any script of ours has run. The token is therefore delivered out of band, via a Tauri initialization script — it is never embedded in the served HTML, because anything there would be readable by any page on any other local port.
+
+`GET /api/health` no longer returns the token. The shell proves the sidecar's identity over the child process's stdout instead.
+
+**Errors:** in production, 5xx responses carry a generic message plus a `ref` correlation id; the detail is in `~/.cognistore/cognistore.log`.
 
 **File:** `apps/dashboard/server/index.ts`
 
@@ -397,10 +419,10 @@ Run the upgrade pipeline. Compares `~/.cognistore/.version` with the running app
 {
   "success": true,
   "fromVersion": "2.4.0",
-  "toVersion": "2.4.1",
+  "toVersion": "2.5.0",
   "results": [
     { "step": "database", "status": "success", "message": "Schema up to date" },
-    { "step": "version", "status": "success", "message": "v2.4.1" }
+    { "step": "version", "status": "success", "message": "v2.5.0" }
   ]
 }
 ```
@@ -416,7 +438,7 @@ Run the upgrade pipeline. Compares `~/.cognistore/.version` with the running app
 - Marker already equals the running app version and nothing ran this boot → returns
 
   ```json
-  { "success": true, "noop": true, "fromVersion": "2.4.1", "toVersion": "2.4.1", "results": [] }
+  { "success": true, "noop": true, "fromVersion": "2.5.0", "toVersion": "2.5.0", "results": [] }
   ```
 
   Treat `noop` as "nothing to do", not as a completed upgrade with no steps.
@@ -436,7 +458,7 @@ Live view of the upgrade `POST /api/upgrade/run` is performing, for a client tha
   "running": true,
   "startedAt": "2026-08-06T12:00:00.000Z",
   "fromVersion": "2.4.0",
-  "toVersion": "2.4.1",
+  "toVersion": "2.5.0",
   "currentStep": "reembed",
   "steps": [
     { "step": "database", "status": "success" }
@@ -444,7 +466,7 @@ Live view of the upgrade `POST /api/upgrade/run` is performing, for a client tha
 }
 ```
 
-- `steps` mirrors the `results` of the in-flight run, **without `message`**. Step messages embed raw filesystem errors — absolute paths, and with them the OS username — plus template paths and the globally-installed MCP version. This endpoint is unauthenticated like every route here, so it publishes names and statuses only; the full messages come back with the `POST` response the app already consumes.
+- `steps` mirrors the `results` of the in-flight run, **without `message`**. Step messages embed raw filesystem errors — absolute paths, and with them the OS username — plus template paths and the globally-installed MCP version. The projection stands on its own as disclosure hygiene (the endpoint is authenticated as of v2.5.0), so it publishes names and statuses only; the full messages come back with the `POST` response the app already consumes.
 - `currentStep` names the phase about to run, and is `null` while the artifact steps run (they are published individually as they complete) and once the run ends.
 - **No readiness guard:** this endpoint never returns `503`, deliberately — it has to answer while the `database` step has the SDK torn down. It reads in-memory state only.
 - **Between runs** it keeps `running: false` with the previous run's `steps` still populated, so a client that connects late can still render what happened. `startedAt` identifies which run a snapshot describes: latch it to tell a fresh snapshot from a stale one. Before the first run of the process it answers `running: false` with `startedAt` and `fromVersion` `null` and `steps: []`; `toVersion` is always the running app version, run or no run.

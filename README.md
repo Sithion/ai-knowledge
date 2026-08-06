@@ -27,6 +27,8 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 
 ## Features
 
+- **Local-only, authenticated API** — the sidecar binds `127.0.0.1` and every route requires a token the desktop shell holds. Loopback alone is not treated as a trust boundary.
+
 - **Local-first** — All data stays on your machine. SQLite database with vector search via `sqlite-vec`.
 - **Semantic search** — Find knowledge by meaning, not just keywords. Powered by Ollama embeddings running natively.
 - **External knowledge providers (MCP)** — Optionally augment local search by connecting [MCP servers](documentation/providers/plug-mcp.md) — local **stdio** subprocesses or **remote** Streamable HTTP servers (authenticated with **OAuth 2.1** or a static header). Results are returned **sectioned by source** and labeled untrusted; secrets live in the OS keychain. Opt-in and disabled by default — see the [providers docs](documentation/providers/providers-config.md).
@@ -413,6 +415,9 @@ On merge to `main`, the CI pipeline runs two jobs in parallel:
 - **publish-tauri** — Builds platform binaries (macOS dmg, Linux AppImage/deb) and uploads them to GitHub Releases
 
 ## Contributing
+
+> **Note:** the commit history was rewritten in v2.5.0 to strip contributor contact addresses from commit metadata. If you have a clone from before that, re-clone rather than pulling.
+
 
 Contributions are welcome. Please open an issue first to discuss what you'd like to change.
 

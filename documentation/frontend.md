@@ -233,4 +233,4 @@ The frontend automatically filters out `type=system` entries from all views:
 
 HTTP client that communicates with the Fastify sidecar. Base URL is determined from `window.location` (same host, dynamic port set by Tauri).
 
-All requests are standard `fetch()` calls with JSON content type. No authentication required (localhost only).
+All requests are standard `fetch()` calls with JSON content type, plus an `x-cognistore-token` header — every sidecar route requires it (see api-reference.md § Authentication). The token is read from `window.__COGNISTORE_TOKEN__`, seeded by the Tauri shell through an initialization script; under `pnpm dev` there is no shell, so `VITE_SIDECAR_TOKEN` stands in.

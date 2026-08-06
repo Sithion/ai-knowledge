@@ -61,7 +61,7 @@ ELSE IF markers exist:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server@2.4.1"],
+      "args": ["-y", "@cognistore/mcp-server@2.5.0"],
       "env": {
         "SQLITE_PATH": "~/.cognistore/knowledge.db",
         "OLLAMA_HOST": "http://localhost:11434",
@@ -101,7 +101,7 @@ OpenCode uses a different JSON structure:
   "mcp": {
     "cognistore": {
       "type": "local",
-      "command": ["npx", "-y", "@cognistore/mcp-server@2.4.1"],
+      "command": ["npx", "-y", "@cognistore/mcp-server@2.5.0"],
       "enabled": true,
       "environment": {
         "SQLITE_PATH": "~/.cognistore/knowledge.db",
