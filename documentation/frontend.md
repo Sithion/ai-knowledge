@@ -43,6 +43,7 @@ Plan management with live task tracking.
 - Priority left-border colors: red (high), yellow (medium), gray (low)
 - Progress bars and mini progress counters (e.g., "3/5 tasks")
 - **Delete button** (red trash icon) per task row in the plan detail view — confirms with the task's own description, then refreshes the plan, its progress and the list counts. The read-only task lists on the active-plan cards carry no actions
+- **Status filter chips** (`Draft` / `Active` / `Completed` / `Archived`) are a multi-select toggle group, not a radio group: each chip toggles independently and they combine, so `Draft` + `Active` lists both. There is deliberately **no "All" chip** — deselecting every chip *is* "all". The selection is sent to `GET /api/plans` as a comma-separated `status` list and composes with the scope dropdown
 - Plan relations sections (input/output knowledge entries)
 - **Origin** line at the top of the detail view for a plan that continues another one: names the parent and jumps to it. The title comes from the chain when present; the chain walk is bounded, so a distant parent falls back to a short id
 - **`↳ Continuation` chip** on the cards in both plan lists (active plans and the paginated list) when the plan has a parent — clicking it opens the parent instead of the card's own plan
@@ -232,4 +233,4 @@ The frontend automatically filters out `type=system` entries from all views:
 
 HTTP client that communicates with the Fastify sidecar. Base URL is determined from `window.location` (same host, dynamic port set by Tauri).
 
-All requests are standard `fetch()` calls with JSON content type. No authentication required (localhost only).
+All requests are standard `fetch()` calls with JSON content type, plus an `x-cognistore-token` header — every sidecar route requires it (see api-reference.md § Authentication). The token is read from `window.__COGNISTORE_TOKEN__`, seeded by the Tauri shell through an initialization script; under `pnpm dev` there is no shell, so `VITE_SIDECAR_TOKEN` stands in.

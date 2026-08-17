@@ -34,7 +34,7 @@ import {
   type SDKConfig,
   type FederatedSearchResult,
 } from '@cognistore/shared';
-import { loadProviders, ProviderManager, EnvSecretStore, FileTokenStore } from '@cognistore/providers';
+import { loadProviders, ProviderManager, EnvSecretStore, FileTokenStore, resolveProviderPolicy } from '@cognistore/providers';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
@@ -182,12 +182,24 @@ export class KnowledgeSDK {
     try {
       const dir = dirname(expandHome(this.config.database.path));
       const tokenStore = new FileTokenStore(join(dir, 'oauth-tokens.json'));
-      this.providerManager = loadProviders(join(dir, 'providers.json'), new EnvSecretStore(), tokenStore);
       const settingsPath = join(dir, 'settings.json');
-      this.alwaysExternal = existsSync(settingsPath)
-        ? (JSON.parse(readFileSync(settingsPath, 'utf-8')) as { alwaysSearchExternalProviders?: boolean })
-            ?.alwaysSearchExternalProviders === true
-        : false;
+      const settings = existsSync(settingsPath)
+        ? (JSON.parse(readFileSync(settingsPath, 'utf-8')) as {
+            alwaysSearchExternalProviders?: boolean;
+            allowStdioProviders?: boolean;
+            allowInsecureProviderUrls?: boolean;
+          })
+        : null;
+      // The policy comes from settings.json rather than env so that this process
+      // and the MCP server — which load the same providers.json — agree on which
+      // entries exist. See packages/providers/src/policy.ts.
+      this.providerManager = loadProviders(
+        join(dir, 'providers.json'),
+        new EnvSecretStore(),
+        tokenStore,
+        resolveProviderPolicy(settings),
+      );
+      this.alwaysExternal = settings?.alwaysSearchExternalProviders === true;
     } catch (e) {
       console.error('[CogniStore] reloadProviders failed:', e instanceof Error ? e.message : String(e));
     }
@@ -552,9 +564,19 @@ export class KnowledgeSDK {
     return this.service!.deletePlan(id);
   }
 
-  listPlans(limit = 20, status?: string, scope?: string, offset = 0): Plan[] {
+  /**
+   * Both entry points converge here — the HTTP route (which may pass several
+   * statuses) and the MCP `listPlans` tool (which passes at most one). This is
+   * therefore the single place the `string | string[]` shape is normalised; every
+   * layer below takes an array only. Duplicates are dropped here too: the list is
+   * caller-supplied (an HTTP query string), and repeats would otherwise grow the
+   * `IN (?,?,…)` placeholder list without changing the result.
+   */
+  listPlans(limit = 20, status?: string | readonly string[], scope?: string, offset = 0): Plan[] {
     this.ensureInitialized();
-    return this.service!.listPlans(limit, status, scope, offset);
+    const statuses = status === undefined ? undefined
+      : [...new Set((typeof status === 'string' ? [status] : [...status]).filter(Boolean))];
+    return this.service!.listPlans(limit, statuses?.length ? statuses : undefined, scope, offset);
   }
 
   async addPlanRelation(planId: string, knowledgeId: string, relationType: 'input' | 'output'): Promise<void> {

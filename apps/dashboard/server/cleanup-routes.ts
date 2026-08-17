@@ -16,7 +16,6 @@ export interface CleanupRouteDeps {
   /** Returns a 503 payload when the SDK is not ready yet, or null to proceed. */
   ensureReady: (reply: any) => unknown;
   /** CSRF guard: true when the request came from a foreign origin (already replied 403). */
-  rejectForeignOrigin: (request: any, reply: any) => boolean;
   sendError: (reply: any, code: number, error: string, extra?: Record<string, unknown>) => unknown;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /** Ollama host resolved by the sidecar, so the model client does not re-derive it from env. */
@@ -82,7 +81,7 @@ export async function maybeGenerateReport(
 }
 
 export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDeps): void {
-  const { sdk, ensureReady, rejectForeignOrigin, sendError } = deps;
+  const { sdk, ensureReady, sendError } = deps;
 
   /** Members of a duplicate-group candidate, canonical first, for merging. */
   const membersOf = (candidate: any): any[] => {
@@ -116,7 +115,6 @@ export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDe
 
   app.post('/api/cleanup/report/run', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const settings = readSettings();
     const result = await sdk.generateCleanupReport({
       unreadDays: settings.cleanupUnreadDays,
@@ -133,7 +131,6 @@ export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDe
    */
   app.post<{ Params: { id: string } }>('/api/cleanup/candidates/:id/preview', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const candidate = sdk.getCleanupCandidate(request.params.id);
     if (!candidate) return sendError(reply, 404, 'Cleanup candidate not found');
     if (candidate.category !== 'duplicate_group') {
@@ -161,7 +158,6 @@ export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDe
     '/api/cleanup/candidates/:id/approve',
     async (request, reply) => {
       const err = ensureReady(reply); if (err) return err;
-      if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
       const candidate = sdk.getCleanupCandidate(request.params.id);
       if (!candidate) return sendError(reply, 404, 'Cleanup candidate not found');
 
@@ -193,7 +189,6 @@ export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDe
 
   app.post<{ Params: { id: string } }>('/api/cleanup/candidates/:id/dismiss', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     try {
       sdk.dismissCleanupCandidate(request.params.id);
       return { dismissed: true };
@@ -207,7 +202,6 @@ export function registerCleanupRoutes(app: FastifyInstance, deps: CleanupRouteDe
 
   app.post<{ Params: { id: string } }>('/api/cleanup/report/:id/close', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     try {
       return sdk.closeCleanupReport(request.params.id);
     } catch (e: any) {

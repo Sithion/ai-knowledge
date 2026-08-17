@@ -23,8 +23,32 @@ pub struct PortState {
     pub port: u16,
 }
 
+/// Stores the sidecar authorization token so widget windows can be seeded with
+/// it the same way the main window is — they call the same API through the same
+/// client, so without it every widget request would be refused.
+pub struct TokenState {
+    pub token: String,
+}
+
 /// Counter for generating unique widget instance labels.
 static INSTANCE_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+/// A widget id is interpolated into a URL path, so it must not be able to
+/// introduce path traversal, a new segment, a query or a fragment.
+fn is_safe_url_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Widget params are appended raw after `?`, so restrict them to the characters
+/// an ordinary query string is made of — no fragment, no whitespace, no quotes.
+fn is_safe_query_string(s: &str) -> bool {
+    s.len() <= 256
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '=' | '&' | '-' | '_' | '.' | '%' | ',' | ':')
+        })
+}
 
 /// Tracks open widget instances: label -> widget_type
 pub struct WidgetRegistry {
@@ -79,6 +103,16 @@ pub fn build_widget_window(app: &AppHandle, widget_id: String, params: Option<St
     let instance_num = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("widget-{}-{}", widget_id, instance_num);
 
+    // Both segments end up in a URL, so neither may carry path or query syntax.
+    if !is_safe_url_segment(&widget_id) {
+        return Err(format!("Invalid widget id: {}", widget_id));
+    }
+    if let Some(p) = params.as_deref() {
+        if !is_safe_query_string(p) {
+            return Err("Invalid widget params".to_string());
+        }
+    }
+
     let port = app.state::<PortState>().port;
     let query = params.map(|p| format!("?{}", p)).unwrap_or_default();
     let url = format!("http://localhost:{}/widgets/{}.html{}", port, widget_id, query);
@@ -102,7 +136,14 @@ pub fn build_widget_window(app: &AppHandle, widget_id: String, params: Option<St
         .inner_size(w, h)
         .decorations(false)
         .transparent(false)
-        .resizable(false);
+        .resizable(false)
+        // Widgets talk to the same authenticated API through the same client,
+        // so they need the same out-of-band token as the main window.
+        .initialization_script(&format!(
+            "window.__COGNISTORE_TOKEN__ = {};",
+            serde_json::to_string(&app.state::<TokenState>().token)
+                .unwrap_or_else(|_| "\"\"".into())
+        ));
 
     // always_on_top + skip_taskbar at creation time are unreliable on Linux
     // WebKitGTK (X11/Wayland WMs): a borderless, always-on-top, taskbar-skipped

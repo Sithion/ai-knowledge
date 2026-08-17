@@ -27,6 +27,8 @@ The app acts as an [MCP](https://modelcontextprotocol.io/) server for **Claude C
 
 ## Features
 
+- **Local-only, authenticated API** — the sidecar binds `127.0.0.1` and every route requires a token the desktop shell holds. Loopback alone is not treated as a trust boundary.
+
 - **Local-first** — All data stays on your machine. SQLite database with vector search via `sqlite-vec`.
 - **Semantic search** — Find knowledge by meaning, not just keywords. Powered by Ollama embeddings running natively.
 - **External knowledge providers (MCP)** — Optionally augment local search by connecting [MCP servers](documentation/providers/plug-mcp.md) — local **stdio** subprocesses or **remote** Streamable HTTP servers (authenticated with **OAuth 2.1** or a static header). Results are returned **sectioned by source** and labeled untrusted; secrets live in the OS keychain. Opt-in and disabled by default — see the [providers docs](documentation/providers/providers-config.md).
@@ -275,7 +277,7 @@ The desktop app includes a full dashboard with seven pages:
 ### Plans
 
 - Active plans section showing live task lists with progress bars
-- Browse all plans with status/scope filters and infinite scroll; full-page detail view with tasks, relations, and a collapsible plan-file preview
+- Browse all plans with multi-select status chips (`Draft` / `Active` / `Completed` / `Archived` — pick several to combine them, pick none to see everything), a scope filter and infinite scroll; full-page detail view with tasks, relations, and a collapsible plan-file preview
 - Origin line on the detail view naming the plan this one continues, and a `↳ Continuation` chip on the list cards — both open the parent plan
 - Plan chain section on the detail view (shown only when the plan is part of a chain): the ORIGINAL plan and every follow-up, indented by depth, each other member clickable to navigate the chain
 - Task status icons: pending (circle), in_progress (spinner), completed (checkmark)
@@ -413,6 +415,9 @@ On merge to `main`, the CI pipeline runs two jobs in parallel:
 - **publish-tauri** — Builds platform binaries (macOS dmg, Linux AppImage/deb) and uploads them to GitHub Releases
 
 ## Contributing
+
+> **Note:** the commit history was rewritten in v2.5.0 to strip contributor contact addresses from commit metadata. If you have a clone from before that, re-clone rather than pulling.
+
 
 Contributions are welcome. Please open an issue first to discuss what you'd like to change.
 

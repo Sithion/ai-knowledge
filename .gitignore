@@ -44,3 +44,17 @@ pnpm-debug.log*
 # Backup files
 *.bak
 sandbox/
+
+# Key / certificate material — nothing of the sort is tracked today; this is
+# preventative, so an accidental `git add -A` cannot introduce one.
+*.pem
+*.p12
+*.pfx
+*.key
+*.jks
+*.cer
+*.mobileprovision
+*.keychain
+id_rsa*
+.env.*
+!.env.example

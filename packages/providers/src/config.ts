@@ -6,6 +6,7 @@ import type { KnowledgeProvider } from './types.js';
 import { ProviderManager } from './manager.js';
 import { McpKnowledgeProvider } from './mcp/mcp-provider.js';
 import { CogniStoreOAuthProvider } from './mcp/oauth-provider.js';
+import { providerPolicyViolation, DEFAULT_PROVIDER_POLICY, type ProviderPolicy } from './policy.js';
 
 /**
  * Auth for a remote (Streamable HTTP) MCP server. stdio servers don't use this —
@@ -136,7 +137,12 @@ export function migrateProvidersConfig(raw: any): { config: ProvidersConfig; mig
  * empty manager (offline-first: never let bad config break local search).
  * A v1 file is migrated to v2 and rewritten in place once.
  */
-export function loadProviders(configPath: string, secrets: ISecretStore, tokenStore?: ITokenStore): ProviderManager {
+export function loadProviders(
+  configPath: string,
+  secrets: ISecretStore,
+  tokenStore?: ITokenStore,
+  policy: ProviderPolicy = DEFAULT_PROVIDER_POLICY,
+): ProviderManager {
   if (!existsSync(configPath)) return new ProviderManager([]);
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
@@ -144,14 +150,26 @@ export function loadProviders(configPath: string, secrets: ISecretStore, tokenSt
     if (migrated) {
       try {
         const tmp = `${configPath}.tmp`;
-        writeFileSync(tmp, JSON.stringify(config, null, 2));
+        // 0600: this file can hold a stdio provider's `env`, which users do put
+        // literal secrets into despite secretRef being the documented route.
+        writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
         renameSync(tmp, configPath);
         console.error('[CogniStore] providers.json migrated to v2 (MCP-only)');
       } catch (e) {
         console.error('[CogniStore] providers.json v2 rewrite failed:', e instanceof Error ? e.message : String(e));
       }
     }
-    return new ProviderManager(config.providers.map((e) => buildProvider(e, secrets, tokenStore)));
+    // Policy is applied PER ENTRY, never as a whole-file throw: one gated entry
+    // must not take the user's other providers down with it (see policy.ts).
+    const allowed = config.providers.filter((e) => {
+      const violation = providerPolicyViolation(e, policy);
+      if (violation) {
+        console.error(`[CogniStore] provider "${e.id}" disabled by policy: ${violation}`);
+        return false;
+      }
+      return true;
+    });
+    return new ProviderManager(allowed.map((e) => buildProvider(e, secrets, tokenStore)));
   } catch (e) {
     console.error('[CogniStore] Failed to load providers.json:', e instanceof Error ? e.message : String(e));
     return new ProviderManager([]);

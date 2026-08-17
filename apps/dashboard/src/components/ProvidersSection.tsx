@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, setProviderSecret, type ProviderEntry } from '../api/client.js';
+import { api, setProviderSecret, SIDECAR_TOKEN, type ProviderEntry } from '../api/client.js';
 
 const card: React.CSSProperties = {
   backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10,
@@ -75,8 +75,8 @@ export function ProvidersSection() {
       // will catch it on uninstall even if the keychain delete failed here.
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('delete_provider_secret', { id });
-        await invoke('delete_oauth_tokens', { id }); // clear the oauth keychain mirror too
+        await invoke('delete_provider_secret', { token: SIDECAR_TOKEN, id });
+        await invoke('delete_oauth_tokens', { token: SIDECAR_TOKEN, id }); // clear the oauth keychain mirror too
       } catch { /* not Tauri or no secret */ }
       await api.deleteProvider(id);
       load();

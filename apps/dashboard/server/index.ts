@@ -1,14 +1,15 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, sep } from 'node:path';
 import { execSync, execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, cpSync, readdirSync, unlinkSync, rmdirSync, readFileSync, writeFileSync, statSync, chmodSync, copyFileSync, appendFileSync, renameSync, realpathSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { KnowledgeSDK } from '@cognistore/sdk';
 import { ConfigManager } from '@cognistore/config';
-import { providersConfigSchema, providerEntrySchema, buildProvider, migrateProvidersConfig, EnvSecretStore, FileTokenStore, InteractiveOAuthFlow, secretRefToEnvKey } from '@cognistore/providers';
+import { providersConfigSchema, providerEntrySchema, buildProvider, migrateProvidersConfig, EnvSecretStore, FileTokenStore, InteractiveOAuthFlow, secretRefToEnvKey, assertProviderPolicy, resolveProviderPolicy, type ProviderPolicy } from '@cognistore/providers';
 import type {
   CreateKnowledgeInput,
   UpdateKnowledgeInput,
@@ -20,7 +21,11 @@ import {
   updatePlanSchema,
   createPlanTaskSchema,
   updatePlanTaskSchema,
+  isPlanStatus,
+  createPlanRelationSchema,
+  bulkDeleteSchema,
 } from '@cognistore/shared';
+import { registerAuth, isAllowedOrigin, TOKEN_HEADER, type AuthConfig } from './auth.js';
 import {
   UNKNOWN_VERSION,
   buildMcpEntry as buildMcpEntryPure,
@@ -180,11 +185,23 @@ function readProvidersConfig(): ProvidersConfig {
   }
 }
 
+/**
+ * The installation's provider policy. Read from settings.json on every call
+ * rather than cached, so a change takes effect without restarting the sidecar —
+ * and so the sidecar and the MCP server, which read the same file, always agree.
+ */
+function currentProviderPolicy(): ProviderPolicy {
+  return resolveProviderPolicy(readSettings());
+}
+
 function writeProvidersConfig(config: ProvidersConfig): void {
   const validated = providersConfigSchema.parse(config);
   mkdirSync(INSTALL_DIR, { recursive: true });
   const tmp = PROVIDERS_FILE + '.tmp';
-  writeFileSync(tmp, JSON.stringify(validated, null, 2));
+  // 0600 on the tmp file, which the rename preserves. A stdio provider's `env`
+  // can hold literal secrets (the docs steer to secretRef, nothing enforces it),
+  // and the default umask left this world-readable.
+  writeFileSync(tmp, JSON.stringify(validated, null, 2), { mode: 0o600 });
   try {
     renameSync(tmp, PROVIDERS_FILE);
   } catch {
@@ -234,7 +251,7 @@ async function start() {
   // MCP tools under its own name (see the prefix note in the text below);
   // hardcoding one platform's full names here caused "Tool does not exist"
   // errors on the others.
-  const SYSTEM_KNOWLEDGE_CONTENT = `## CRITICAL: On EVERY task, you MUST: (1) getKnowledge() FIRST, (2) createPlan() for 2+ steps, (3) addKnowledge() LAST. No exceptions. All CogniStore tools are pre-approved — call them directly.
+  const SYSTEM_KNOWLEDGE_CONTENT = `## CRITICAL: On EVERY task, you MUST: (1) getKnowledge() FIRST, (2) createPlan() for 2+ steps, (3) addKnowledge() LAST. No exceptions. CogniStore tools are pre-approved — call them directly. The two destructive ones (deleteKnowledge, deletePlanTask) deliberately still prompt.
 
 ## Tool naming — use the form shown in YOUR tool list
 CogniStore tools carry a platform prefix: mcp__cognistore__<tool> in Claude Code, cognistore-<tool> in Copilot CLI, cognistore_<tool> in OpenCode. The steps below use the bare tool name — call it with the prefix your platform shows. If NO cognistore tool exists in your tool list, skip this protocol entirely — never substitute other tools (e.g. raw SQL) to simulate it.
@@ -278,7 +295,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 - For plan-then-execute workflows (two sessions): the getKnowledge response will show your existing active plan
 - Subagents that own an implementation slice MAY call createPlan(), but MUST pass parentPlanId = the main effort's plan id (the main agent includes that id in the subagent's prompt). Review-only and read-only subagents must not create plans
 - All knowledge entries must be in English
-- All CogniStore tools are pre-approved — call them directly without hesitation`;
+- CogniStore tools are pre-approved — call them directly without hesitation. Exceptions: deleteKnowledge and deletePlanTask prompt, because deleting the user's knowledge is their call`;
 
   const seedSystemKnowledge = async () => {
     if (!sdkReady) return;
@@ -326,21 +343,82 @@ Pass an array to addKnowledge to create multiple entries at once.
   }, 5 * 60 * 1000);
 
   const app = Fastify({ logger: true });
-  // Restrict CORS to local origins only (the webview loads same-origin from
-  // http://localhost:PORT; Vite dev runs on :5173). Reject external websites so
-  // they can't reach local endpoints (esp. the plan-file read/open ones).
+
+  const authConfig: AuthConfig = {
+    token: process.env.SIDECAR_TOKEN || '',
+    port: PORT,
+    // Explicit positive opt-in. `NODE_ENV !== 'production'` would fail OPEN for
+    // any sidecar started without that variable.
+    dev: process.env.COGNISTORE_DEV === '1',
+  };
+  if (!authConfig.token && !authConfig.dev) {
+    log('warn', 'SIDECAR_TOKEN is unset and COGNISTORE_DEV is not 1 — every API request will be refused.');
+  }
+
+  // CORS is pinned to THIS server's exact origin. The previous predicate accepted
+  // any localhost origin on any port, so a dev server, a notebook, or another
+  // desktop app's webview on the same machine qualified as same-origin.
   await app.register(cors, {
-    origin: (origin, cb) => {
-      // Same-origin / non-browser requests omit Origin → allow.
-      if (!origin) return cb(null, true);
-      try {
-        const { hostname, protocol } = new URL(origin);
-        const ok = protocol === 'tauri:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
-        return cb(null, ok);
-      } catch {
-        return cb(null, false);
-      }
-    },
+    origin: (origin, cb) => cb(null, origin === undefined || isAllowedOrigin(origin, PORT)),
+    allowedHeaders: ['content-type', TOKEN_HEADER],
+  });
+
+  // Deny by default. Registered BEFORE the static plugin and every route so it
+  // is inherited by all of them — and it matches on the resolved path, never on
+  // an `/api/` prefix, which would be allow-by-default.
+  registerAuth(app, authConfig);
+
+  // Generic error responses in production.
+  //
+  // Fastify's default handler echoes the thrown message, and several routes
+  // return `e.message` themselves. Those messages embed execSync command lines,
+  // absolute paths (so, home directory names) and provider URLs. The detail goes
+  // to the log, and the caller gets a correlation id to quote.
+  const isProd = process.env.NODE_ENV === 'production';
+  app.setErrorHandler((error: any, request, reply) => {
+    const ref = randomUUID().slice(0, 8);
+    log('error', `[${ref}] ${request.method} ${request.url}: ${error?.message ?? error}`);
+    const status = error?.statusCode ?? 500;
+    reply.code(status);
+    return reply.send(
+      isProd && status >= 500
+        ? { error: 'Internal error', ref }
+        : { error: error?.message ?? 'Internal error', ref },
+    );
+  });
+
+  // Content-Security-Policy.
+  //
+  // tauri.conf.json declares one, but that only covers the tauri:// asset
+  // protocol — and the UI is navigated to http://localhost:PORT, so in practice
+  // it ran with no CSP at all. This is the header that actually applies.
+  //
+  // `script-src 'self'` with no 'unsafe-inline': the bundle is external files,
+  // so nothing legitimate needs inline script. 'unsafe-inline' IS kept for
+  // styles, because React's style={{…}} attributes and Tailwind's injected
+  // styles genuinely require it. 'unsafe-eval' is not granted; the Rust error
+  // page reaches the DOM through window.eval, which is an IPC call rather than
+  // page script and is unaffected.
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header(
+      'Content-Security-Policy',
+      [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        // The sidecar itself, Ollama, and the GitHub endpoints the updater uses.
+        `connect-src 'self' http://localhost:${PORT} http://127.0.0.1:${PORT} http://localhost:11434 https://api.github.com https://github.com https://objects.githubusercontent.com`,
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'none'",
+        "object-src 'none'",
+      ].join('; '),
+    );
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Referrer-Policy', 'no-referrer');
+    return payload;
   });
 
   const distPath = resolve(process.env.DASHBOARD_DIST_PATH || join(__dirname, '..', 'dist'));
@@ -729,9 +807,23 @@ Pass an array to addKnowledge to create multiple entries at once.
     }
   });
 
+  /**
+   * Record that WE installed Ollama, so uninstall may offer to remove it.
+   * Written only on a path that actually installed it — never when it was
+   * already present — because that flag is the difference between removing our
+   * own dependency and deleting a tool the user set up for something else.
+   */
+  /** The `ollama serve` we spawned, so uninstall can target it precisely. */
+  let ollamaProcess: ReturnType<typeof spawn> | null = null;
+
+  const markOllamaInstalledByUs = () => {
+    try { writeSettings({ installedOllama: true }); }
+    catch (e) { log('warn', `Could not record Ollama ownership: ${e instanceof Error ? e.message : String(e)}`); }
+  };
+
   app.post('/api/setup/ollama', async () => {
     try {
-      // Check if already installed
+      // Already present: not ours, so uninstall must never offer to remove it.
       try { execSync('which ollama', { stdio: 'pipe' }); log('info', 'Ollama already installed'); return { success: true, message: 'Already installed' }; } catch { /* not installed */ }
       log('info', `Installing Ollama on ${process.platform}...`);
 
@@ -750,42 +842,61 @@ Pass an array to addKnowledge to create multiple entries at once.
 
         if (hasBrew) {
           execSync('brew install ollama', { stdio: 'pipe', timeout: 180000 });
+          markOllamaInstalledByUs();
           return { success: true, message: 'Installed via Homebrew' };
         }
 
         // No brew: try install script (may need sudo but worth trying)
         try {
           execSync('curl -fsSL https://ollama.com/install.sh | sh', { stdio: 'pipe', timeout: 180000 });
+          markOllamaInstalledByUs();
           return { success: true, message: 'Installed via install script' };
         } catch {
           return { success: false, message: 'Could not install Ollama automatically. Please install Homebrew (brew.sh) and retry, or download Ollama manually from ollama.com/download' };
         }
       } else if (platform === 'linux') {
-        // Linux: install script needs sudo. Try pkexec (graphical sudo prompt) first.
-        const installScript = '/tmp/cognistore-ollama-install.sh';
-        writeFileSync(installScript, '#!/bin/sh\ncurl -fsSL https://ollama.com/install.sh | sh\n');
-        execSync(`chmod +x "${installScript}"`, { stdio: 'pipe' });
-
-        // 1. Try pkexec (graphical sudo — works on GNOME, KDE, XFCE)
-        let hasPkexec = false;
-        try { execSync('which pkexec', { stdio: 'pipe' }); hasPkexec = true; } catch { /* no pkexec */ }
-        if (hasPkexec) {
-          try {
-            log('info', 'Installing Ollama via pkexec (graphical sudo prompt)...');
-            execSync(`pkexec "${installScript}"`, { stdio: 'pipe', timeout: 300000 });
-            return { success: true, message: 'Installed via install script (pkexec)' };
-          } catch (e) {
-            log('warn', `pkexec install failed: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-
-        // 2. Try without sudo (works on some distros)
+        // Linux: the install script needs root, so this ends in `pkexec <script>`.
+        //
+        // The script therefore MUST NOT live at a predictable path in a shared
+        // directory. It used to be /tmp/cognistore-ollama-install.sh, written and
+        // chmod'd before pkexec ran it: on a multi-user box another user could
+        // pre-create or symlink that path and have their content executed AS
+        // ROOT. mkdtemp gives a 0700 directory with an unguessable name, `wx`
+        // refuses to follow anything already there, and execFileSync passes the
+        // path as an argument rather than through a shell.
+        const scriptDir = mkdtempSync(join(tmpdir(), 'cognistore-setup-'));
+        const installScript = join(scriptDir, 'ollama-install.sh');
         try {
-          log('info', 'Trying Ollama install without sudo...');
-          execSync(`"${installScript}"`, { stdio: 'pipe', timeout: 180000 });
-          return { success: true, message: 'Installed via install script' };
-        } catch {
-          return { success: false, message: 'Could not install Ollama automatically. Please run this command in your terminal:\n\ncurl -fsSL https://ollama.com/install.sh | sudo sh\n\nThen click "Retry" to continue setup.' };
+          writeFileSync(installScript, '#!/bin/sh\ncurl -fsSL https://ollama.com/install.sh | sh\n', {
+            mode: 0o700,
+            flag: 'wx',
+          });
+
+          // 1. Try pkexec (graphical sudo — works on GNOME, KDE, XFCE)
+          let hasPkexec = false;
+          try { execFileSync('which', ['pkexec'], { stdio: 'pipe' }); hasPkexec = true; } catch { /* no pkexec */ }
+          if (hasPkexec) {
+            try {
+              log('info', 'Installing Ollama via pkexec (graphical sudo prompt)...');
+              execFileSync('pkexec', [installScript], { stdio: 'pipe', timeout: 300000 });
+              markOllamaInstalledByUs();
+              return { success: true, message: 'Installed via install script (pkexec)' };
+            } catch (e) {
+              log('warn', `pkexec install failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+
+          // 2. Try without sudo (works on some distros)
+          try {
+            log('info', 'Trying Ollama install without sudo...');
+            execFileSync(installScript, [], { stdio: 'pipe', timeout: 180000 });
+            markOllamaInstalledByUs();
+            return { success: true, message: 'Installed via install script' };
+          } catch {
+            return { success: false, message: 'Could not install Ollama automatically. Please run this command in your terminal:\n\ncurl -fsSL https://ollama.com/install.sh | sudo sh\n\nThen click "Retry" to continue setup.' };
+          }
+        } finally {
+          try { rmSync(scriptDir, { recursive: true, force: true }); } catch { /* ignore */ }
         }
       }
       return { success: false, message: 'Unsupported platform. Download Ollama from ollama.com/download' };
@@ -809,6 +920,9 @@ Pass an array to addKnowledge to create multiple entries at once.
 
       // Start ollama serve in background
       const child = spawn(ollamaBin, ['serve'], { detached: true, stdio: 'ignore' });
+      // Remembered so uninstall can kill THIS process instead of pkill-ing every
+      // command line matching "ollama serve", including the user's own.
+      ollamaProcess = child;
       child.unref();
 
       // Wait up to 15s for it to be ready
@@ -1321,7 +1435,7 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Uninstall endpoint ────────────────────────────────────────
 
-  app.post('/api/uninstall', async (_request, reply) => {
+  app.post<{ Body: { removeOllama?: boolean } | undefined }>('/api/uninstall', async (_request, reply) => {
     const step = async (label: string, fn: () => unknown, results: string[], errors: string[]) => {
       try { await fn(); results.push(label); }
       catch (e) { errors.push(`${label}: ${e}`); }
@@ -1396,13 +1510,44 @@ Pass an array to addKnowledge to create multiple entries at once.
         } catch { /* never pulled, or Ollama already gone */ }
       }
 
-      // 5. Uninstall Ollama
-      try { execSync('pkill -f "ollama serve"', { stdio: 'pipe' }); } catch { /* may not be running */ }
+      // 5. Uninstall Ollama — OPT-IN, and only what we installed.
+      //
+      // Ollama is a SHARED dependency. Removing the binary, ~/.ollama and the
+      // brew formula unconditionally destroyed a tool the user may have
+      // installed themselves and may be using for something else entirely — all
+      // as a side effect of uninstalling CogniStore. Two guards now:
+      //   - `removeOllama` in the request body, defaulting to false;
+      //   - `installedOllama`, recorded by the setup path when WE installed it.
+      // Every install upgraded from <=2.4.1 has no such record, so the default
+      // there is "leave it alone". Erring toward keeping a tool the user still
+      // has is recoverable; erring the other way is not.
+      const uninstallBody = (_request.body ?? {}) as { removeOllama?: boolean };
+      const weInstalledOllama = (() => {
+        try { return readSettings().installedOllama === true; } catch { return false; }
+      })();
+      const removeOllama = uninstallBody.removeOllama === true && weInstalledOllama;
+
+      if (removeOllama) {
+        // Prefer the process WE spawned. `pkill -f "ollama serve"` matches on the
+        // command line, so it also kills instances started by the user or by
+        // another tool.
+        if (ollamaProcess?.pid) {
+          try { process.kill(ollamaProcess.pid); } catch { /* already gone */ }
+        } else {
+          try { execSync('pkill -f "ollama serve"', { stdio: 'pipe' }); } catch { /* may not be running */ }
+        }
+      }
 
       const ollamaBinDir = resolve(home, '.ollama-bin');
       const ollamaDataDir = resolve(home, '.ollama');
 
-      if (process.platform === 'darwin') {
+      if (!removeOllama) {
+        results.push(
+          weInstalledOllama
+            ? 'Ollama kept (not selected for removal)'
+            : 'Ollama kept (it was not installed by CogniStore)',
+        );
+      } else if (process.platform === 'darwin') {
         try { execSync('brew list ollama', { stdio: 'pipe' }); execSync('brew uninstall ollama', { stdio: 'pipe', timeout: 60000 }); results.push('Ollama uninstalled (brew)'); } catch { /* not brew */ }
         for (const p of ['/usr/local/bin/ollama', '/opt/homebrew/bin/ollama', ollamaDataDir, ollamaBinDir]) {
           if (existsSync(p)) { rmSync(p, { recursive: true, force: true }); }
@@ -1424,26 +1569,15 @@ Pass an array to addKnowledge to create multiple entries at once.
       if (sdkReady) { await sdk.close(); sdkReady = false; }
       if (existsSync(INSTALL_DIR)) { rmSync(INSTALL_DIR, { recursive: true, force: true }); results.push('Install dir removed'); }
 
-      // 8. Clean backup files
-      const backupTargets = [
-        { dir: resolve(home, '.claude'), prefix: 'CLAUDE.md.bak.' },
-        { dir: resolve(home, '.claude'), prefix: 'mcp-config.json.bak.' },
-        { dir: resolve(home, '.claude'), prefix: 'settings.json.bak.' },
-        { dir: home, prefix: '.claude.json.bak.' },
-        { dir: resolve(home, '.github'), prefix: 'copilot-instructions.md.bak.' },
-        { dir: resolve(home, '.copilot'), prefix: 'copilot-instructions.md.bak.' },
-        { dir: resolve(home, '.copilot'), prefix: 'mcp-config.json.bak.' },
-        { dir: resolve(home, '.copilot', 'hooks'), prefix: 'hooks.json.bak.' },
-      ];
-      for (const target of backupTargets) {
-        try {
-          if (!existsSync(target.dir)) continue;
-          for (const file of readdirSync(target.dir)) {
-            if (file.startsWith(target.prefix)) { unlinkSync(resolve(target.dir, file)); }
-          }
-        } catch { /* skip */ }
-      }
-      results.push('Backup files cleaned');
+      // 8. Backups are KEPT.
+      //
+      // This step used to delete every *.bak.* copy of the user's ~/.claude and
+      // ~/.copilot config — which are precisely the rollback copies the
+      // injection paths took before editing those files. Uninstall destroying
+      // the only way back to a pre-CogniStore config is the opposite of what a
+      // backup is for. They are small, they are the user's, and they are theirs
+      // to delete.
+      results.push('Config backups kept (*.bak.* under ~/.claude and ~/.copilot)');
 
       // 9. Self-delete app (increased timeout for response flush)
       reply.send({ success: true, results, errors: errors.length > 0 ? errors : undefined });
@@ -1454,7 +1588,11 @@ Pass an array to addKnowledge to create multiple entries at once.
           const appPaths = ['/Applications/CogniStore.app', resolve(home, 'Applications', 'CogniStore.app')];
           for (const p of appPaths) {
             if (existsSync(p)) {
-              try { execSync(`rm -rf "${p}"`, { stdio: 'pipe' }); } catch { /* best effort */ }
+              // rmSync, not `execSync('rm -rf ...')`: this was the one recursive
+              // delete in the file that went through a shell, next to a dozen
+              // that do not. The paths are hardcoded so it was not injectable,
+              // but it is one refactor away from being so.
+              try { rmSync(p, { recursive: true, force: true }); } catch { /* best effort */ }
             }
           }
         }
@@ -1494,8 +1632,11 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   // ─── Health ────────────────────────────────────────────────────
 
-  const SIDECAR_TOKEN = process.env.SIDECAR_TOKEN || '';
-
+  // NOTE: this route no longer returns the sidecar token. It used to, because
+  // the Tauri shell proved the server on the port was ours by matching the
+  // echoed token — which meant publishing the credential to every caller. That
+  // handshake now runs over the child process's own stdout (READY_MARKER), a
+  // channel nothing else can write to, so the token never leaves the shell.
   app.get('/api/health', async () => {
     const health = sdkReady
       ? await sdk.healthCheck()
@@ -1503,7 +1644,7 @@ Pass an array to addKnowledge to create multiple entries at once.
           database: { connected: false, error: sdkError || 'Not initialized' },
           ollama: { connected: false, model: null, error: sdkError || 'Not initialized' },
         };
-    return { ...health, token: SIDECAR_TOKEN };
+    return health;
   });
 
   // ─── Knowledge CRUD ────────────────────────────────────────────
@@ -1858,12 +1999,14 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.delete<{ Body: { ids: string[] } }>('/api/knowledge/bulk', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    const { ids } = request.body;
-    if (!Array.isArray(ids) || ids.length === 0) {
+    // Bounded: this was an unbounded array of arbitrary strings driving a
+    // delete loop.
+    const parsed = bulkDeleteSchema.safeParse(request.body);
+    if (!parsed.success) {
       reply.code(400);
-      return { error: 'ids array is required' };
+      return { error: 'ids must be a non-empty array of at most 1000 UUIDs' };
     }
-    return sdk.bulkDeleteKnowledge(ids);
+    return sdk.bulkDeleteKnowledge(parsed.data.ids);
   });
 
   // ─── Export endpoint ──────────────────────────────────────
@@ -1956,9 +2099,20 @@ Pass an array to addKnowledge to create multiple entries at once.
     const q = request.query as any;
     const limit = Math.min(Math.max(Number(q.limit) || 20, 1), 200);
     const offset = Math.max(Number(q.offset) || 0, 0);
-    const status = q.status || undefined;
+    // `status` accepts a comma-separated list (the Plans page sends the set of
+    // selected chips; empty selection omits the param entirely = no filter).
+    // A single `?status=active` keeps behaving exactly as before.
+    const statuses = String(q.status ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
+    const unknown = statuses.filter((s: string) => !isPlanStatus(s));
+    if (unknown.length) {
+      // The offending values are echoed so the caller can see WHICH one is wrong,
+      // but bounded: they are raw query input and the message must not become a
+      // way to make the server render an arbitrarily large string back.
+      const shown = unknown.slice(0, 3).map((s: string) => (s.length > 32 ? `${s.slice(0, 32)}…` : s));
+      return sendError(reply, 400, `Unknown plan status: ${shown.join(', ')}${unknown.length > 3 ? ', …' : ''}`);
+    }
     const scope = q.scope || undefined;
-    const plans = sdk.listPlans(limit, status, scope, offset);
+    const plans = sdk.listPlans(limit, statuses.length ? statuses : undefined, scope, offset);
     return plans.map((plan: any) => {
       const tasks = sdk.listPlanTasks(plan.id);
       return {
@@ -2002,7 +2156,12 @@ Pass an array to addKnowledge to create multiple entries at once.
   const PLAN_FILE_MAX_BYTES = 256 * 1024;
   const ALLOWED_PLAN_FILE_ROOTS = [
     resolve(homedir(), '.claude', 'plans'),
-    resolve(homedir(), '.cognistore'),
+    // ~/.cognistore is deliberately NOT here. It used to be, which made this a
+    // confused deputy: `planFilePath` is only `z.string().min(1)`, so any caller
+    // able to POST a plan could point it at ~/.cognistore/oauth-tokens.json or
+    // providers.json and read the file back through GET /api/plans/:id/file.
+    // Nothing writes plan files there anyway.
+    //
     // Copilot CLI writes plan files under its session dir
     // (~/.copilot/session-state/<sid>/files/<name>.md or .../plan.md).
     resolve(homedir(), '.copilot', 'session-state'),
@@ -2018,22 +2177,12 @@ Pass an array to addKnowledge to create multiple entries at once.
     try { if (existsSync(abs) && !isUnderAllowedRoot(realpathSync(abs))) return { error: 'disallowed' }; } catch { /* ignore */ }
     return { path: abs };
   };
-  const rejectForeignOrigin = (request: any, reply: any): boolean => {
-    const origin = request.headers?.origin;
-    if (!origin) return false; // same-origin / non-browser
-    try {
-      const { hostname, protocol } = new URL(origin);
-      if (protocol === 'tauri:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return false;
-    } catch { /* fallthrough */ }
-    reply.code(403); return true;
-  };
-
-  // Registered here rather than beside the other health routes: these handlers
-  // need rejectForeignOrigin, which is declared just above.
+  // The per-route origin guard that used to live here is gone: it covered 7 of
+  // 76 routes and took a security policy in as a route-module dependency. The
+  // global onRequest hook from ./auth.ts now covers everything by default.
   registerCleanupRoutes(app, {
     sdk,
     ensureReady,
-    rejectForeignOrigin,
     sendError,
     log,
     ollamaHost: process.env.OLLAMA_HOST,
@@ -2042,7 +2191,6 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   app.get<{ Params: { id: string } }>('/api/plans/:id/file', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const plan = sdk.getPlanById(request.params.id);
     if (!plan) { return sendError(reply, 404, 'Not found'); }
     const r = resolvePlanFilePath(plan.planFilePath);
@@ -2080,7 +2228,6 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   app.post<{ Params: { id: string } }>('/api/plans/:id/open', async (request, reply) => {
     const err = ensureReady(reply); if (err) return err;
-    if (rejectForeignOrigin(request, reply)) return { error: 'Forbidden' };
     const plan = sdk.getPlanById(request.params.id);
     if (!plan) { return sendError(reply, 404, 'Not found'); }
     const r = resolvePlanFilePath(plan.planFilePath);
@@ -2128,8 +2275,13 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post<{ Params: { id: string }; Body: { knowledgeId: string; relationType: 'input' | 'output' } }>('/api/plans/:id/relations', async (request, reply) => {
     const err = ensureReady(reply);
     if (err) return err;
-    const { knowledgeId, relationType } = request.body;
-    sdk.addPlanRelation(request.params.id, knowledgeId, relationType);
+    // This route took its body unvalidated, and `relationType` is written to the
+    // DB verbatim — so any string ended up stored as a relation kind.
+    const parsed = createPlanRelationSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return sendError(reply, 400, 'knowledgeId must be a UUID and relationType one of input|output');
+    }
+    sdk.addPlanRelation(request.params.id, parsed.data.knowledgeId, parsed.data.relationType);
     return { success: true };
   });
 
@@ -2288,6 +2440,7 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post<{ Body: unknown }>('/api/providers', async (request, reply) => {
     try {
       const entry = providerEntrySchema.parse(request.body);
+      assertProviderPolicy(entry, currentProviderPolicy());
       const cfg = readProvidersConfig();
       if (cfg.providers.some((p) => p.id === entry.id)) {
         reply.code(409);
@@ -2309,6 +2462,7 @@ Pass an array to addKnowledge to create multiple entries at once.
       const idx = cfg.providers.findIndex((p) => p.id === request.params.id);
       if (idx === -1) { return sendError(reply, 404, 'Not found'); }
       const entry = providerEntrySchema.parse({ ...request.body, id: request.params.id });
+      assertProviderPolicy(entry, currentProviderPolicy());
       cfg.providers[idx] = entry;
       writeProvidersConfig(cfg);
       sdk.reloadProviders();
@@ -2404,6 +2558,14 @@ Pass an array to addKnowledge to create multiple entries at once.
   app.post<{ Params: { id: string } }>('/api/providers/:id/test', async (request, reply) => {
     const entry = readProvidersConfig().providers.find((p) => p.id === request.params.id);
     if (!entry) { return sendError(reply, 404, 'Not found'); }
+    // /test BUILDS and runs the provider, so a stdio entry executes its command
+    // here. An entry can predate the policy (or be hand-written into the file),
+    // so re-check rather than trusting that the write path vetted it.
+    try {
+      assertProviderPolicy(entry, currentProviderPolicy());
+    } catch (e: any) {
+      return sendError(reply, 403, e?.message ?? 'Provider not permitted by policy');
+    }
     // OAuth providers can't authorize from a headless route (no browser). If no
     // tokens are stored yet, tell the UI to run the interactive Connect flow.
     if (entry.transport === 'http' && entry.auth?.type === 'oauth') {
@@ -2427,6 +2589,11 @@ Pass an array to addKnowledge to create multiple entries at once.
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   log('info', `Server listening on http://localhost:${PORT}`);
+  // Readiness handshake with the Tauri shell. It reads this on the child's own
+  // stdout pipe, which no other process can write to — that unforgeability is
+  // what replaced echoing the identity token from /api/health.
+  // Must stay identical to READY_MARKER in src-tauri/src/sidecar.rs.
+  console.log('COGNISTORE_SIDECAR_READY');
 
   /**
    * Catch up on the cleanup report shortly after boot, so a machine that is never

@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { authFetch } from '../sidecar-helpers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -77,7 +78,7 @@ let tmpRoot = '';
 let sandboxHome = '';
 let serverLog = '';
 
-const api = (path: string, init?: RequestInit) => fetch(`${baseUrl}${path}`, init);
+const api = (path: string, init?: RequestInit) => authFetch(`${baseUrl}${path}`, init);
 const post = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
   api(path, {
     method: 'POST',
@@ -128,7 +129,7 @@ test.beforeAll(async () => {
   let ready = false;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(`${baseUrl}/api/health`);
+      const r = await authFetch(`${baseUrl}/api/health`);
       if (r.ok && (await r.json())?.database?.connected === true) { ready = true; break; }
     } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 300));

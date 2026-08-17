@@ -110,11 +110,20 @@ export function buildMcpEntry(opts: McpEntryOptions) {
     // Use a broad fallback PATH to cover common executable locations (mac + linux).
     env.PATH = `${binDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
   }
-  // Forward external-provider secrets (injected into the sidecar by the Tauri
-  // shell from the OS keychain) so the MCP subprocess can authenticate.
-  for (const [key, val] of Object.entries(processEnv)) {
-    if (key.startsWith('COGNISTORE_PROVIDER_SECRET__') && val) env[key] = val;
-  }
+  // NOTE: external-provider secrets are deliberately NOT forwarded here.
+  //
+  // This object is serialised by setupMcpConfig into ~/.claude/mcp-config.json,
+  // ~/.claude.json, ~/.copilot/mcp-config.json and
+  // ~/.config/opencode/opencode.json — three of which land at the default umask,
+  // i.e. world-readable. Copying COGNISTORE_PROVIDER_SECRET__* into `env` wrote
+  // every keychain-held provider credential into four files on disk, in
+  // plaintext, purely so a subprocess we do not even spawn could read them.
+  //
+  // "Inject at spawn instead" is not available: Claude Code / Copilot / OpenCode
+  // spawn the MCP server, from a config file we can only write. So the MCP
+  // process reads them from the keychain-backed store itself (see
+  // packages/providers/src/secrets), and header-auth external providers are
+  // dashboard-only until it does.
 
   return {
     type: 'stdio',

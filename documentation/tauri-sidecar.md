@@ -106,11 +106,13 @@ Scans ports starting from 3210, testing each with a TCP bind. Returns the first 
 default-src 'self'
 connect-src 'self' http://localhost:* http://127.0.0.1:* https://github.com https://api.github.com
 style-src 'self' 'unsafe-inline'
-script-src 'self' 'unsafe-inline'
+script-src 'self'
 img-src 'self' data:
 ```
 
-The `unsafe-inline` for scripts and styles is required by React and Tailwind CSS in the WebView context.
+`unsafe-inline` is kept for **styles** only — React's `style={{…}}` attributes and Tailwind's injected styles require it. Scripts do not: the bundle is external files.
+
+Note this CSP covers the `tauri://` asset protocol. The UI is navigated to `http://localhost:PORT`, so the CSP that actually applies in normal operation is the **response header the sidecar sends** on that origin; the two are kept equivalent.
 
 ## Bundled Resources
 

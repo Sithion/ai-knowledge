@@ -33,6 +33,22 @@ export interface AppSettings {
   tokenProviderFilter: 'all' | 'claude' | 'copilot';
   alwaysSearchExternalProviders: boolean;
 
+  // ─── External-provider security policy ───
+  // Installation-scoped on purpose: the sidecar and the MCP server both load the
+  // same providers.json, so a per-process env flag would make them disagree
+  // about which providers exist. See packages/providers/src/policy.ts.
+  /** Permit `transport: 'stdio'` providers — these run an arbitrary local command. */
+  allowStdioProviders: boolean;
+  /** Permit `auth.allowInsecure` — this disables the https and private-network guards. */
+  allowInsecureProviderUrls: boolean;
+
+  /**
+   * True only when CogniStore's own setup installed Ollama. Uninstall uses it to
+   * decide whether removing Ollama is even on offer: an install upgraded from
+   * <=2.4.1 has no record, so the answer there is no.
+   */
+  installedOllama: boolean;
+
   // ─── Cleanup cycle ───
   /** Master switch for the periodic cleanup report. */
   cleanupEnabled: boolean;
@@ -54,6 +70,10 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   lastSelectedRange: null,
   tokenProviderFilter: 'all',
   alwaysSearchExternalProviders: false,
+  // Both default OFF: each one re-opens a capability this release closed.
+  allowStdioProviders: false,
+  allowInsecureProviderUrls: false,
+  installedOllama: false,
   cleanupEnabled: true,
   cleanupIntervalDays: 10,
   cleanupUnreadDays: 180,
@@ -105,6 +125,13 @@ const clampFloat = (value: unknown, min: number, max: number, fallback: number):
  */
 export function sanitizeSettings<T extends Partial<AppSettings>>(patch: T): T {
   const out: Record<string, unknown> = { ...patch };
+
+  // The security-relevant flags are coerced STRICTLY: `settings.json` is a plain
+  // file, and `"allowStdioProviders": "no"` is a truthy string. Only a real
+  // boolean true opts in.
+  for (const key of ['allowStdioProviders', 'allowInsecureProviderUrls', 'installedOllama'] as const) {
+    if (key in out) out[key] = out[key] === true;
+  }
 
   if ('cleanupEnabled' in out) out.cleanupEnabled = Boolean(out.cleanupEnabled);
   if ('cleanupIntervalDays' in out) {

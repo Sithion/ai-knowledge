@@ -8,3 +8,4 @@ export * from './mcp/oauth-provider.js';
 export * from './mcp/oauth-flow.js';
 export * from './mcp/url-guard.js';
 export * from './config.js';
+export * from './policy.js';

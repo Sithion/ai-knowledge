@@ -81,7 +81,12 @@ test.describe('@e2e MCP entry pinning', () => {
     expect(entry.env.PATH?.startsWith('/nvm/v24.14.0/bin:')).toBe(true);
   });
 
-  test('forwards provider secrets but not unrelated env', () => {
+  test('never writes provider secrets into the generated MCP config', () => {
+    // This object is serialised into ~/.claude/mcp-config.json, ~/.claude.json,
+    // ~/.copilot/mcp-config.json and ~/.config/opencode/opencode.json — three of
+    // which land at the default umask. Forwarding the keychain-held provider
+    // secrets here wrote every one of them to disk in plaintext, so that a
+    // subprocess CogniStore does not even spawn could read them.
     const entry = buildMcpEntry({
       platform: 'opencode',
       installDir: '/tmp/cognistore-test',
@@ -90,8 +95,9 @@ test.describe('@e2e MCP entry pinning', () => {
       env: { COGNISTORE_PROVIDER_SECRET__ACME: 'tok', UNRELATED: 'nope' },
     });
 
-    expect(entry.env.COGNISTORE_PROVIDER_SECRET__ACME).toBe('tok');
+    expect(entry.env.COGNISTORE_PROVIDER_SECRET__ACME).toBeUndefined();
     expect(entry.env.UNRELATED).toBeUndefined();
+    expect(JSON.stringify(entry)).not.toContain('tok');
   });
 });
 

@@ -23,7 +23,13 @@ COG_SID="$(cog_field session_id)"
 # helper) — prevents a crafted session_id from placing marker files outside /tmp.
 COG_SID="$(printf '%s' "$COG_SID" | tr -cd 'a-zA-Z0-9-' | cut -c1-64)"
 [ -z "$COG_SID" ] && COG_SID="default"
-COG_MARK="/tmp/.cognistore-copilot-${COG_SID}"
+# Markers live in a per-USER directory, not directly in a shared /tmp: the old
+# layout put predictable paths in a namespace every account on the machine can
+# write to. 0700 so only we can read or plant them.
+COG_MARK_DIR="${TMPDIR:-/tmp}/.cognistore-$(id -u 2>/dev/null || echo 0)"
+mkdir -p "$COG_MARK_DIR" 2>/dev/null || true
+chmod 700 "$COG_MARK_DIR" 2>/dev/null || true
+COG_MARK="${COG_MARK_DIR}/copilot-${COG_SID}"
 
 COG_DB="${SQLITE_PATH:-$HOME/.cognistore/knowledge.db}"
 cog_db_present() { [ -f "$COG_DB" ]; }

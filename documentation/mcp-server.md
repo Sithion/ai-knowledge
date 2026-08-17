@@ -153,6 +153,18 @@ Update an existing plan's title, content, tags, scope, status, or source. When s
 | `source` | string | No | New source |
 | `parentPlanId` | string \| null | No | Re-link the plan into another chain after the fact. `null` unlinks it, making it the ORIGINAL of its own chain. Unlike `createPlan`, a bad link is never silently downgraded: pointing a plan at itself, at one of its own descendants, or at a plan that does not exist comes back as an `update_failed` error with the reason |
 
+### listPlans
+
+Browse plans with optional status/scope filters, each enriched with task progress — the tool agents use to find an abandoned or in-progress plan instead of creating a duplicate.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | number | No | Max plans to return (default `20`) |
+| `status` | enum | No | A **single** status: `draft`, `active`, `completed`, or `archived`. The enum comes from `PLAN_STATUS_VALUES` in `@cognistore/shared`, the same vocabulary the `plans` table's `CHECK` constraint uses. (The dashboard's `GET /api/plans` additionally accepts a comma-separated list; this tool does not) |
+| `scope` | string | No | Filter by exact scope (e.g. `workspace:my-project`) |
+
+Returns `{ plans[], total }` where each plan carries `id`, `title`, `status`, `scope`, `taskCount`, `completedTasks`, `parentPlanId`, `rootPlanId`, `isOriginal`, `createdAt`, `updatedAt` — never plan content. A `hint` is added when draft/active plans still have incomplete tasks, and a `lineageHint` when any returned plan belongs to a larger chain (steering the agent to `getPlanChain`).
+
 ### getPlanChain
 
 Show the full lineage chain a plan belongs to: the ORIGINAL plan that started the effort plus every follow-up linked to it, including plans created by subagents. Accepts **any** member of the chain — the root is resolved first, so passing a leaf still returns the whole chain.
@@ -301,7 +313,7 @@ The MCP server reads configuration from environment variables:
 > equivalent: `npm exec` resolves an already-installed **global** copy from `PATH`
 > before consulting the registry, so a stale global install silently keeps serving
 > an old tool schema. The desktop app writes a pinned spec for this reason; if you
-> hand-write a config, pin it too (`@2.4.1` or at least `@latest`), and remove any
+> hand-write a config, pin it too (`@2.5.0` or at least `@latest`), and remove any
 > global install with `npm uninstall -g @cognistore/mcp-server`.
 >
 > The app also sets `npm_config_ignore_scripts=false` on the entry. A pinned spec
@@ -318,7 +330,7 @@ The MCP server reads configuration from environment variables:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server@2.4.1"]
+      "args": ["-y", "@cognistore/mcp-server@2.5.0"]
     }
   }
 }
@@ -333,7 +345,7 @@ The MCP server reads configuration from environment variables:
     "cognistore": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cognistore/mcp-server@2.4.1"]
+      "args": ["-y", "@cognistore/mcp-server@2.5.0"]
     }
   }
 }
@@ -347,7 +359,7 @@ The MCP server reads configuration from environment variables:
   "mcp": {
     "cognistore": {
       "type": "local",
-      "command": ["npx", "-y", "@cognistore/mcp-server@2.4.1"],
+      "command": ["npx", "-y", "@cognistore/mcp-server@2.5.0"],
       "enabled": true
     }
   }

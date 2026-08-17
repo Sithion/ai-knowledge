@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { api, type CleanupCandidate, type CleanupReportResponse } from '../api/client.js';
+import { api, SIDECAR_TOKEN, type CleanupCandidate, type CleanupReportResponse } from '../api/client.js';
 import { triggerUpdateCheck, triggerUpdateDownload, onUpdateState, getIsTauri, getLatestReleaseUrl, useAutoUpdateSetting } from '../components/UpdateChecker.js';
 import { ConfirmModal } from '../components/ConfirmModal.js';
 
@@ -318,7 +318,7 @@ export function SettingsPage() {
             // ~/.cognistore, so the directory removal in /api/uninstall won't cover them.
             try {
               const { invoke } = await import('@tauri-apps/api/core');
-              await invoke('cleanup_provider_secrets');
+              await invoke('cleanup_provider_secrets', { token: SIDECAR_TOKEN });
             } catch { /* not running in Tauri, or no secrets — ignore */ }
             await api.uninstallAll();
           } catch {

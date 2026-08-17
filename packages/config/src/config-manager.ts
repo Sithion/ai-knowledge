@@ -13,7 +13,7 @@ import {
   rmSync,
   unlinkSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { homedir } from 'node:os';
 
 const MARKER_BEGIN = '<!-- COGNISTORE:BEGIN -->';
@@ -79,6 +79,22 @@ export class ConfigManager {
   static readonly OPENCODE_PLUGINS_DIR = join(homedir(), '.config', 'opencode', 'plugins');
 
   /**
+   * Parse a JSON config the user may have hand-edited.
+   *
+   * A trailing comma in ~/.claude/settings.json used to throw straight out of
+   * the middle of a deploy, leaving the artifacts half-written. Returning null
+   * lets each caller decide — and none of them should be rewriting a file they
+   * could not read in the first place.
+   */
+  private async readJsonOrNull(path: string): Promise<any | null> {
+    try {
+      return JSON.parse(await readFile(path, 'utf-8'));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Inject template content into a target file using markers.
    * - If target doesn't exist: create with template content
    * - If target exists but no markers: backup and append template
@@ -123,7 +139,10 @@ export class ConfigManager {
     );
     const beginIdx = content.indexOf(activeBegin);
     const endIdx = content.indexOf(activeEnd);
-    if (beginIdx === -1 || endIdx === -1) {
+    // `endIdx < beginIdx` means the file has the markers out of order (hand-edited,
+    // or a partially-applied earlier write). Slicing on that mangles the user's
+    // file silently, so fall through to the append path instead.
+    if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) {
       // Fallback: append
       await writeFile(targetPath, content + '\n' + template, 'utf-8');
       return { action: 'appended', path: targetPath };
@@ -131,7 +150,10 @@ export class ConfigManager {
     const newContent =
       content.substring(0, beginIdx) +
       template +
-      content.substring(endIdx + MARKER_END.length);
+      // activeEnd, NOT MARKER_END: when migrating an OLD marker block the two
+      // differ in length, and using the new one left the last characters of the
+      // old end-marker stranded in the user's file.
+      content.substring(endIdx + activeEnd.length);
     await writeFile(targetPath, newContent, 'utf-8');
     return { action: 'updated', path: targetPath };
   }
@@ -381,6 +403,19 @@ export class ConfigManager {
   // (`mcp__cognistore-plus__x`). Used to migrate legacy installs on re-inject.
   static readonly COGNISTORE_LEGACY_ALLOW_PREFIX = 'mcp__cognistore__';
 
+  // Destructive tools carved back OUT of the server-scope allow rule.
+  //
+  // The allow rule stays whole-server (a per-tool allow list would classify
+  // itself as legacy by the prefix above and be stripped on the very next
+  // deploy). `deny` takes precedence over `allow` in Claude Code, so listing
+  // these here makes them prompt while everything else stays frictionless.
+  // Pre-approving a tool that deletes the user's knowledge was never the
+  // intent of "call them directly without asking".
+  static readonly COGNISTORE_DENY_TOOLS = [
+    'mcp__cognistore__deleteKnowledge',
+    'mcp__cognistore__deletePlanTask',
+  ];
+
   // Global enforcement hooks. Script files live under ~/.cognistore/hooks/ (removed
   // on uninstall with the install dir); only JSON entries are injected into the
   // agent settings files.
@@ -417,8 +452,11 @@ export class ConfigManager {
       return { action: 'created', path: settingsPath };
     }
 
-    const content = await readFile(settingsPath, 'utf-8');
-    const config = JSON.parse(content);
+    const config = await this.readJsonOrNull(settingsPath);
+    // Unreadable settings.json (a trailing comma is the usual cause): skip rather
+    // than throw out of the middle of a deploy, and above all never overwrite a
+    // file whose contents we could not read.
+    if (!config) return { action: 'skipped', path: settingsPath };
 
     if (!config.permissions) {
       config.permissions = {};
@@ -434,7 +472,15 @@ export class ConfigManager {
     const existing = new Set(config.permissions.allow);
     const toAdd = allowRules.filter(rule => !existing.has(rule));
 
-    if (toAdd.length === 0 && legacy.length === 0) {
+    // Destructive tools are denied back out of the whole-server allow. Merged
+    // into the user's own deny list, never replacing it.
+    if (!Array.isArray(config.permissions.deny)) {
+      config.permissions.deny = [];
+    }
+    const existingDeny = new Set(config.permissions.deny);
+    const denyToAdd = ConfigManager.COGNISTORE_DENY_TOOLS.filter((r) => !existingDeny.has(r));
+
+    if (toAdd.length === 0 && legacy.length === 0 && denyToAdd.length === 0) {
       return { action: 'skipped', path: settingsPath };
     }
 
@@ -445,6 +491,7 @@ export class ConfigManager {
       );
     }
     config.permissions.allow.push(...toAdd);
+    config.permissions.deny.push(...denyToAdd);
     await writeFile(settingsPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
     return { action: 'updated', path: settingsPath };
   }
@@ -465,10 +512,8 @@ export class ConfigManager {
       return { removed: false, path: settingsPath };
     }
 
-    const content = await readFile(settingsPath, 'utf-8');
-    const config = JSON.parse(content);
-
-    if (!Array.isArray(config.permissions?.allow)) {
+    const config = await this.readJsonOrNull(settingsPath);
+    if (!config || !Array.isArray(config.permissions?.allow)) {
       return { removed: false, path: settingsPath };
     }
 
@@ -480,7 +525,16 @@ export class ConfigManager {
         !(removeSet.has(rule) || (typeof rule === 'string' && rule.startsWith(prefix)))
     );
 
-    if (config.permissions.allow.length === before) {
+    // Setup/uninstall symmetry: the deny entries injected alongside the allow
+    // rule are ours, so they go too. Anything else in the user's deny list stays.
+    const denyBefore = Array.isArray(config.permissions.deny) ? config.permissions.deny.length : 0;
+    if (denyBefore > 0) {
+      const ourDeny = new Set<string>(ConfigManager.COGNISTORE_DENY_TOOLS);
+      config.permissions.deny = config.permissions.deny.filter((rule: string) => !ourDeny.has(rule));
+    }
+    const denyAfter = Array.isArray(config.permissions.deny) ? config.permissions.deny.length : 0;
+
+    if (config.permissions.allow.length === before && denyAfter === denyBefore) {
       return { removed: false, path: settingsPath };
     }
 
@@ -567,8 +621,14 @@ export class ConfigManager {
   private isCognistoreHookGroup(group: unknown): boolean {
     const hooks = (group as { hooks?: { command?: unknown }[] })?.hooks;
     if (!Array.isArray(hooks)) return false;
+    // The trailing separator matters: without it a user's own
+    // ~/.cognistore/hooks-custom/mine.sh is classified as ours and deleted on the
+    // next inject.
+    const ourDir = ConfigManager.COGNISTORE_HOOKS_DIR.endsWith(sep)
+      ? ConfigManager.COGNISTORE_HOOKS_DIR
+      : ConfigManager.COGNISTORE_HOOKS_DIR + sep;
     return hooks.some(
-      (h) => typeof h?.command === 'string' && h.command.startsWith(ConfigManager.COGNISTORE_HOOKS_DIR)
+      (h) => typeof h?.command === 'string' && h.command.startsWith(ourDir)
     );
   }
 
@@ -589,7 +649,8 @@ export class ConfigManager {
       return { action: 'created', path: settingsPath };
     }
 
-    const config = JSON.parse(await readFile(settingsPath, 'utf-8'));
+    const config = await this.readJsonOrNull(settingsPath);
+    if (!config) return { action: 'skipped' as const, path: settingsPath };
     const before = JSON.stringify(config.hooks ?? {});
     const hooks: Record<string, unknown[]> = { ...(config.hooks ?? {}) };
 
@@ -630,8 +691,8 @@ export class ConfigManager {
     if (!(await this.fileExists(settingsPath))) {
       return { removed: false, path: settingsPath };
     }
-    const config = JSON.parse(await readFile(settingsPath, 'utf-8'));
-    if (!config.hooks || typeof config.hooks !== 'object') {
+    const config = await this.readJsonOrNull(settingsPath);
+    if (!config || !config.hooks || typeof config.hooks !== 'object') {
       return { removed: false, path: settingsPath };
     }
 

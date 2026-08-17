@@ -1,9 +1,10 @@
 {
   "name": "cognistore",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "private": true,
   "description": "Semantic knowledge management for AI agents",
   "scripts": {
+    "prepare": "git config core.hooksPath .husky || true",
     "build": "turbo build",
     "dev": "turbo dev",
     "lint": "turbo lint",

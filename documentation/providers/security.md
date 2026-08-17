@@ -1,3 +1,11 @@
+> **v2.5.0 changes at a glance**
+>
+> - `transport: 'stdio'` and `auth.allowInsecure` are **capabilities, not configuration**, and are now gated by an installation policy (`allowStdioProviders` / `allowInsecureProviderUrls` in `~/.cognistore/settings.json`, both default `false`; `COGNISTORE_ALLOW_STDIO_PROVIDERS` / `COGNISTORE_ALLOW_INSECURE_PROVIDER_URLS` override for a single run). The policy lives in a file rather than env because the sidecar and the MCP server load the same `providers.json` and must agree. A gated entry is dropped **individually** with a warning — never a whole-file rejection, which would take the user's other providers down with it.
+> - `env` keys that alter process code loading (`LD_PRELOAD`, `DYLD_*`, `NODE_OPTIONS`, `BASH_ENV`, …) are refused outright.
+> - The SSRF guard covers all of `127/8`, `169.254/16` (cloud metadata), `0.0.0.0`, `::`, CGNAT, `*.localhost` and the decimal/hex/octal IPv4 spellings, and re-checks the host **after DNS resolution** — a public name can still answer with an internal address.
+> - `providers.json` is written `0600`.
+> - **Provider secrets are no longer copied into the generated MCP config.** They used to be written in plaintext into `~/.claude/mcp-config.json`, `~/.claude.json`, `~/.copilot/mcp-config.json` and `~/.config/opencode/opencode.json` — three of them world-readable. Until the MCP process reads them from the keychain-backed store itself, **header-auth external providers are dashboard-only**.
+
 # External Providers — Security Model
 
 External knowledge providers add two trust surfaces to CogniStore: **secrets** (credentials for the

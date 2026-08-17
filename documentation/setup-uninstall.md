@@ -55,7 +55,7 @@ brew install ollama
 
 **Linux:**
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
+curl -fsSL https://ollama.com/install.sh | sh   # downloaded to a 0700 mkdtemp dir and exec'd, never piped to a shell under pkexec
 ```
 
 **Fallback (both platforms):**
@@ -120,12 +120,12 @@ The uninstall button requires a 3-step confirmation to prevent accidental data l
 | 1 | Remove instruction markers | Delete `COGNISTORE:BEGIN/END` blocks from CLAUDE.md, copilot-instructions.md |
 | 2 | Remove MCP entries | Delete `cognistore` from all `mcpServers`/`mcp` configs |
 | 3 | Remove skills | Delete `~/.claude/skills/cognistore-*/` directories (query, capture, plan) and `~/.copilot/skills/cognistore-*.md` files |
-| 4 | Uninstall Ollama models | `ollama rm <embedding model>` and, when it was pulled, `ollama rm <cleanup model>` |
-| 5 | Uninstall Ollama binary | `brew uninstall ollama` (macOS) or remove binary (Linux) |
+| 4 | Uninstall Ollama models | **Opt-in.** `ollama rm <embedding model>` and, when it was pulled, `ollama rm <cleanup model>` — only when `removeOllama` is requested AND `settings.installedOllama` says CogniStore installed it |
+| 5 | Uninstall Ollama binary | **Opt-in, same two conditions.** `brew uninstall ollama` (macOS) or remove binary (Linux). Ollama is a shared dependency: an install upgraded from ≤2.4.1 carries no ownership record, so the default there is to leave it alone |
 | 6 | Clear provider secrets | `cleanup_provider_secrets` removes each provider's OS-keychain entry (run before the data dir is deleted) |
 | 7 | Close SDK | Gracefully close database connections |
 | 8 | Remove data directory | `rm -rf ~/.cognistore/` (database + WAL files + `providers.json`) |
-| 9 | Clean backup files | Remove `*.bak.*` files created during config injection |
+| 9 | Config backups | **Kept.** The `*.bak.*` copies are the rollback path to a pre-CogniStore config — uninstall used to delete them, which is the opposite of what a backup is for |
 | 10 | Self-delete app | `setTimeout` → remove app from `/Applications/` (macOS) or `~/.local/bin/` (Linux) |
 
 ### Setup/Uninstall Symmetry Rule
@@ -136,8 +136,8 @@ Every resource created by setup **must** be removed by uninstall. This is a mand
 |---------------|-------------------|
 | `~/.cognistore/` directory | Remove recursively |
 | `knowledge.db` (SQLite) | Removed with directory |
-| Ollama via brew/curl | Uninstall via brew or remove binary |
-| `ollama serve` process | Stop via `pkill` |
+| Ollama via brew/curl | Uninstall via brew or remove binary — **only if we installed it and the user opts in** |
+| `ollama serve` process | Kill the PID we spawned; broad `pkill` only as a fallback, and only under the same opt-in |
 | `nomic-embed-text` model | Remove via `ollama rm` |
 | Cleanup LLM model (lazily pulled) | Remove via `ollama rm <cleanupLlmModel>` |
 | CLAUDE.md markers | Remove via ConfigManager |

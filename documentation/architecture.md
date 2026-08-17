@@ -68,9 +68,24 @@ The system consists of three runtime subsystems:
                          ──→ @cognistore/providers
                          ──→ @cognistore/core       (policy helpers only, see below)
                          ──→ @cognistore/embeddings (Ollama chat transport)
+                         ──→ @cognistore/shared     (sidecar: root barrel — Zod schemas + constants)
+
+@cognistore/dashboard (browser bundle) ──→ @cognistore/shared/constants   (subpath ONLY)
 ```
 
 All cross-package dependencies use `workspace:*` protocol via pnpm.
+
+**The frontend may import `@cognistore/shared`, but only through a subpath.** The dashboard's React
+code is the one consumer of a workspace package that ships to a browser, and the package root barrel
+(`packages/shared/src/index.ts`) re-exports `utils/validation.ts`, which imports **zod** — pulling the
+root into the bundle drags a server-side validation dependency into the app for a handful of string
+literals. `packages/shared/package.json` therefore declares a `./constants` export (the first subpath
+this monorepo exposes) resolving to `dist/constants/index.js`, which depends only on the plain enums in
+`types/knowledge.ts`. The rule for any future frontend import from a workspace package: **add a
+narrow subpath export next to the value, never widen the root barrel**, and keep the subpath's
+transitive imports free of runtime dependencies. (Subpath resolution requires
+`moduleResolution: "bundler"` or `node16`, which the root `tsconfig.json` already sets for every
+package.)
 
 The sidecar reaches knowledge data **only** through `@cognistore/sdk`, which owns the single lazily
 initialised `KnowledgeService` instance for the process. Its direct edges to `core` and `embeddings`
@@ -165,6 +180,21 @@ System knowledge entries (`type=system`) are a special class of mandatory entrie
 ### Plans (Separate Entity)
 
 Plans are stored in their own `plans` table with a separate `plans_embeddings` virtual table. They are linked to knowledge entries via `plan_relations` and have associated `plan_tasks` for todo tracking. The plan lifecycle is: `draft` -> `active` -> `completed` -> `archived`.
+
+**Status vocabulary — single source of truth:** `PLAN_STATUS_VALUES` in
+`packages/shared/src/constants/defaults.ts` (derived from the `KnowledgeStatus` enum, ordered as the
+dashboard renders its filter chips). Everything that validates or filters a plan status imports it:
+the MCP tool schemas, the `GET /api/plans` route, the repository's `IN`-clause guard and the
+dashboard's chips. Two copies of the literals necessarily live outside TypeScript and must be updated
+with it: the `CHECK(status IN (...))` constraint on the `plans` table, in **both**
+`packages/core/src/db/migrate.ts` (`EMBEDDED_MIGRATIONS`) and
+`packages/core/src/db/migrations/0.9.0.sql`.
+
+> **Naming caveat (known debt):** the enum backing this vocabulary is called `KnowledgeStatus`, but
+> `knowledge_entries` has no `status` column — the enum is used *exclusively* for plans (`Plan.status`,
+> `PlanChainEntry.status`, `createPlanSchema`/`updatePlanSchema`). Read `KnowledgeStatus` as "plan
+> status" until it is renamed; a rename is a mechanical change confined to the workspace, since
+> `@cognistore/shared` is `private` and reaches consumers only inlined in the published MCP bundle.
 
 **Plan status lifecycle enforcement:** Agents (via MCP) can transition plans through `draft` -> `active` -> `completed` but cannot set `archived` status. Archiving is a user-only action available from the dashboard on completed plans.
 
@@ -342,6 +372,9 @@ skips the migration it actually needed. Consequences to respect when adding a mi
 | Lineage validation placement | `KnowledgeService` | MCP server, SDK and the dashboard `PUT` route all converge there and only the route runs a Zod schema — the service is the single choke point they share |
 | Upgrade execution owner | `UpgradePage` POSTs `/api/upgrade/run`; the boot sequence only decides which screen to show | Until v2.4.1 `App.tsx` ran the upgrade silently behind the loading screen and fell back to the upgrade screen only on failure, so a long run (re-embed, artifact redeploy) was indistinguishable from a frozen app. The screen that shows the operation now owns it — the same shape as `SetupPage`. Consequence to respect: nothing else may start an upgrade (the startup self-heal deliberately re-deploys artifacts only, under its own `.artifacts-version` marker), and `POST /api/upgrade/run` must stay idempotent for the boot, since a second window or a StrictMode remount will POST it again. Rejected: keeping the silent run and only adding a progress screen for the failure path — two runners for one operation, with the visible one exercised least |
 | Upgrade replay guard | `.version` marker equality plus the boot's last result, held in the sidecar process | A duplicate `POST /api/upgrade/run` must not repeat a re-embed or an npx cache wipe, but a *degraded* run (a `skipped` step still writes `.version`) must stay retryable, so the cached result is replayed only when every step was `success`/`warning`; `noop: true` distinguishes "already current, nothing ran" from "ran with no steps". The state is intentionally process-local and lost on restart — the marker on disk is what survives. Rejected: persisting the last result next to `.version` — durable state for a question only a live window asks |
+| Plan status vocabulary SoT | `PLAN_STATUS_VALUES` in `@cognistore/shared`, derived from the `KnowledgeStatus` enum | The literals had drifted into private copies (a `const` tuple in the MCP server, an array in `PlansPage`, the route's absent check) while the `plans` `CHECK` constraint stayed authoritative — so an unknown status silently returned an empty list instead of failing. One exported tuple + an `isPlanStatus` guard makes every validator quote the same list. Deriving from the enum rather than re-typing the strings avoids a second definition inside the package that already owns the vocabulary; the tuple fixes only the ORDER, which is also the dashboard's chip order. Rejected: a Zod schema as the SoT — it would put zod on the path of anything that merely needs the values, including the browser |
+| Plan status validation depth | Validated at the HTTP boundary (400), in the repository (throw) and by the SQL `CHECK` — all quoting one list | Deliberate layering, not duplicated policy: the boundary check owns the *HTTP contract* (naming the offending value beats an empty 200), the repository check protects `core`'s own public surface from callers that never pass through a route, and the `CHECK` is the last word for any writer of the file. Because all three read `PLAN_STATUS_VALUES` (or must be edited with it), there is one policy with three enforcement points. Rejected: trusting the route alone — `KnowledgeService` is consumed directly by the SDK and the MCP server, not only over HTTP |
+| Frontend access to workspace packages | Narrow subpath exports (`@cognistore/shared/constants`), never the root barrel | The root barrel re-exports the Zod validation module; importing it from React ships a server-side validation dependency to the browser to obtain four string literals. The subpath is a bundle boundary made explicit in `package.json` rather than left to tree-shaking luck. Rejected: duplicating the constants in the frontend (the drift this change exists to remove) and splitting `shared` into two packages (a published-package-shaped solution to a bundling problem) |
 | Upgrade progress payload | `{step, status}` only — never `message` | `GET /api/upgrade/progress` is unauthenticated, like every sidecar route (loopback bind + a local-origin CORS allow-list is the app's accepted posture). A `DeployStep.message` carries raw `e.message` text from filesystem errors — absolute paths, and with them the OS username — plus template paths and the globally-installed MCP version. The projection is what keeps the poll payload harmless; the full messages ride the `POST /api/upgrade/run` response the app already consumes. Rejected: publishing the whole step — one field's convenience against every future disclosure review |
 
 ## Directory Structure

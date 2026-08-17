@@ -1,9 +1,14 @@
 use std::env;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// The nvm installer we bootstrap Node with, pinned by tag AND by content hash.
+/// Recompute with: curl -fsSL <url> | shasum -a 256
+const NVM_INSTALL_URL: &str = "https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh";
+const NVM_INSTALL_SHA256: &str = "2d8359a64a3cb07c02389ad88ceecd43f2fa469c06104f92f98df5b6f315275f";
 
 pub struct SidecarState {
     child: Mutex<Option<Child>>,
@@ -106,11 +111,27 @@ fn install_node_via_nvm(major: u32) -> Result<PathBuf, String> {
     // Install nvm if not present
     if !nvm_sh.exists() {
         eprintln!("Installing nvm...");
+        // Download, VERIFY, then run — rather than piping the network straight
+        // into bash. The URL is tag-pinned, but a tag can be moved and TLS alone
+        // does not tell us the bytes are the ones we reviewed. This is the same
+        // treatment ci.yml already gives the OSV-Scanner binary.
+        //
+        // A stable target makes a content hash safe here; contrast
+        // ollama.com/install.sh, a ROLLING url where pinning a hash would break
+        // setup on every upstream release.
         let status = Command::new("bash")
             .arg("-c")
             .arg(format!(
-                "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | NVM_DIR=\"{}\" bash",
-                nvm_dir.display()
+                r#"set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL {url} -o "$tmp/install.sh"
+echo "{sha}  $tmp/install.sh" | shasum -a 256 -c - >/dev/null 2>&1 || \
+  echo "{sha}  $tmp/install.sh" | sha256sum -c - >/dev/null
+NVM_DIR="{dir}" bash "$tmp/install.sh""#,
+                url = NVM_INSTALL_URL,
+                sha = NVM_INSTALL_SHA256,
+                dir = nvm_dir.display()
             ))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -118,7 +139,10 @@ fn install_node_via_nvm(major: u32) -> Result<PathBuf, String> {
             .map_err(|e| format!("Failed to run nvm installer: {}", e))?;
 
         if !status.success() {
-            return Err("nvm installation failed".to_string());
+            return Err(
+                "nvm installation failed (the installer download may have failed its checksum check)"
+                    .to_string(),
+            );
         }
 
         if !nvm_sh.exists() {
@@ -177,14 +201,18 @@ fn generate_token() -> String {
 }
 
 /// Spawn the Fastify server as a child process.
-/// Returns the child process and the sidecar identity token.
+///
+/// Returns the child, the sidecar identity token, and the child's stdout — the
+/// last of which is taken here rather than left on the Child because readiness
+/// is signalled over it (see `wait_for_ready`) and the Child itself is handed to
+/// `SidecarState` for lifecycle management.
 pub fn spawn_node(
     node_bin: &PathBuf,
     script_path: &PathBuf,
     resource_dir: &PathBuf,
     sqlite_path: &PathBuf,
     port: u16,
-) -> Result<(Child, String), String> {
+) -> Result<(Child, String, std::process::ChildStdout), String> {
     let dist_path = resource_dir.join("dist");
     let node_modules_path = resource_dir.join("node_modules");
     let templates_path = resource_dir.join("templates");
@@ -220,60 +248,66 @@ pub fn spawn_node(
         }
     }
 
-    let child = cmd
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to start server: {}", e))?;
 
-    Ok((child, token))
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture server stdout".to_string())?;
+
+    Ok((child, token, stdout))
 }
 
-/// Wait for the Fastify server to respond on /api/health with the correct sidecar token.
-/// Uses a raw HTTP request over TCP to avoid adding a reqwest dependency.
-pub async fn wait_for_ready(port: u16, token: &str, timeout: Duration) -> bool {
-    let start = std::time::Instant::now();
+/// The line the sidecar prints on stdout once it is listening.
+/// Must stay identical to READY_MARKER in apps/dashboard/server/index.ts.
+pub const READY_MARKER: &str = "COGNISTORE_SIDECAR_READY";
 
-    while start.elapsed() < timeout {
-        if let Ok(mut stream) =
-            tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await
-        {
-            let req = format!(
-                "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-                port
-            );
-            if stream.write_all(req.as_bytes()).await.is_ok() {
-                let mut buf = vec![0u8; 4096];
-                if let Ok(n) = stream.read(&mut buf).await {
-                    let response = String::from_utf8_lossy(&buf[..n]);
-                    // Verify the response contains our sidecar token
-                    if response.contains("200 OK")
-                        && response.contains(&format!("\"token\":\"{}\"", token))
-                    {
-                        return true;
-                    }
-                }
+/// Wait for the sidecar to report readiness on ITS OWN stdout pipe.
+///
+/// This used to be an HTTP poll of /api/health that accepted the sidecar as ours
+/// only if the response body echoed the identity token. That worked as an
+/// anti-squatting check, but it required the token to be readable from an
+/// unauthenticated endpoint — so any page served by any other local HTTP server
+/// could simply fetch it and then drive the whole API.
+///
+/// The stdout pipe is a strictly better proof of identity: only the process we
+/// spawned can write to it, so nothing on the network can forge readiness, and
+/// no secret has to be published to establish it. It is also edge-triggered
+/// rather than polled, so the window opens as soon as the server binds.
+pub async fn wait_for_ready(stdout: std::process::ChildStdout, timeout: Duration) -> bool {
+    let handle = tokio::task::spawn_blocking(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) if l.contains(READY_MARKER) => return true,
+                Ok(_) => continue,
+                // EOF or a decode error means the child died or closed stdout.
+                Err(_) => return false,
             }
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+        false
+    });
 
-    false
+    match tokio::time::timeout(timeout, handle).await {
+        Ok(Ok(ready)) => ready,
+        _ => false,
+    }
 }
 
-/// Find an available port, starting from the preferred one.
-/// Binds on 0.0.0.0 to match the Fastify server's listen address.
-pub fn find_available_port(preferred: u16) -> u16 {
-    for port in preferred..preferred + 100 {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
-        }
-    }
-    // Fallback: let OS assign
-    if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") {
-        if let Ok(addr) = listener.local_addr() {
-            return addr.port();
-        }
-    }
-    preferred
+/// Find an available port in a FIXED range, probing 127.0.0.1 — the address the
+/// Fastify server actually binds (the comment here used to claim 0.0.0.0, which
+/// would be a world-reachable bind and is exactly the regression not to invite).
+///
+/// There is deliberately no OS-assigned-port fallback. The sidecar's Origin and
+/// Host checks, and the Tauri capability's `remote.urls`, are all pinned to this
+/// range; a port outside it would be reachable but unprotected by them. Having
+/// all 100 ports occupied is pathological, and failing with a clear error beats
+/// silently opening on an origin nothing trusts.
+pub fn find_available_port(preferred: u16) -> Option<u16> {
+    (preferred..preferred + 100)
+        .find(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
 }

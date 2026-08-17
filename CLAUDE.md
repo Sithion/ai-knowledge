@@ -20,8 +20,8 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 |---|---|
 | Create `~/.cognistore/` directory | Remove directory recursively |
 | Create `~/.cognistore/knowledge.db` (SQLite + schema) | Removed with directory |
-| Install Ollama via brew/curl | Uninstall Ollama via brew uninstall or remove binary |
-| Start `ollama serve` | Stop `ollama serve` via pkill |
+| Install Ollama via brew/curl | Uninstall Ollama via brew uninstall or remove binary — **conditional**: only when `settings.installedOllama` records that setup installed it AND the user ticks the uninstall checkbox. Ollama is shared; pre-2.5.0 installs have no record, so the default is to keep it |
+| Start `ollama serve` | Kill the recorded PID of the process we spawned; `pkill -f "ollama serve"` only as a fallback, gated by the same opt-in (it matches the user's own instances too) |
 | Pull embedding model via Ollama API | Remove model via `ollama rm` |
 | Pull cleanup LLM model via Ollama API (first consolidation preview) | Remove via `ollama rm <cleanupLlmModel>` — name read from `settings.json` **before** the directory is removed, re-validated, `llama3.2:3b` fallback; skipped when never pulled |
 | Inject `~/.claude/CLAUDE.md` markers | Remove markers via ConfigManager |
@@ -32,7 +32,7 @@ The Tauri app's setup wizard creates resources; the uninstall button must remove
 | Add `cognistore` to `~/.claude.json` | Remove entry via ConfigManager |
 | Add `cognistore` to `~/.copilot/mcp-config.json` | Remove entry via ConfigManager |
 | Add `cognistore` to `~/.config/opencode/opencode.json` | Remove entry via ConfigManager |
-| Inject `mcp__cognistore` server-scope allow rule (all tools) in `~/.claude/settings.json` | Remove the rule + any legacy `mcp__cognistore__*` entries via ConfigManager |
+| Inject `mcp__cognistore` server-scope allow rule + a `permissions.deny` entry for each destructive tool (`deleteKnowledge`, `deletePlanTask`) in `~/.claude/settings.json` | Remove the allow rule, our deny entries, and any legacy `mcp__cognistore__*` allow entries via ConfigManager (the user's own deny rules are left alone) |
 | Copy global hook scripts to `~/.cognistore/hooks/{claude-code,copilot}/` | Removed with `~/.cognistore` directory |
 | Inject hooks into `~/.claude/settings.json` (`hooks` key) | Remove cognistore hook entries via `ConfigManager.removeHooks` |
 | Write `~/.copilot/hooks/hooks.json` reminder hooks | Remove cognistore entries via `ConfigManager.removeCopilotHooks` |

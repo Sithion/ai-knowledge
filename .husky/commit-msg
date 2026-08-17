@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Author/committer fields are checked in pre-commit; this covers the message
+# body, where Co-authored-by: trailers live. A repo-local user.email does not
+# prevent those.
+./scripts/identity-check.sh message "$1"

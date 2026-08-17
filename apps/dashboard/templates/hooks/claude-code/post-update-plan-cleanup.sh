@@ -21,8 +21,8 @@ else
   PLAN_ID="$(cog_field planId)"
   [ -z "$PLAN_ID" ] && PLAN_ID="$(cog_field id)"
   if [ -n "$PLAN_ID" ] && [ ! -f "${COG_MARK}-active-plan" ]; then
-    echo "$PLAN_ID" > "${COG_MARK}-active-plan"
-    echo "0" > "${COG_MARK}-edit-count"
+    cog_write_marker "${COG_MARK}-active-plan" "$PLAN_ID"
+    cog_write_marker "${COG_MARK}-edit-count" "0"
     # updatePlan-first flows get the lineage cursor too (createPlan's hook is
     # the usual writer). Only when it is UUID-shaped — see cog_sanitize_id.
     SAFE_PLAN_ID="$(cog_sanitize_id "$PLAN_ID")"
