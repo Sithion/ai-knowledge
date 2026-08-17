@@ -354,6 +354,71 @@ export class KnowledgeService {
     return count;
   }
 
+  /**
+   * Incremental, resumable embedding backfill — the opposite of reembedAll():
+   * embeds only ids missing a vector (LEFT JOIN, symmetric over both tables,
+   * including type='system'), never drops a table, and yields the event loop
+   * after every item. A failed id simply stays in the missing set — that IS
+   * the resumability, there is no cursor to corrupt.
+   */
+  async embedMissing(opts?: {
+    signal?: AbortSignal;
+    onProgress?: (p: { phase: 'knowledge' | 'plans'; done: number; total: number; failed: number }) => void;
+  }): Promise<{ embedded: number; failed: number; remaining: number }> {
+    let embedded = 0;
+    let failed = 0;
+
+    const missingEntries = this.repository.listMissingKnowledgeEmbeddingIds();
+    let done = 0;
+    for (const { id, updatedAt } of missingEntries) {
+      if (opts?.signal?.aborted) break;
+      try {
+        const row = this.repository.getKnowledgeEntryRaw(id);
+        if (!row) { done++; continue; }
+        // Skip if edited since the scan — never overwrite newer content with a stale embedding.
+        if (row.updatedAt !== updatedAt) { done++; continue; }
+        const tags = Array.isArray((row as any).tags) ? (row as any).tags : JSON.parse(row.tags ?? '[]');
+        const text = this.buildEmbeddingText(row.title, row.content, tags);
+        const embedding = await this.embeddingProvider.embed(text);
+        this.repository.upsertEmbeddingById(id, embedding);
+        embedded++;
+      } catch (e) {
+        failed++;
+        console.warn(`[CogniStore] embedMissing failed for entry ${id}:`, e);
+      }
+      done++;
+      opts?.onProgress?.({ phase: 'knowledge', done, total: missingEntries.length, failed });
+      await new Promise((r) => setImmediate(r));
+    }
+
+    const missingPlans = opts?.signal?.aborted ? [] : this.repository.listMissingPlanEmbeddingIds();
+    done = 0;
+    for (const { id, updatedAt } of missingPlans) {
+      if (opts?.signal?.aborted) break;
+      try {
+        const plan = this.repository.getPlanRaw(id);
+        if (!plan) { done++; continue; }
+        if (plan.updatedAt !== updatedAt) { done++; continue; }
+        const embedding = await this.embeddingProvider.embed(`${plan.title} ${plan.content}`);
+        this.repository.upsertPlanEmbeddingById(id, embedding);
+        embedded++;
+      } catch (e) {
+        failed++;
+        console.warn(`[CogniStore] embedMissing failed for plan ${id}:`, e);
+      }
+      done++;
+      opts?.onProgress?.({ phase: 'plans', done, total: missingPlans.length, failed });
+      await new Promise((r) => setImmediate(r));
+    }
+
+    const coverage = this.repository.embeddingCoverage();
+    return { embedded, failed, remaining: coverage.missingEntries + coverage.missingPlans };
+  }
+
+  async embeddingCoverage() {
+    return this.repository.embeddingCoverage();
+  }
+
   async listScopes(): Promise<string[]> {
     return this.repository.listScopes();
   }

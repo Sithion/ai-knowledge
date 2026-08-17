@@ -20,10 +20,12 @@ export function insertEmbedding(sqlite: Database.Database, id: string, embedding
 }
 
 export function updateEmbedding(sqlite: Database.Database, id: string, embedding: number[]) {
+  const buf = Buffer.from(new Float32Array(embedding).buffer);
   const stmt = sqlite.prepare(
     `UPDATE ${VIRTUAL_TABLE_NAME} SET embedding = ? WHERE id = ?`
   );
-  stmt.run(Buffer.from(new Float32Array(embedding).buffer), id);
+  const info = stmt.run(buf, id);
+  if (info.changes === 0) insertEmbedding(sqlite, id, embedding);
 }
 
 export function deleteEmbedding(sqlite: Database.Database, id: string) {
@@ -80,10 +82,11 @@ export function insertPlanEmbedding(sqlite: Database.Database, id: string, embed
 }
 
 export function updatePlanEmbedding(sqlite: Database.Database, id: string, embedding: number[]) {
-  sqlite.prepare(`UPDATE ${PLANS_TABLE_NAME} SET embedding = ? WHERE id = ?`).run(
+  const info = sqlite.prepare(`UPDATE ${PLANS_TABLE_NAME} SET embedding = ? WHERE id = ?`).run(
     Buffer.from(new Float32Array(embedding).buffer),
     id,
   );
+  if (info.changes === 0) insertPlanEmbedding(sqlite, id, embedding);
 }
 
 export function deletePlanEmbedding(sqlite: Database.Database, id: string) {

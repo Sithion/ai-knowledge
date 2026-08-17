@@ -24,6 +24,7 @@ import {
   isPlanStatus,
   createPlanRelationSchema,
   bulkDeleteSchema,
+  DEFAULT_EMBEDDING_MODEL,
 } from '@cognistore/shared';
 import { registerAuth, isAllowedOrigin, TOKEN_HEADER, type AuthConfig } from './auth.js';
 import {
@@ -1338,37 +1339,62 @@ Pass an array to addKnowledge to create multiple entries at once.
         record({ step: 'reembed', status: 'error', message: e.message });
       }
 
-      // Step 1c: Embedding integrity check — detect entries without embeddings
+      // Step 1c: Embedding integrity check — incremental, resumable, never drops
+      // a table. The previous version compared COUNT(knowledge_entries) against
+      // COUNT(knowledge_embeddings_rowids), but that count excludes nothing —
+      // reembedAll() iterated a query that DID exclude system-owned entries, so
+      // the two counts could never agree and this step dropped and rebuilt the
+      // entire vector index on every single upgrade run, forever, and left it
+      // empty if the run was ever interrupted. embedMissing() targets exactly
+      // the ids that are actually missing and only ever inserts/upserts.
       try {
         if (sdkReady) {
-          const sqliteRaw = getRawSqlite();
-          if (sqliteRaw) {
-            const entryCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_entries').get() as { c: number }).c;
-            const embeddingCount = (sqliteRaw.prepare('SELECT COUNT(*) as c FROM knowledge_embeddings_rowids').get() as { c: number }).c;
+          const coverage = await sdk.embeddingCoverage();
+          if (coverage.missingEntries > 0 || coverage.missingPlans > 0) {
+            upgradeProgress.setStep('integrity');
+            console.log(`[CogniStore] Upgrade: ${coverage.missingEntries} entries and ${coverage.missingPlans} plans missing embeddings. Backfilling...`);
 
-            if (entryCount > 0 && embeddingCount < entryCount) {
-              upgradeProgress.setStep('integrity');
-              console.log(`[CogniStore] Upgrade: embedding integrity mismatch — ${entryCount} entries but only ${embeddingCount} embeddings. Resyncing...`);
-
-              try {
-                sqliteRaw.exec('DROP TABLE IF EXISTS knowledge_embeddings');
-                sqliteRaw.exec('DROP TABLE IF EXISTS plans_embeddings');
-              } catch (e) { console.warn('[CogniStore] Drop vec tables failed:', e); }
-
-              await sdk.close();
-              sdkReady = false;
-              const reinitOk = await tryInitSDK();
-
-              if (reinitOk) {
-                try {
-                  const reembedded = await sdk.reembedAll();
-                  record({ step: 'integrity', status: 'success', message: `Re-embedded ${reembedded} entries (${entryCount - embeddingCount} were missing)` });
-                } catch (e: any) {
-                  record({ step: 'integrity', status: 'error', message: e.message });
-                }
-              } else {
-                record({ step: 'integrity', status: 'error', message: 'SDK re-init failed after integrity resync' });
+            // Pre-flight, same as the re-embed step above: only start the backfill
+            // if Ollama can actually produce an embedding NOW. Without this, an
+            // Ollama that is down or stalled makes every one of N entries burn its
+            // full retry budget (3 attempts x 30s per entry in OllamaEmbeddingClient),
+            // so a few thousand missing entries would hold this request open for
+            // hours while the UpgradePage spins — the exact freeze this release
+            // exists to end. `skipped` (not `error`) so saveDeployedVersion() can
+            // still write `.version`: the backfill is incremental and the next
+            // upgrade — or scripts/repair-embeddings.mjs — resumes it untouched.
+            const embedHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
+            const embedModel = process.env.OLLAMA_MODEL || DEFAULT_EMBEDDING_MODEL;
+            let canBackfill = false;
+            try {
+              const probe = await fetch(`${embedHost}/api/embeddings`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: embedModel, prompt: 'probe' }),
+                signal: AbortSignal.timeout(15000),
+              });
+              if (probe.ok) {
+                const pj = (await probe.json()) as { embedding?: number[] };
+                canBackfill = Array.isArray(pj.embedding) && pj.embedding.length > 0;
               }
+            } catch { canBackfill = false; }
+
+            if (!canBackfill) {
+              record({ step: 'integrity', status: 'skipped', message: `Ollama unavailable — ${coverage.missingEntries + coverage.missingPlans} embeddings still missing, will backfill on next upgrade` });
+              console.warn('[CogniStore] Upgrade: skipping embedding backfill (Ollama cannot embed)');
+            } else {
+              const result = await sdk.embedMissing();
+              // Only a run that made NO progress at all is an error. A partial
+              // backfill left the index strictly better than it found it, and
+              // marking it `error` would make saveDeployedVersion() refuse to
+              // write `.version` forever — one permanently unembeddable entry
+              // would re-run the whole upgrade on every single launch.
+              const stalled = result.remaining > 0 && result.embedded === 0;
+              record({
+                step: 'integrity',
+                status: stalled ? 'error' : 'success',
+                message: `Embedded ${result.embedded} (${result.failed} failed, ${result.remaining} remaining)`,
+              });
             }
           }
         }

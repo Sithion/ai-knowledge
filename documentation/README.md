@@ -15,6 +15,7 @@ Technical documentation for CogniStore.
 | [Frontend](./frontend.md) | React pages, ConfirmModal, plan archive, Redux state, i18n, routing, loading strategy |
 | [API Reference](./api-reference.md) | Fastify sidecar REST endpoints: health, CRUD, stats, setup, upgrade, uninstall, providers, federated search, system guards |
 | [CI/CD](./ci-cd.md) | GitHub Actions workflows, instruction compilation, publish pipeline, agent test battery, version management |
+| [Recovery](./recovery.md) | Offline repair procedures: rebuilding a missing/incomplete embedding index |
 | **External Knowledge Providers (MCP)** | [Plug in MCP](./providers/plug-mcp.md) · [Config Reference](./providers/providers-config.md) · [Security Model](./providers/security.md) · [Local MCP Example](./providers/example-local-mcp.md) |
 
 ## Quick Navigation
@@ -32,3 +33,5 @@ Technical documentation for CogniStore.
 **Connecting external knowledge?** See [Plug in MCP](./providers/plug-mcp.md) (connect an MCP server — stdio or remote with OAuth); read the [Security Model](./providers/security.md) first. To build your own server, follow the [Local MCP Example](./providers/example-local-mcp.md).
 
 **Running agent tests?** See [CI/CD](./ci-cd.md) for the agent test battery (`scripts/test-agents.sh`).
+
+**Search returning nothing?** See [Recovery](./recovery.md) — the embedding index can be rebuilt offline with `scripts/repair-embeddings.mjs`.

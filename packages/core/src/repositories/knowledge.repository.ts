@@ -751,6 +751,80 @@ export class KnowledgeRepository {
       .orderBy(sql`${knowledgeEntries.createdAt} DESC`);
   }
 
+  /**
+   * Missing-embedding sets defined by a LEFT JOIN against the existing vec0
+   * shadow tables, over ALL rows including type='system' — deliberately not
+   * listAll(), which excludes it and produces a permanent off-by-one.
+   */
+  listMissingKnowledgeEmbeddingIds(limit?: number): { id: string; updatedAt: string }[] {
+    const sql = `
+      SELECT e.id, e.updated_at AS updatedAt
+      FROM knowledge_entries e
+      LEFT JOIN knowledge_embeddings_rowids r ON r.id = e.id
+      WHERE r.id IS NULL
+      ORDER BY e.created_at DESC
+      ${limit ? 'LIMIT ?' : ''}
+    `;
+    const stmt = this.sqlite.prepare(sql);
+    return (limit ? stmt.all(limit) : stmt.all()) as { id: string; updatedAt: string }[];
+  }
+
+  listMissingPlanEmbeddingIds(limit?: number): { id: string; updatedAt: string }[] {
+    const sql = `
+      SELECT p.id, p.updated_at AS updatedAt
+      FROM plans p
+      LEFT JOIN plans_embeddings_rowids r ON r.id = p.id
+      WHERE r.id IS NULL
+      ORDER BY p.created_at DESC
+      ${limit ? 'LIMIT ?' : ''}
+    `;
+    const stmt = this.sqlite.prepare(sql);
+    return (limit ? stmt.all(limit) : stmt.all()) as { id: string; updatedAt: string }[];
+  }
+
+  embeddingCoverage(): {
+    entries: number; entryEmbeddings: number; missingEntries: number;
+    plans: number; planEmbeddings: number; missingPlans: number;
+  } {
+    // `missing*` is a LEFT JOIN, NOT a count subtraction: the two must agree with
+    // listMissing*EmbeddingIds() or the check that decides whether to repair is
+    // measuring something different from the repair itself. An orphan embedding
+    // (a vector whose entry was deleted — possible whenever the process died
+    // between the row delete and the embedding delete, which this app did on
+    // every launch since 2.5.0) inflates the embedding count and makes a
+    // subtraction under-report, so a genuinely incomplete index would report as
+    // complete and never get backfilled.
+    const row = this.sqlite.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM knowledge_entries)            AS entries,
+        (SELECT COUNT(*) FROM knowledge_embeddings_rowids)  AS entryEmbeddings,
+        (SELECT COUNT(*) FROM plans)                        AS plans,
+        (SELECT COUNT(*) FROM plans_embeddings_rowids)      AS planEmbeddings,
+        (SELECT COUNT(*) FROM knowledge_entries e
+           LEFT JOIN knowledge_embeddings_rowids r ON r.id = e.id
+          WHERE r.id IS NULL)                               AS missingEntries,
+        (SELECT COUNT(*) FROM plans p
+           LEFT JOIN plans_embeddings_rowids r ON r.id = p.id
+          WHERE r.id IS NULL)                               AS missingPlans
+    `).get() as {
+      entries: number; entryEmbeddings: number; missingEntries: number;
+      plans: number; planEmbeddings: number; missingPlans: number;
+    };
+    return row;
+  }
+
+  getKnowledgeEntryRaw(id: string): { id: string; title: string; content: string; tags: string; updatedAt: string } | undefined {
+    return this.sqlite
+      .prepare('SELECT id, title, content, tags, updated_at AS updatedAt FROM knowledge_entries WHERE id = ?')
+      .get(id) as { id: string; title: string; content: string; tags: string; updatedAt: string } | undefined;
+  }
+
+  getPlanRaw(id: string): { id: string; title: string; content: string; updatedAt: string } | undefined {
+    return this.sqlite
+      .prepare('SELECT id, title, content, updated_at AS updatedAt FROM plans WHERE id = ?')
+      .get(id) as { id: string; title: string; content: string; updatedAt: string } | undefined;
+  }
+
   async listScopes(): Promise<string[]> {
     const rows = this.sqlite.prepare(
       `SELECT DISTINCT scope FROM knowledge_entries
@@ -1033,6 +1107,16 @@ export class KnowledgeRepository {
 
   insertEmbeddingById(id: string, embedding: number[]): void {
     insertEmbedding(this.sqlite, id, embedding);
+  }
+
+  /** Upsert-safe (falls through to INSERT on zero rows — see updateEmbedding). */
+  upsertEmbeddingById(id: string, embedding: number[]): void {
+    updateEmbedding(this.sqlite, id, embedding);
+  }
+
+  /** Upsert-safe plan-embedding write, NOT swallowed — callers decide how to handle failure. */
+  upsertPlanEmbeddingById(id: string, embedding: number[]): void {
+    updatePlanEmbedding(this.sqlite, id, embedding);
   }
 
   insertPlanEmbeddingById(id: string, embedding: number[]): void {
