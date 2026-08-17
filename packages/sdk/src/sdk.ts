@@ -645,6 +645,24 @@ export class KnowledgeSDK {
     return this.service!.reembedAll();
   }
 
+  /**
+   * Incremental, resumable backfill of missing embeddings only — never drops
+   * a table. Use this for routine repair; reembedAll() is only for a genuine
+   * dimension migration where the vec tables were just recreated.
+   */
+  async embedMissing(opts?: {
+    signal?: AbortSignal;
+    onProgress?: (p: { phase: 'knowledge' | 'plans'; done: number; total: number; failed: number }) => void;
+  }): Promise<{ embedded: number; failed: number; remaining: number }> {
+    this.ensureInitialized();
+    return this.service!.embedMissing(opts);
+  }
+
+  async embeddingCoverage() {
+    this.ensureInitialized();
+    return this.service!.embeddingCoverage();
+  }
+
   // ─── Operations ─────────────────────────────────────────────
 
   getOperationCounts() {

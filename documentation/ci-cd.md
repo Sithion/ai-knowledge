@@ -178,3 +178,4 @@ The script traps EXIT and restores original MCP configs from backups, ensuring t
 | `apps/dashboard/templates/configs/compile-instructions.mjs` | Compiles `_base-instructions.md` to platform-specific instruction files |
 | `scripts/bump-version.sh` | Cross-package version bump |
 | `scripts/test-agents.sh` | Agent test battery (local, Docker-based) |
+| `scripts/repair-embeddings.mjs` | Offline embedding-index repair — see [Recovery](./recovery.md) |

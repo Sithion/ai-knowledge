@@ -32,7 +32,8 @@ The desktop application uses a **sidecar model**: Tauri v2 (Rust) manages the wi
    c. Compute SQLite path  → ~/.cognistore/knowledge.db
    d. find_available_port(3210) → scan for free port
    e. spawn_node()         → launch Fastify as child process
-   f. wait_for_ready()     → poll GET /api/health for up to 120 seconds (allows a cold nvm Node install)
+   f. wait_for_ready()     → wait up to 120s for the READY marker on the child's stdout
+                             (allows a cold nvm Node install) — see Readiness Handshake
    g. window.navigate()    → point WebView to http://localhost:PORT
 3. on_window_event(Destroyed) → kill sidecar process
 ```
@@ -79,10 +80,34 @@ never re-deploys the developer's agent configs on launch.
 
 Scans ports starting from 3210, testing each with a TCP bind. Returns the first available port. This avoids conflicts if multiple instances run or another service uses 3210.
 
+## Readiness Handshake
+
+**Functions:** `spawn_node()` / `wait_for_ready()` in `sidecar.rs`
+
+Readiness is signalled **over the child's own stdout pipe**, not over HTTP. After `listen()` the sidecar
+prints a single line containing `COGNISTORE_SIDECAR_READY`; the shell reads that line and navigates the
+WebView. Only the process the shell spawned can write to that pipe, so nothing on the network can forge
+readiness, and no secret has to be published to establish it — this replaced the earlier scheme where the
+shell polled `GET /api/health` and matched an identity token in the body (removed in v2.5.0, see
+[API reference — Authentication](./api-reference.md#authentication)). It is edge-triggered rather than polled, so the window opens
+as soon as the server binds. The marker string is a cross-process contract: the Rust `READY_MARKER` const
+and the TS const each name the other.
+
+Two pipe rules the shell must keep (both are load-bearing, v2.5.2):
+
+- **stdout is drained for the life of the process**, never only until the marker. The reader task keeps
+  looping and discarding lines instead of returning; dropping the `ChildStdout` closes the pipe's read
+  end and the sidecar's next `console.log` — its access logger fires on nearly every request — dies with
+  an uncaught `write EPIPE`. Node does not install a SIGPIPE handler for piped, non-TTY stdio, so that
+  write failure surfaces as a fatal `'error'` event. Between v2.5.0 and v2.5.2 this killed the sidecar on
+  every launch, a few dozen milliseconds after it reported ready; the symptom was a blank window.
+- **stderr is drained too**, on a dedicated thread, and echoed with a `[sidecar stderr]` prefix. Left
+  attached-but-unread, the sidecar blocks once the 64KB OS pipe buffer fills.
+
 ## Sidecar Lifecycle
 
-- **Spawn:** `tokio::process::Command::new(node_path).arg(server_js).envs(...)` — async, piped stdout/stderr
-- **Health check:** Poll `GET /api/health` every 500ms for 15 seconds
+- **Spawn:** `std::process::Command::new(node_path).arg(server_js).envs(...)` — piped stdout/stderr
+- **Readiness:** stdout marker line, 120s budget (see [Readiness Handshake](#readiness-handshake))
 - **Cleanup:** On window `Destroyed` event, `SidecarState.kill()` terminates the child process
 - **Degraded mode:** If SDK initialization fails on startup, server enters degraded mode — endpoints return 503, retry every 10 seconds
 - **Artifact self-heal:** Right after `listen()`, the sidecar re-deploys agent instructions, MCP configs, skills and global hooks when the on-disk artifacts lag the running version — so an app that is never opened does not keep stale hooks/skills. It publishes nothing to `GET /api/upgrade/progress` — that endpoint describes the user-visible upgrade only, and a self-heal has no screen waiting on it. See [API reference — Upgrade](./api-reference.md#upgrade).

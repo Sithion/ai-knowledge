@@ -259,6 +259,19 @@ pub fn spawn_node(
         .take()
         .ok_or_else(|| "Failed to capture server stdout".to_string())?;
 
+    // Drain stderr for the life of the process. Never taking this handle left
+    // it attached but unread — harmless until the OS pipe buffer (64KB) fills,
+    // at which point the sidecar's next stderr write blocks. Logging it here
+    // also means a future crash surfaces in the app log instead of vanishing.
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("[sidecar stderr] {}", line);
+            }
+        });
+    }
+
     Ok((child, token, stdout))
 }
 
@@ -278,21 +291,49 @@ pub const READY_MARKER: &str = "COGNISTORE_SIDECAR_READY";
 /// spawned can write to it, so nothing on the network can forge readiness, and
 /// no secret has to be published to establish it. It is also edge-triggered
 /// rather than polled, so the window opens as soon as the server binds.
+///
+/// CRITICAL: this must never let the `ChildStdout` be dropped once the marker
+/// is found. Dropping it closes the pipe's read end, and the sidecar's very
+/// next `console.log` (its access logger fires on nearly every request) then
+/// hits EPIPE and crashes uncaught — Node does not install a SIGPIPE handler
+/// for piped (non-TTY) stdio, so the write failure surfaces as an unhandled
+/// 'error' event, which is fatal. Reproduced directly: read the marker line
+/// via a pipe, close the read end the way the old code did on return, and the
+/// spawned Node process dies on its next stdout write with `Error: write
+/// EPIPE`. The fix is to keep draining (and discarding) stdout for the life
+/// of the process instead of returning ownership of the reader to be dropped.
 pub async fn wait_for_ready(stdout: std::process::ChildStdout, timeout: Duration) -> bool {
-    let handle = tokio::task::spawn_blocking(move || {
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+
+    // Detached — intentionally NOT joined by this function, so the pipe stays
+    // drained for as long as the child writes to it, well past the timeout
+    // window below.
+    tokio::task::spawn_blocking(move || {
         let reader = BufReader::new(stdout);
+        let mut tx = Some(tx);
         for line in reader.lines() {
             match line {
-                Ok(l) if l.contains(READY_MARKER) => return true,
+                Ok(l) if l.contains(READY_MARKER) => {
+                    if let Some(tx) = tx.take() {
+                        let _ = tx.send(true);
+                    }
+                    // Keep looping — do NOT return/break — so `reader` (and the
+                    // ChildStdout it owns) is never dropped while the child is
+                    // still alive.
+                }
                 Ok(_) => continue,
                 // EOF or a decode error means the child died or closed stdout.
-                Err(_) => return false,
+                Err(_) => break,
             }
         }
-        false
+        // Reached EOF without ever finding the marker (or a read error) —
+        // the child exited before becoming ready.
+        if let Some(tx) = tx.take() {
+            let _ = tx.send(false);
+        }
     });
 
-    match tokio::time::timeout(timeout, handle).await {
+    match tokio::time::timeout(timeout, rx).await {
         Ok(Ok(ready)) => ready,
         _ => false,
     }
