@@ -1,5 +1,12 @@
 # Patch Notes
 
+## v2.5.1
+
+**`nanoid`, pulled in transitively through `postcss`, was pinned at a vulnerable `3.3.16`.** A pnpm override now bounds it to `>=3.3.18 <4`, closing the gap without jumping to the ESM-only `nanoid@6` that an unbounded override would otherwise resolve — `postcss` consumes `nanoid` as CJS.
+
+### Security
+- **`nanoid` bumped 3.3.16 → 3.3.18 (GHSA-2v37-7h3g-55p8, CVSS 8.2).** Fixed via a root `package.json` `pnpm.overrides` entry, bounded `>=3.3.18 <4` to match the repo's convention for other overrides (e.g. `react-router`) and to keep `postcss`'s CJS `require('nanoid')` working.
+
 ## v2.5.0
 
 **The dashboard API had no authentication, and that turned out to matter more than it sounds.** The sidecar binds `127.0.0.1`, which was treated as sufficient — but loopback is not a trust boundary: every other process on the machine, and every page served by any other local HTTP server, sits inside it. Of 76 routes, 7 had an Origin check, and that check allowed a *missing* Origin outright. `POST /api/uninstall` takes no body, so a body-less `fetch(url, {method:'POST', mode:'no-cors'})` from any web page was a CORS-simple request — no preflight, nothing to block — that ran the whole teardown: `~/.cognistore` deleted, Ollama uninstalled, the app removed from `/Applications`. The port range is small enough to loop through. `GET /api/export` hands over the entire knowledge base through the same hole.
